@@ -43,8 +43,20 @@
   box-sizing: border-box;
 }
 
+/* Высота = реальный innerHeight (обновляется при resize / моб. панелях), иначе 100dvh */
+html {
+  height: var(--app-vh, 100dvh);
+  max-height: var(--app-vh, 100dvh);
+  overflow: hidden;
+}
+
 body {
+  height: 100%;
+  max-height: 100%;
   margin: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
   font-family:
     ui-sans-serif,
     system-ui,
@@ -60,27 +72,34 @@ body {
 }
 
 .app-root {
-  min-height: 100dvh;
-  min-height: 100vh;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: hsl(var(--background));
   color: hsl(var(--foreground));
 }
 
-/* Отступ вокруг внешней рамки — втрое плотнее исходного p-6 / md:p-8 */
+/* Вся сетка укладывается в окно браузера: прокрутка только внутри панелей, не у body */
 .app-frame {
-  max-width: 80rem;
+  max-width: 96rem;
   margin-left: auto;
   margin-right: auto;
-  padding: 0.5rem;
-  min-height: 100dvh;
-  min-height: 100vh;
+  width: 100%;
+  padding: 1rem;
+  padding-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 @media (min-width: 768px) {
   .app-frame {
-    padding: 0.67rem;
+    padding: 1.34rem;
+    padding-bottom: max(1.34rem, env(safe-area-inset-bottom, 0px));
   }
 }
 
@@ -130,8 +149,8 @@ body {
   flex-direction: row;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem 0.75rem;
-  padding: 0.5rem 1rem;
+  gap: 1rem 1.5rem;
+  padding: 1rem 2rem;
   border-bottom: 1px solid hsl(var(--border));
   background: hsl(var(--card));
 }
@@ -142,7 +161,7 @@ body {
   flex-wrap: wrap;
   align-items: center;
   justify-content: center;
-  gap: 0.375rem;
+  gap: 0.75rem;
   min-width: 0;
 }
 
@@ -151,7 +170,7 @@ body {
   flex-shrink: 0;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.375rem;
+  gap: 0.75rem;
   margin-left: auto;
 }
 
@@ -201,9 +220,9 @@ body {
   flex-wrap: wrap;
   align-items: center;
   justify-content: center;
-  gap: 0.125rem;
+  gap: 0.25rem;
   flex-shrink: 0;
-  padding: 0.2rem 0.35rem;
+  padding: 0.4rem 0.7rem;
   border-top: 1px solid hsl(var(--border));
   background: hsl(var(--background));
 }
@@ -215,7 +234,7 @@ body {
   justify-content: center;
   border-radius: 9999px;
   border: 1px solid transparent;
-  padding: 0.125rem 0.625rem;
+  padding: 0.25rem 1.25rem;
   font-size: 0.75rem;
   line-height: 1rem;
   font-weight: 600;
@@ -258,6 +277,19 @@ body {
 .badge.badge--no-key.active {
   background: hsl(var(--muted));
   color: hsl(var(--muted-foreground));
+}
+
+/* Режим «Создать изображение»: провайдеры без генерации картинок */
+.badge.badge--mode-locked {
+  opacity: 0.48;
+  filter: grayscale(0.25);
+  cursor: not-allowed;
+}
+
+.badge.badge--mode-locked.active {
+  background: hsl(var(--secondary));
+  color: hsl(var(--secondary-foreground));
+  opacity: 0.48;
 }
 
 /* Текстовые кнопки — outline */
@@ -339,8 +371,8 @@ button.btn {
   display: flex;
   flex: 1;
   min-height: 0;
-  gap: 0.5rem;
-  padding: 3px 0.5rem 0.5rem;
+  gap: 1rem;
+  padding: 6px 1rem 1.25rem;
   background: hsl(var(--card));
 }
 
@@ -352,6 +384,7 @@ button.btn {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
   align-self: stretch;
 }
 
@@ -369,8 +402,8 @@ button.btn {
 }
 
 .sidebar-panel-header {
-  padding: 0.5rem;
-  padding-bottom: 0.25rem;
+  padding: 1rem;
+  padding-bottom: 0.5rem;
 }
 
 .sidebar-panel-title {
@@ -384,14 +417,56 @@ button.btn {
   color: hsl(var(--foreground));
 }
 
+/* Кнопка списка диалогов — только на узком экране (см. @media ниже) */
+.btn-dialogues-toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  flex-shrink: 0;
+  border: 1px solid hsl(var(--input));
+  border-radius: 0.375rem;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.btn-dialogues-toggle:hover {
+  background: hsl(var(--muted));
+}
+
+.btn-dialogues-toggle:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px hsl(var(--background)),
+    0 0 0 4px hsl(var(--ring) / 0.35);
+}
+
+.btn-dialogues-chevron {
+  width: 1rem;
+  height: 1rem;
+  display: block;
+  flex-shrink: 0;
+  transition: transform 0.2s ease;
+}
+
+.dialogues-dropdown-open .btn-dialogues-chevron {
+  transform: rotate(180deg);
+}
+
 .sidebar-panel-body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 0 0.5rem 0.5rem;
+  padding: 0 1rem 1rem;
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: 0.5rem;
 }
 
 /* Карточки диалогов */
@@ -400,7 +475,7 @@ button.btn {
 
   border-radius: 1rem;
   border: 2px solid hsl(var(--border));
-  padding: 0.35rem 0.3rem 0.35rem 0.35rem;
+  padding: 0.7rem 0.6rem 0.7rem 0.7rem;
   color: hsl(var(--foreground));
   cursor: default;
   transition:
@@ -415,7 +490,7 @@ button.btn {
 .dialog-card-inner {
   display: flex;
   align-items: flex-start;
-  gap: 0.25rem;
+  gap: 0.5rem;
 }
 
 .dialog-card-info {
@@ -431,10 +506,10 @@ button.btn {
 }
 
 .dialog-card-meta {
-  margin-top: 0.2rem;
+  margin-top: 0.4rem;
   display: flex;
   flex-direction: column;
-  gap: 0.1rem;
+  gap: 0.2rem;
   font-size: 0.6875rem;
   line-height: 1.3;
   color: hsl(var(--muted-foreground));
@@ -445,8 +520,8 @@ button.btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  margin: -0.1rem -0.05rem 0 0;
-  padding: 0.2rem;
+  margin: -0.2rem -0.1rem 0 0;
+  padding: 0.4rem;
   border: none;
   border-radius: 0.25rem;
   background: transparent;
@@ -495,24 +570,534 @@ button.btn {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   background: hsl(var(--background));
 }
 
-.messages {
+/* Прокрутка истории: новые реплики у низа, листаем вверх к старым */
+.messages-viewport {
   flex: 1;
-  padding: 0.35rem;
+  min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
+  background: hsl(var(--background));
+}
+
+.messages-inner {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: stretch;
+  gap: 1rem;
+  padding: 0.7rem;
+  box-sizing: border-box;
+}
+
+.chat-footer {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: hsl(var(--background));
+}
+
+/* Сообщения в основном окне */
+.msg {
+  border-radius: 1rem;
+  max-width: 100%;
+}
+
+.msg-user {
+  align-self: flex-end;
+  width: fit-content;
+  max-width: 100%;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--secondary) / 0.88);
+  color: hsl(var(--secondary-foreground));
+  box-shadow: none;
+  /* Как горизонтальные отступы у .msg-assistant (1.3rem), панель не у рамки */
+  padding: 0 1.3rem 1rem 1.3rem;
+}
+
+.dark .msg-user {
+  background: hsl(var(--secondary) / 0.5);
+  color: hsl(var(--secondary-foreground));
+}
+
+.msg-user-head {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.6rem 0 0;
+}
+
+.msg-user-web-badge,
+.msg-user-image-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 0.24rem 0.45rem;
+  border-radius: 0.3rem;
+  background: hsl(var(--muted));
+  color: hsl(var(--muted-foreground));
+}
+
+.msg-user-web-badge svg,
+.msg-user-image-badge svg {
+  display: block;
+}
+
+.msg-model-badge {
+  display: inline-block;
+  font-size: 0.625rem;
+  font-weight: 600;
+  line-height: 1.2;
+  padding: 0.24rem 0.8rem;
+  border-radius: 0.3rem;
+  background: hsl(var(--muted));
+  color: hsl(var(--muted-foreground));
+}
+
+.msg-user-content {
+  position: relative;
+  padding: 0.3rem 0 0.95rem;
+  padding-right: 4.65rem;
+}
+
+.msg-user-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-size: 0.875rem;
+  line-height: 1.35;
+}
+
+.msg-user-text--clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+}
+
+.msg-user--expanded .msg-user-text--clamped {
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow: visible;
+}
+
+.msg-bubble-actions {
+  position: absolute;
+  right: 0.35rem;
+  bottom: 0.3rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.05rem;
+  padding: 0.2rem 0.28rem;
+  border-radius: 0.45rem;
+  background: hsl(var(--muted) / 0.38);
+  box-sizing: border-box;
+}
+
+/* Разделитель «копировать | шеврон», как у ответа ИИ */
+.msg-bubble-actions:has(.msg-bubble-chevron) .msg-bubble-copy {
+  border-radius: 0.28rem 0 0 0.28rem;
+}
+
+.msg-bubble-actions:has(.msg-bubble-chevron) .msg-bubble-chevron {
+  margin-left: 0.12rem;
+  padding-left: 0.22rem;
+  border-left: 1px solid hsl(var(--border) / 0.55);
+  border-radius: 0 0.28rem 0.28rem 0;
+}
+
+.msg-bubble-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border: none;
+  border-radius: 0.28rem;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.msg-bubble-action-btn:hover {
+  background: hsl(var(--muted) / 0.5);
+  color: hsl(var(--foreground));
+}
+
+.msg-bubble-action-btn:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px hsl(var(--background)),
+    0 0 0 4px hsl(var(--ring) / 0.35);
+}
+
+.msg-bubble-copy-icon,
+.msg-bubble-chevron-icon {
+  display: block;
+  width: 0.95rem;
+  height: 0.95rem;
+  transition: transform 0.2s ease;
+}
+
+/* Пользователь: по умолчанию свёрнуто — шеврон «вниз»; развёрнуто — «вверх» (как у ИИ) */
+.msg-user .msg-bubble-chevron .msg-bubble-chevron-icon {
+  transform: rotate(180deg);
+}
+
+.msg-user.msg-user--expanded .msg-bubble-chevron .msg-bubble-chevron-icon {
+  transform: rotate(0deg);
+}
+
+.msg-user--no-expand .msg-bubble-chevron {
+  display: none;
+}
+
+.msg-assistant {
+  align-self: flex-start;
+  width: fit-content;
+  max-width: 100%;
+  border: 2px solid hsl(var(--border));
+  background: hsl(var(--card));
+  color: hsl(var(--card-foreground));
+  padding: 1rem 1.3rem;
+}
+
+@media (min-width: 768px) {
+  .msg-user,
+  .msg-assistant {
+    max-width: 90%;
+  }
+}
+
+/* По умолчанию ответ полный; свёрнут — до 4 строк (наоборот от пользовательского пузыря) */
+.msg-assistant-body {
+  position: relative;
+  padding-bottom: 0.45rem;
+  padding-right: 2.5rem;
+}
+
+.msg-assistant-body--with-toggle {
+  padding-right: 4.65rem;
+}
+
+/* Ответ ассистента: копировать и шеврон в потоке под текстом, не поверх картинки */
+.msg-assistant .msg-assistant-body {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding-right: 0;
+  padding-bottom: 0;
+}
+
+.msg-assistant .msg-assistant-body--with-toggle {
+  padding-right: 0;
+}
+
+.msg-assistant .msg-bubble-actions {
+  position: static;
+  align-self: flex-end;
+  margin-top: 0.55rem;
+  margin-bottom: 0.05rem;
+}
+
+.msg-assistant-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-size: 0.875rem;
+  line-height: 1.4;
+}
+
+.msg-assistant-text.msg-assistant-text--md {
+  white-space: normal;
+}
+
+.msg-assistant-text.msg-assistant-text--md p {
+  margin: 0.4em 0;
+}
+
+.msg-assistant-text.msg-assistant-text--md p:first-child {
+  margin-top: 0;
+}
+
+.msg-assistant-text.msg-assistant-text--md p:last-child {
+  margin-bottom: 0;
+}
+
+.msg-assistant-text.msg-assistant-text--md ul,
+.msg-assistant-text.msg-assistant-text--md ol {
+  margin: 0.4em 0;
+  padding-left: 1.35rem;
+}
+
+.msg-assistant-text.msg-assistant-text--md li {
+  margin: 0.15em 0;
+}
+
+.msg-assistant-text.msg-assistant-text--md blockquote {
+  margin: 0.4em 0;
+  padding-left: 0.75rem;
+  border-left: 3px solid hsl(var(--border));
+  color: hsl(var(--muted-foreground));
+}
+
+.msg-assistant-text.msg-assistant-text--md h1,
+.msg-assistant-text.msg-assistant-text--md h2,
+.msg-assistant-text.msg-assistant-text--md h3,
+.msg-assistant-text.msg-assistant-text--md h4 {
+  margin: 0.5em 0 0.25em;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.msg-assistant-text.msg-assistant-text--md h1 {
+  font-size: 1.05rem;
+}
+
+.msg-assistant-text.msg-assistant-text--md h2 {
+  font-size: 1rem;
+}
+
+.msg-assistant-text.msg-assistant-text--md h3,
+.msg-assistant-text.msg-assistant-text--md h4 {
+  font-size: 0.9375rem;
+}
+
+.msg-assistant-text.msg-assistant-text--md .msg-md-code-block {
+  position: relative;
+  margin: 0.4em 0;
+}
+
+.msg-md-code-copy {
+  position: absolute;
+  top: 0.38rem;
+  right: 0.38rem;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.875rem;
+  height: 1.875rem;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: hsl(var(--background) / 0.72);
+  color: hsl(var(--muted-foreground));
+  box-shadow:
+    0 0 0 1px hsl(var(--border) / 0.5),
+    0 1px 3px hsl(var(--foreground) / 0.06);
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.dark .msg-md-code-copy {
+  background: hsl(var(--card) / 0.85);
+  box-shadow:
+    0 0 0 1px hsl(var(--border) / 0.4),
+    0 1px 3px hsl(0 0% 0% / 0.25);
+}
+
+.msg-md-code-copy:hover {
+  background: hsl(var(--muted) / 0.55);
+  color: hsl(var(--foreground));
+}
+
+.msg-md-code-copy:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px hsl(var(--background)),
+    0 0 0 4px hsl(var(--ring) / 0.35);
+}
+
+.msg-md-code-copy-icon {
+  display: block;
+  width: 0.75rem;
+  height: 0.75rem;
+}
+
+.msg-assistant-text.msg-assistant-text--md .msg-md-code-block pre {
+  margin: 0;
+  padding: 0.5rem 0.65rem 0.55rem;
+  padding-right: 2.5rem;
+  overflow-x: auto;
+  border-radius: 0.375rem;
+  background: hsl(var(--muted) / 0.45);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.msg-assistant-text.msg-assistant-text--md code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.8125rem;
+}
+
+.msg-assistant-text.msg-assistant-text--md pre code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+}
+
+.msg-assistant-text.msg-assistant-text--md :not(pre) > code {
+  padding: 0.08rem 0.3rem;
+  border-radius: 0.25rem;
+  background: hsl(var(--muted) / 0.45);
+}
+
+.msg-assistant-text.msg-assistant-text--md a {
+  color: hsl(var(--primary));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.msg-assistant-text.msg-assistant-text--md img {
+  display: block;
+  box-sizing: border-box;
+  max-width: 100%;
+  width: auto;
+  height: auto;
+  margin: 0.5rem 0;
+  border-radius: 0.5rem;
+  border: 1px solid hsl(var(--border));
+}
+
+.msg-assistant-text.msg-assistant-text--md table {
+  width: 100%;
+  margin: 0.5em 0;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+
+.msg-assistant-text.msg-assistant-text--md th,
+.msg-assistant-text.msg-assistant-text--md td {
+  border: 1px solid hsl(var(--border));
+  padding: 0.3rem 0.45rem;
+  text-align: left;
+}
+
+.msg-assistant-text.msg-assistant-text--md hr {
+  margin: 0.65em 0;
+  border: none;
+  border-top: 1px solid hsl(var(--border));
+}
+
+.msg-assistant--collapsed .msg-assistant-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+}
+
+/* Fenced code не участвует в line-clamp родителя — в свёрнутом виде одна строка-плейсхолдер */
+.msg-assistant--collapsed .msg-assistant-text .msg-md-code-block {
+  position: relative;
+  display: block;
+  flex-shrink: 0;
+  min-height: 2.1rem;
+  margin: 0.35em 0;
+  padding: 0.4rem 0.65rem;
+  border-radius: 0.375rem;
+  background: hsl(var(--muted) / 0.45);
+  box-sizing: border-box;
+}
+
+.msg-assistant--collapsed .msg-assistant-text .msg-md-code-copy {
+  display: none;
+}
+
+.msg-assistant--collapsed .msg-assistant-text .msg-md-code-block::before {
+  content: "CODE...";
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: hsl(var(--muted-foreground));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.msg-assistant--collapsed .msg-assistant-text .msg-md-code-block pre {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Ответ ИИ: развёрнуто — шеврон «вверх»; свёрнуто — поворот 180° */
+.msg-assistant:not(.msg-assistant--collapsed) .msg-bubble-chevron .msg-bubble-chevron-icon {
+  transform: rotate(0deg);
+}
+
+.msg-assistant--collapsed .msg-bubble-chevron .msg-bubble-chevron-icon {
+  transform: rotate(180deg);
+}
+
+.msg-assistant--error .msg-assistant-text {
+  display: block;
+}
+
+.msg-assistant-model {
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid hsl(var(--border));
+  font-size: 0.6875rem;
+  line-height: 1.35;
+  color: hsl(var(--muted-foreground));
+  font-variant-numeric: tabular-nums;
+}
+
+.msg-assistant--pending .msg-assistant-text {
+  color: hsl(var(--muted-foreground));
+}
+
+.msg-assistant--error .msg-assistant-text {
+  color: hsl(var(--destructive));
 }
 
 .input-bar {
+  /* Одна строка поля ввода (padding + line-height) = высота «+» и отправки */
+  --input-bar-row-height: calc(1rem + 0.875rem * 1.25 + 1rem);
   display: flex;
-  padding: 0.2rem;
+  flex-shrink: 0;
+  padding: 0.4rem;
   border-top: 1px solid hsl(var(--border));
-  gap: 0.125rem;
+  gap: 0.25rem;
   align-items: flex-end;
   background: hsl(var(--background));
   position: relative;
   z-index: 2;
+}
+
+.input-bar-field {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-end;
+  align-self: flex-end;
 }
 
 .input-bar-attach {
@@ -521,14 +1106,41 @@ button.btn {
   align-self: flex-end;
 }
 
+.input-bar .btn-attach-trigger {
+  width: var(--input-bar-row-height);
+  min-width: var(--input-bar-row-height);
+  min-height: var(--input-bar-row-height);
+  height: var(--input-bar-row-height);
+  padding: 0;
+}
+
+.input-bar .btn-attach-visual {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  align-self: stretch;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  font-size: 1.35rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.input-bar .btn-attach-visual svg {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
 /* Меню «+» — те же токены, что у карточек и панелей */
 .attach-menu {
   position: absolute;
-  bottom: calc(100% + 6px);
+  bottom: calc(100% + 12px);
   left: 0;
   z-index: 60;
   min-width: min(17.5rem, calc(100vw - 2rem));
-  padding: 0.35rem 0;
+  padding: 0.7rem 0;
   background: hsl(var(--card));
   color: hsl(var(--card-foreground));
   border: 1px solid hsl(var(--border));
@@ -550,7 +1162,7 @@ button.btn {
 
 .attach-menu-sep {
   height: 1px;
-  margin: 0.25rem 0.65rem;
+  margin: 0.5rem 1.3rem;
   background: hsl(var(--border));
 }
 
@@ -558,8 +1170,8 @@ button.btn {
   display: flex;
   width: 100%;
   align-items: center;
-  gap: 0.65rem;
-  padding: 0.55rem 0.85rem;
+  gap: 1.3rem;
+  padding: 1.1rem 1.7rem;
   border: none;
   background: transparent;
   color: inherit;
@@ -598,25 +1210,33 @@ button.btn {
   min-width: 0;
 }
 
-.input-bar textarea {
-  flex: 1;
-  min-height: 2.5rem;
+.input-bar-field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: var(--input-bar-row-height);
+  max-height: calc(0.875rem * 1.25 * 20);
   resize: none;
   border-radius: 0.375rem;
   border: 1px solid hsl(var(--input));
   background: hsl(var(--background));
-  padding: 0.5rem 0.75rem;
+  padding: 1rem 1.5rem;
   color: hsl(var(--foreground));
   font-family: inherit;
   font-size: 0.875rem;
   line-height: 1.25;
+  transition: height 0.14s ease;
+  overflow-y: hidden;
 }
 
-.input-bar textarea::placeholder {
+.input-bar-field textarea[data-overflow-y="1"] {
+  overflow-y: auto;
+}
+
+.input-bar-field textarea::placeholder {
   color: hsl(var(--muted-foreground));
 }
 
-.input-bar textarea:focus-visible {
+.input-bar-field textarea:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px hsl(var(--background)), 0 0 0 4px hsl(var(--primary) / 0.2);
 }
@@ -625,8 +1245,9 @@ button.btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 2.5rem;
-  padding: 0.5rem 0.875rem;
+  min-height: var(--input-bar-row-height);
+  height: var(--input-bar-row-height);
+  padding: 0 1.75rem;
   border: none;
   border-radius: 0.375rem;
   font-size: 0.875rem;
@@ -638,8 +1259,13 @@ button.btn {
   transition: background-color 0.15s ease;
 }
 
-.send-btn:hover {
+.send-btn:hover:not(:disabled) {
   background: hsl(var(--primary) / 0.9);
+}
+
+.send-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .send-btn:focus-visible {
@@ -652,13 +1278,13 @@ button.btn {
 /* Панель Activity — как fixed-панель в Human UI */
 .activity-log-panel {
   position: fixed;
-  top: 0.35rem;
-  right: 0.35rem;
+  top: 0.7rem;
+  right: 0.7rem;
   z-index: 100;
   display: flex;
   flex-direction: column;
   max-height: min(840px, 110vh);
-  width: min(100vw - 0.67rem, 22rem);
+  width: min(100vw - 1.34rem, 22rem);
   overflow: hidden;
   border-radius: 1rem;
   border: 2px solid hsl(var(--border));
@@ -677,10 +1303,10 @@ button.btn {
   flex-shrink: 0;
   align-items: center;
   justify-content: space-between;
-  gap: 0.35rem;
+  gap: 0.7rem;
   border-bottom: 1px solid hsl(var(--border));
   background: hsl(var(--muted) / 0.4);
-  padding: 0.35rem 0.5rem;
+  padding: 0.7rem 1rem;
 }
 
 .activity-log-title {
@@ -693,14 +1319,14 @@ button.btn {
   display: flex;
   flex-shrink: 0;
   align-items: center;
-  gap: 0.25rem;
+  gap: 0.5rem;
 }
 
 .btn-ghost {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0 0.5rem;
+  padding: 0 1rem;
   min-height: 2rem;
   font-size: 0.75rem;
   font-weight: 500;
@@ -731,7 +1357,7 @@ button.btn {
 .activity-log-list {
   list-style: none;
   margin: 0;
-  padding: 0.25rem;
+  padding: 0.5rem;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 11px;
   line-height: 1.5;
@@ -739,7 +1365,7 @@ button.btn {
 }
 
 .activity-log-list li {
-  margin-bottom: 0.125rem;
+  margin-bottom: 0.25rem;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
@@ -747,4 +1373,137 @@ button.btn {
 .activity-log-time {
   font-variant-numeric: tabular-nums;
   color: hsl(var(--muted-foreground));
+}
+
+/* ——— Мобильная вёрстка: диалоги — выпадающий список над чатом ——— */
+@media (max-width: 767px) {
+  .header {
+    flex-wrap: wrap;
+    gap: 1rem 1.5rem;
+  }
+
+  .header-brand-block {
+    flex: 1 1 auto;
+    min-width: 0;
+    order: 0;
+  }
+
+  .header-icons {
+    order: 1;
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+
+  .header-actions {
+    order: 2;
+    flex: 1 1 100%;
+    justify-content: center;
+    gap: 0.5rem;
+  }
+
+  .header .btn {
+    font-size: 0.75rem;
+    padding: 0.3rem 0.9rem;
+    min-height: 1.85rem;
+  }
+
+  .header-brand-title {
+    font-size: 1.25rem;
+  }
+
+  .container {
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    gap: 0.7rem;
+    padding: 6px 0.7rem 1.25rem;
+  }
+
+  .sidebar {
+    width: 100%;
+    max-width: none;
+    flex-shrink: 0;
+    flex-grow: 0;
+    min-height: 0;
+    order: 0;
+  }
+
+  .sidebar-panel {
+    position: relative;
+    flex: 0 0 auto;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .sidebar-panel-header {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.9rem 1.3rem;
+    padding-bottom: 0.7rem;
+  }
+
+  .sidebar-panel-title {
+    width: auto;
+    flex: 1;
+    min-width: 0;
+    text-align: left;
+  }
+
+  .btn-dialogues-toggle {
+    display: inline-flex;
+  }
+
+  .sidebar-panel-body {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc(100% + 8px);
+    z-index: 55;
+    flex: none;
+    min-height: 0;
+    max-height: 0;
+    overflow: hidden;
+    opacity: 0;
+    visibility: hidden;
+    padding: 0 1rem;
+    margin: 0;
+    border: 2px solid transparent;
+    border-radius: 1rem;
+    background: hsl(var(--card));
+    box-shadow: none;
+    transition:
+      max-height 0.28s ease,
+      opacity 0.2s ease,
+      visibility 0.2s ease,
+      padding 0.2s ease,
+      border-color 0.2s ease,
+      box-shadow 0.2s ease;
+  }
+
+  .sidebar-panel.dialogues-dropdown-open .sidebar-panel-body {
+    max-height: min(calc(var(--app-vh, 100dvh) * 0.7), 28rem);
+    opacity: 1;
+    visibility: visible;
+    overflow-y: auto;
+    padding: 0.7rem 1rem 1rem;
+    border-color: hsl(var(--border));
+    box-shadow:
+      0 10px 15px -3px rgb(0 0 0 / 0.12),
+      0 4px 6px -4px rgb(0 0 0 / 0.08);
+  }
+
+  .dark .sidebar-panel.dialogues-dropdown-open .sidebar-panel-body {
+    box-shadow:
+      0 10px 40px rgb(0 0 0 / 0.4),
+      0 4px 12px rgb(0 0 0 / 0.25);
+  }
+
+  .chat {
+    flex: 1;
+    min-height: 0;
+    order: 1;
+  }
 }

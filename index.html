@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
     <title>MF0-1984</title>
     <script>
       (function () {
@@ -24,6 +27,27 @@
   </head>
 
   <body>
+    <script>
+      (function () {
+        function syncAppViewportHeight() {
+          var h =
+            window.visualViewport && window.visualViewport.height
+              ? window.visualViewport.height
+              : window.innerHeight;
+          document.documentElement.style.setProperty("--app-vh", h + "px");
+        }
+        syncAppViewportHeight();
+        window.addEventListener("resize", syncAppViewportHeight);
+        window.addEventListener("orientationchange", function () {
+          requestAnimationFrame(function () {
+            requestAnimationFrame(syncAppViewportHeight);
+          });
+        });
+        if (window.visualViewport) {
+          window.visualViewport.addEventListener("resize", syncAppViewportHeight);
+        }
+      })();
+    </script>
     <div class="app-root">
       <div
         id="activity-log-panel"
@@ -165,9 +189,32 @@
 
           <div class="container">
             <aside class="sidebar">
-              <div class="sidebar-panel">
+              <div class="sidebar-panel" id="dialogues-panel">
                 <div class="sidebar-panel-header">
                   <h2 class="sidebar-panel-title">Dialogues</h2>
+                  <button
+                    type="button"
+                    class="btn-dialogues-toggle"
+                    id="btn-dialogues-menu"
+                    aria-expanded="false"
+                    aria-controls="dialogue-cards"
+                    aria-haspopup="true"
+                    aria-label="Open dialogues list"
+                  >
+                    <svg
+                      class="btn-dialogues-chevron"
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="m6 9 6 6 6-6" />
+                    </svg>
+                  </button>
                 </div>
                 <div class="sidebar-panel-body" id="dialogue-cards">
                   <div class="dialog-card">
@@ -271,14 +318,21 @@
             </aside>
 
             <div class="chat">
-              <div class="messages">
-                <!-- messages -->
+              <div
+                class="messages-viewport"
+                id="messages-viewport"
+                role="log"
+                aria-live="polite"
+                aria-relevant="additions"
+              >
+                <div class="messages-inner" id="messages-list"></div>
               </div>
 
+              <div class="chat-footer">
               <div class="model-badges" id="model-badges" aria-label="Model providers">
                 <button type="button" class="badge" data-provider="openai">ChatGPT</button>
                 <button type="button" class="badge" data-provider="perplexity">Perplexity</button>
-                <button type="button" class="badge" data-provider="gemini">Gemini</button>
+                <button type="button" class="badge" data-provider="gemini-flash">Gemini</button>
                 <button type="button" class="badge" data-provider="anthropic">Claude</button>
               </div>
 
@@ -359,8 +413,16 @@
                   </div>
                   <input type="file" id="attach-file-input" class="attach-file-input" multiple accept="image/*,.pdf,.txt,.doc,.docx" hidden />
                 </div>
-                <textarea rows="1" placeholder="Type a message..."></textarea>
-                <button type="button" class="send-btn">↑</button>
+                <div class="input-bar-field">
+                  <textarea
+                    id="chat-input"
+                    rows="1"
+                    placeholder="Type a message..."
+                    aria-label="Message text"
+                  ></textarea>
+                </div>
+                <button type="button" class="send-btn" id="btn-chat-send" aria-label="Send message">↑</button>
+              </div>
               </div>
             </div>
           </div>

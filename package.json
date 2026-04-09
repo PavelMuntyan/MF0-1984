@@ -1,6 +1,6 @@
 {
   "name": "mf-lab",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,5 +10,9 @@
   },
   "devDependencies": {
     "vite": "^6.2.0"
+  },
+  "dependencies": {
+    "dompurify": "^3.3.3",
+    "marked": "^18.0.0"
   }
 }

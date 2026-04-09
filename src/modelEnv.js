@@ -8,13 +8,14 @@ export function getModelApiKeys() {
       anthropic: "",
       openai: "",
       perplexity: "",
-      gemini: "",
+      "gemini-flash": "",
     };
   }
+  const geminiKey = import.meta.env.GEMINI_API_KEY ?? "";
   return {
     anthropic: import.meta.env.ANTHROPIC_API_KEY ?? "",
     openai: import.meta.env.OPENAI_API_KEY ?? "",
     perplexity: import.meta.env.PERPLEXITY_API_KEY ?? "",
-    gemini: import.meta.env.GEMINI_API_KEY ?? "",
+    "gemini-flash": geminiKey,
   };
 }
