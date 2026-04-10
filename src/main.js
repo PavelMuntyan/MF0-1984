@@ -18,6 +18,7 @@ import {
   bootstrapThemeAndDialog,
   createDialogInTheme,
   deleteTheme,
+  renameTheme,
   fetchContextPack,
   fetchThemesPayload,
   fetchTurns,
@@ -28,6 +29,12 @@ import {
 import { buildModelContext } from "./contextEngine/buildModelContext.js";
 import { fitContextToBudget } from "./contextEngine/fitContextToBudget.js";
 import { renderThemeCards } from "./themesSidebar.js";
+import {
+  getFavoriteThemeIdSet,
+  removeFavoriteThemeId,
+  sortThemesFavoritesFirst,
+  toggleFavoriteThemeId,
+} from "./themeFavorites.js";
 
 const MAX_LOG_LINES = 400;
 /** Верхняя граница оценки входных токенов для сборки контекста треда (до ответа модели). */
@@ -469,6 +476,131 @@ function openThemeDeleteModal(themeTitle, onClose) {
   });
 }
 
+let themeRenameModalCallback = null;
+
+function closeThemeRenameModal(result) {
+  const el = document.getElementById("theme-rename-modal");
+  if (!el || el.hidden) return;
+  el.hidden = true;
+  document.documentElement.classList.remove("theme-rename-modal-open");
+  const cb = themeRenameModalCallback;
+  themeRenameModalCallback = null;
+  if (cb) cb(result);
+}
+
+function syncThemeRenameSaveEnabled() {
+  const el = document.getElementById("theme-rename-modal");
+  if (!el || el.hidden) return;
+  const input = el.querySelector(".theme-rename-modal-input");
+  const saveBtn = el.querySelector(".theme-rename-modal-btn-save");
+  if (!input || !saveBtn) return;
+  const ok = String(input.value ?? "").trim().length > 0;
+  saveBtn.disabled = !ok;
+}
+
+function ensureThemeRenameModal() {
+  let el = document.getElementById("theme-rename-modal");
+  if (el) return el;
+
+  el = document.createElement("div");
+  el.id = "theme-rename-modal";
+  el.className = "theme-rename-modal";
+  el.setAttribute("role", "dialog");
+  el.setAttribute("aria-modal", "true");
+  el.setAttribute("aria-labelledby", "theme-rename-modal-title");
+  el.hidden = true;
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "theme-rename-modal-backdrop";
+
+  const panel = document.createElement("div");
+  panel.className = "theme-rename-modal-panel";
+  panel.addEventListener("click", (e) => e.stopPropagation());
+
+  const title = document.createElement("h2");
+  title.id = "theme-rename-modal-title";
+  title.className = "theme-rename-modal-title";
+  title.textContent = "Rename theme";
+
+  const label = document.createElement("label");
+  label.className = "theme-rename-modal-label";
+  label.setAttribute("for", "theme-rename-modal-field");
+  label.textContent = "Theme name";
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.id = "theme-rename-modal-field";
+  input.className = "theme-rename-modal-input";
+  input.setAttribute("autocomplete", "off");
+  input.setAttribute("maxlength", "200");
+
+  const actions = document.createElement("div");
+  actions.className = "theme-rename-modal-actions";
+
+  const btnCancel = document.createElement("button");
+  btnCancel.type = "button";
+  btnCancel.className = "btn-ghost theme-rename-modal-btn-cancel";
+  btnCancel.textContent = "Cancel";
+
+  const btnSave = document.createElement("button");
+  btnSave.type = "button";
+  btnSave.className = "theme-rename-modal-btn-save";
+  btnSave.textContent = "Save";
+
+  actions.append(btnCancel, btnSave);
+  panel.append(title, label, input, actions);
+  el.append(backdrop, panel);
+
+  backdrop.addEventListener("click", () => closeThemeRenameModal(null));
+  btnCancel.addEventListener("click", () => closeThemeRenameModal(null));
+  btnSave.addEventListener("click", () => {
+    const v = String(input.value ?? "").trim();
+    if (!v) return;
+    closeThemeRenameModal(v);
+  });
+  input.addEventListener("input", () => syncThemeRenameSaveEnabled());
+  input.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.shiftKey) return;
+    e.preventDefault();
+    const v = String(input.value ?? "").trim();
+    if (!v) return;
+    closeThemeRenameModal(v);
+  });
+
+  document.body.appendChild(el);
+  return el;
+}
+
+function openThemeRenameModal(initialTitle, onClose) {
+  const el = ensureThemeRenameModal();
+  themeRenameModalCallback = onClose;
+  const input = el.querySelector(".theme-rename-modal-input");
+  if (input) {
+    input.value = String(initialTitle ?? "");
+    syncThemeRenameSaveEnabled();
+  }
+  el.hidden = false;
+  document.documentElement.classList.add("theme-rename-modal-open");
+  requestAnimationFrame(() => {
+    input?.focus();
+    input?.select();
+  });
+}
+
+async function handleThemeRenamed(themeId, oldTitle, newTitle) {
+  const tid = String(themeId ?? "").trim();
+  if (!tid) return;
+  try {
+    await renameTheme(tid, newTitle);
+  } catch (e) {
+    appendActivityLog(`Theme rename failed: ${e instanceof Error ? e.message : String(e)}`);
+    return;
+  }
+  appendActivityLog(`Theme renamed: «${String(oldTitle || "—").trim()}» → «${String(newTitle).trim()}»`);
+  await renderThemesSidebar();
+  refreshThemeHighlightsFromChat();
+}
+
 /** Меню темы (три полоски): Favorites, Rename, Delete. */
 function initThemeCardActions() {
   const root = document.getElementById("dialogue-cards");
@@ -513,14 +645,18 @@ function initThemeCardActions() {
       closeAllThemeActionMenus();
 
       if (kind === "favorites") {
-        const on = card?.classList.toggle("dialog-card--starred");
-        actionBtn.classList.toggle("is-active", Boolean(on));
+        const themeId = String(card?.dataset.themeId ?? "").trim();
+        if (!themeId) return;
+        const on = toggleFavoriteThemeId(themeId);
         appendActivityLog(on ? "Theme: added to favorites" : "Theme: removed from favorites");
+        void renderThemesSidebar();
       } else if (kind === "rename") {
-        const n = window.prompt("Rename theme", themeTitle);
-        if (n != null && String(n).trim()) {
-          appendActivityLog(`Theme rename: «${themeTitle}» → «${String(n).trim()}» (not saved yet)`);
-        }
+        const themeId = String(card?.dataset.themeId ?? "").trim();
+        if (!themeId) return;
+        openThemeRenameModal(themeTitle, (newTitle) => {
+          if (newTitle == null) return;
+          void handleThemeRenamed(themeId, themeTitle, newTitle);
+        });
       } else if (kind === "delete") {
         const themeId = String(card?.dataset.themeId ?? "").trim();
         if (!themeId) return;
@@ -543,6 +679,12 @@ function initThemeCardActions() {
 
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
+    const renameModal = document.getElementById("theme-rename-modal");
+    if (renameModal && !renameModal.hidden) {
+      e.preventDefault();
+      closeThemeRenameModal(null);
+      return;
+    }
     const delModal = document.getElementById("theme-delete-modal");
     if (delModal && !delModal.hidden) {
       e.preventDefault();
@@ -1421,7 +1563,8 @@ async function renderThemesSidebar() {
   if (!root) return;
   try {
     const data = await fetchThemesPayload();
-    const themes = data.themes ?? [];
+    const favSet = getFavoriteThemeIdSet();
+    const themes = sortThemesFavoritesFirst(data.themes ?? [], favSet);
     renderThemeCards(
       root,
       themes,
@@ -1431,6 +1574,7 @@ async function renderThemesSidebar() {
         void openThemeForNewDialog(tid);
       },
       expandedThemeDialogListThemeId,
+      favSet,
     );
   } catch {
     root.replaceChildren();
@@ -1447,6 +1591,7 @@ async function handleThemeDeleted(themeId, themeTitle) {
     return;
   }
   appendActivityLog(`Theme deleted: «${String(themeTitle || "—").trim()}»`);
+  removeFavoriteThemeId(tid);
   if (String(expandedThemeDialogListThemeId ?? "").trim() === tid) {
     expandedThemeDialogListThemeId = null;
   }

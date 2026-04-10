@@ -76,11 +76,10 @@ function readBody(req) {
   });
 }
 
-function dateYmdFromSqlite(value) {
+/** Сырая метка из SQLite для клиента — формат YY-MM-DD HH:MM считается в браузере (локальное время). */
+function rawDbTimestamp(value) {
   if (value == null || value === "") return "";
-  const s = String(value);
-  if (s.length >= 10) return s.slice(0, 10);
-  return s;
+  return String(value);
 }
 
 function listThemesWithDialogs() {
@@ -97,14 +96,14 @@ function listThemesWithDialogs() {
     return {
       id: t.id,
       title: t.title,
-      starterDate: dateYmdFromSqlite(t.created_at),
-      lastActionDate: dateYmdFromSqlite(t.updated_at),
+      starterDate: rawDbTimestamp(t.created_at),
+      lastActionDate: rawDbTimestamp(t.updated_at),
       dialogs: dialogs.map((d) => ({
         id: d.id,
         themeId: d.theme_id,
         title: d.title,
-        starterDate: dateYmdFromSqlite(d.created_at),
-        lastActionDate: dateYmdFromSqlite(d.updated_at),
+        starterDate: rawDbTimestamp(d.created_at),
+        lastActionDate: rawDbTimestamp(d.updated_at),
       })),
     };
   });
@@ -336,6 +335,19 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, out);
     }
 
+    if (req.method === "POST" && (p === "/api/themes/rename" || p === "/api/theme-rename")) {
+      const body = await readBody(req);
+      const themeId = String(body.themeId ?? body.theme_id ?? "").trim();
+      const title = String(body.title ?? "").trim();
+      if (!themeId) return json(res, 400, { error: "themeId required" });
+      if (!title) return json(res, 400, { error: "title required" });
+      const row = db.prepare(`SELECT id FROM themes WHERE id = ?`).get(themeId);
+      if (!row) return json(res, 404, { error: "Theme not found" });
+      const now = new Date().toISOString();
+      db.prepare(`UPDATE themes SET title = ?, updated_at = ? WHERE id = ?`).run(title, now, themeId);
+      return json(res, 200, { ok: true, themeId, title });
+    }
+
     if (req.method === "GET" && p.startsWith("/api/dialogs/") && p.endsWith("/turns")) {
       const dialogId = decodeURIComponent(p.slice("/api/dialogs/".length, -"/turns".length));
       if (!dialogId) return json(res, 400, { error: "Missing dialog id" });
@@ -382,15 +394,15 @@ const server = http.createServer(async (req, res) => {
         theme: {
           id: theme.id,
           title: theme.title,
-          starterDate: dateYmdFromSqlite(theme.created_at),
-          lastActionDate: dateYmdFromSqlite(theme.updated_at),
+          starterDate: rawDbTimestamp(theme.created_at),
+          lastActionDate: rawDbTimestamp(theme.updated_at),
         },
         dialog: {
           id: dialog.id,
           themeId: dialog.theme_id,
           title: dialog.title,
-          starterDate: dateYmdFromSqlite(dialog.created_at),
-          lastActionDate: dateYmdFromSqlite(dialog.updated_at),
+          starterDate: rawDbTimestamp(dialog.created_at),
+          lastActionDate: rawDbTimestamp(dialog.updated_at),
         },
       });
     }
@@ -422,8 +434,8 @@ const server = http.createServer(async (req, res) => {
           id: dialog.id,
           themeId: dialog.theme_id,
           title: dialog.title,
-          starterDate: dateYmdFromSqlite(dialog.created_at),
-          lastActionDate: dateYmdFromSqlite(dialog.updated_at),
+          starterDate: rawDbTimestamp(dialog.created_at),
+          lastActionDate: rawDbTimestamp(dialog.updated_at),
         },
       });
     }
@@ -455,8 +467,8 @@ const server = http.createServer(async (req, res) => {
           id: dialog.id,
           themeId: dialog.theme_id,
           title: dialog.title,
-          starterDate: dateYmdFromSqlite(dialog.created_at),
-          lastActionDate: dateYmdFromSqlite(dialog.updated_at),
+          starterDate: rawDbTimestamp(dialog.created_at),
+          lastActionDate: rawDbTimestamp(dialog.updated_at),
         },
       });
     }

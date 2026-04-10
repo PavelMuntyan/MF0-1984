@@ -516,7 +516,8 @@ button.btn {
 
 /* Карточки диалогов */
 .dialog-card {
-  --dialog-star-active: #a16207;
+  --theme-favorite-yellow: #eab308;
+  --dialog-star-active: var(--theme-favorite-yellow);
 
   display: flex;
   flex-direction: column;
@@ -530,11 +531,6 @@ button.btn {
   transition:
     background-color 0.15s ease,
     border-color 0.15s ease;
-}
-
-.dialog-card--starred {
-  border-color: color-mix(in srgb, var(--dialog-star-active) 55%, hsl(var(--border)));
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--dialog-star-active) 20%, transparent);
 }
 
 .dialog-card:hover {
@@ -578,7 +574,42 @@ button.btn {
   cursor: pointer;
 }
 
-.dialog-card-title {
+.dialog-card-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.dialog-card-title-star {
+  flex-shrink: 0;
+  width: 0.85rem;
+  height: 0.85rem;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.dialog-card-title-row--favorite .dialog-card-title-star {
+  display: inline-flex;
+}
+
+.dialog-card-title-star-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.dialog-card-title-star-path {
+  fill: var(--theme-favorite-yellow);
+  stroke: var(--theme-favorite-yellow);
+  stroke-width: 0.85;
+  stroke-linejoin: round;
+}
+
+.dialog-card-title-row .dialog-card-title {
+  flex: 1;
+  min-width: 0;
   font-size: 0.875rem;
   font-weight: 600;
   line-height: 1.25;
@@ -713,9 +744,13 @@ button.btn {
   stroke-linejoin: round;
 }
 
-.dialog-theme-actions-item.is-active .dialog-theme-actions-star-path {
-  fill: var(--dialog-star-active);
-  stroke: var(--dialog-star-active);
+.dialog-theme-actions-item[data-theme-action="favorites"].is-active .dialog-theme-actions-item-icon {
+  color: var(--theme-favorite-yellow);
+}
+
+.dialog-theme-actions-item[data-theme-action="favorites"].is-active .dialog-theme-actions-star-path {
+  fill: var(--theme-favorite-yellow);
+  stroke: var(--theme-favorite-yellow);
 }
 
 .dialog-theme-actions-item-label {
@@ -1760,8 +1795,9 @@ button.btn {
   color: hsl(var(--muted-foreground));
 }
 
-/* Подтверждение удаления темы */
-html.theme-delete-modal-open {
+/* Подтверждение удаления темы и переименование */
+html.theme-delete-modal-open,
+html.theme-rename-modal-open {
   overflow: hidden;
 }
 
@@ -1870,6 +1906,126 @@ html.theme-delete-modal-open {
   box-shadow:
     0 0 0 2px hsl(var(--background)),
     0 0 0 4px hsl(var(--destructive) / 0.45);
+}
+
+/* Переименование темы */
+.theme-rename-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  box-sizing: border-box;
+}
+
+.theme-rename-modal[hidden] {
+  display: none !important;
+}
+
+.theme-rename-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgb(0 0 0 / 0.48);
+}
+
+.theme-rename-modal-panel {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 26rem);
+  padding: 1.25rem 1.35rem;
+  border-radius: 0.75rem;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+  color: hsl(var(--card-foreground));
+  box-shadow:
+    0 10px 15px -3px rgb(0 0 0 / 0.12),
+    0 4px 6px -4px rgb(0 0 0 / 0.08);
+}
+
+.dark .theme-rename-modal-panel {
+  box-shadow:
+    0 10px 40px rgb(0 0 0 / 0.35),
+    0 4px 12px rgb(0 0 0 / 0.2);
+}
+
+.theme-rename-modal-title {
+  margin: 0 0 1rem;
+  font-size: 1.125rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.theme-rename-modal-label {
+  display: block;
+  margin: 0 0 0.4rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: hsl(var(--foreground));
+}
+
+.theme-rename-modal-input {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0 0 1.25rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: 0.375rem;
+  border: 1px solid hsl(var(--input));
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family: inherit;
+  font-size: 0.875rem;
+  line-height: 1.35;
+}
+
+.theme-rename-modal-input:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px hsl(var(--background)), 0 0 0 4px hsl(var(--ring) / 0.35);
+}
+
+.theme-rename-modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.theme-rename-modal-btn-cancel {
+  min-height: 2.25rem;
+}
+
+.theme-rename-modal-btn-save {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.25rem;
+  padding: 0 1.1rem;
+  border: none;
+  border-radius: 0.375rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+
+.theme-rename-modal-btn-save:hover:not(:disabled) {
+  background: hsl(var(--primary) / 0.92);
+}
+
+.theme-rename-modal-btn-save:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.theme-rename-modal-btn-save:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px hsl(var(--background)),
+    0 0 0 4px hsl(var(--primary) / 0.35);
 }
 
 /* ——— Мобильная вёрстка: диалоги — выпадающий список над чатом ——— */

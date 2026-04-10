@@ -1,11 +1,15 @@
 /** Build theme list cards (one row per theme; folder lists dialogs). */
 
+import { formatThemeMetaLocal } from "./themeMetaTime.js";
+
 const FOLDER_SVG_CLOSED = `<svg class="dialog-folder-icon dialog-folder-icon--closed" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.53 2.9A2 2 0 0 0 7.56 2H4a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2Z"/></svg>`;
 const FOLDER_SVG_OPEN = `<svg class="dialog-folder-icon dialog-folder-icon--open" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-1.6-2l-1.8-1.2A2 2 0 0 0 16.74 4H9.5a2 2 0 0 0-2 2v2"/><path d="M2 14h12a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2Z"/></svg>`;
 
 const HAMBURGER_SVG = `<svg class="dialog-theme-menu-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>`;
 
 const MENU_STAR_SVG = `<svg class="dialog-theme-actions-star-svg" viewBox="0 0 24 24" aria-hidden="true"><path class="dialog-theme-actions-star-path" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>`;
+
+const TITLE_STAR_SVG = `<svg class="dialog-card-title-star-svg" viewBox="0 0 24 24" aria-hidden="true"><path class="dialog-card-title-star-path" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>`;
 
 const MENU_FILE_SVG = `<svg class="dialog-theme-actions-icon-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>`;
 
@@ -19,6 +23,7 @@ const DIALOGS_PAGE_SIZE = 5;
  * @param {string | null} activeThemeId — тема выбрана для нового диалога (чат пустой)
  * @param {(themeId: string) => void} onSelectThemeForNewDialog — клик по строке темы, кроме меню и папки (новый диалог)
  * @param {string | null} [expandedFolderThemeId] — id темы с раскрытым списком диалогов
+ * @param {Set<string>} [favoriteThemeIds] — id тем в избранном (жёлтая звезда в строке заголовка)
  */
 function normId(v) {
   return String(v ?? "").trim();
@@ -64,8 +69,11 @@ export function buildThemeCard(
   activeThemeId,
   onSelectThemeForNewDialog,
   expandedFolderThemeId = null,
+  favoriteThemeIds = null,
 ) {
   const dialogs = Array.isArray(theme.dialogs) ? theme.dialogs : [];
+  const favSet = favoriteThemeIds instanceof Set ? favoriteThemeIds : new Set();
+  const isFavorite = Boolean(normId(theme.id) && favSet.has(normId(theme.id)));
 
   const card = document.createElement("div");
   card.className = "dialog-card";
@@ -84,20 +92,31 @@ export function buildThemeCard(
   const info = document.createElement("div");
   info.className = "dialog-card-info";
 
+  const titleRow = document.createElement("div");
+  titleRow.className = "dialog-card-title-row";
+  if (isFavorite) titleRow.classList.add("dialog-card-title-row--favorite");
+
+  const titleStar = document.createElement("span");
+  titleStar.className = "dialog-card-title-star";
+  titleStar.setAttribute("aria-hidden", "true");
+  titleStar.innerHTML = TITLE_STAR_SVG;
+
   const titleEl = document.createElement("div");
   titleEl.className = "dialog-card-title";
   titleEl.textContent = theme.title ?? "";
+
+  titleRow.append(titleStar, titleEl);
 
   const meta = document.createElement("div");
   meta.className = "dialog-card-meta";
   const line1 = document.createElement("span");
   line1.className = "dialog-card-meta-line";
-  line1.textContent = `Starter ${theme.starterDate ?? ""}`;
+  line1.textContent = `Starter ${formatThemeMetaLocal(theme.starterDate)}`;
   const line2 = document.createElement("span");
   line2.className = "dialog-card-meta-line";
-  line2.textContent = `Last action ${theme.lastActionDate ?? ""}`;
+  line2.textContent = `Last action ${formatThemeMetaLocal(theme.lastActionDate)}`;
   meta.append(line1, line2);
-  info.append(titleEl, meta);
+  info.append(titleRow, meta);
 
   const actions = document.createElement("div");
   actions.className = "dialog-card-actions";
@@ -139,8 +158,10 @@ export function buildThemeCard(
     return row;
   }
 
+  const favItem = makeActionItem("favorites", "Favorites", MENU_STAR_SVG);
+  if (isFavorite) favItem.classList.add("is-active");
   themeActionsMenu.append(
-    makeActionItem("favorites", "Favorites", MENU_STAR_SVG),
+    favItem,
     makeActionItem("rename", "Rename", MENU_FILE_SVG),
     makeActionItem("delete", "Delete", MENU_TRASH_SVG),
   );
@@ -249,6 +270,7 @@ export function buildThemeCard(
  * @param {string | null} [activeThemeId]
  * @param {(themeId: string) => void} [onSelectThemeForNewDialog]
  * @param {string | null} [expandedFolderThemeId]
+ * @param {Set<string>} [favoriteThemeIds]
  */
 export function renderThemeCards(
   root,
@@ -257,11 +279,19 @@ export function renderThemeCards(
   activeThemeId = null,
   onSelectThemeForNewDialog,
   expandedFolderThemeId = null,
+  favoriteThemeIds = null,
 ) {
   root.replaceChildren();
   for (const t of themes) {
     root.appendChild(
-      buildThemeCard(t, activeDialogId, activeThemeId, onSelectThemeForNewDialog, expandedFolderThemeId),
+      buildThemeCard(
+        t,
+        activeDialogId,
+        activeThemeId,
+        onSelectThemeForNewDialog,
+        expandedFolderThemeId,
+        favoriteThemeIds,
+      ),
     );
   }
 }

@@ -101,6 +101,23 @@ export async function bootstrapThemeAndDialog(title) {
   return res.json();
 }
 
+export async function renameTheme(themeId, title) {
+  const tid = String(themeId ?? "").trim();
+  const t = String(title ?? "").trim();
+  if (!tid) throw new Error("themeId required");
+  if (!t) throw new Error("title required");
+  const res = await fetch(apiUrl("api/themes/rename"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ themeId: tid, title: t }),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok || !data || data.ok !== true) {
+    throw new Error(data?.error || `Rename theme ${res.status}`);
+  }
+  return data;
+}
+
 export async function deleteTheme(themeId) {
   const tid = String(themeId ?? "").trim();
   if (!tid) throw new Error("themeId required");
