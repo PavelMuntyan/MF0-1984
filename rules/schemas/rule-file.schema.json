@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mf-lab.local/rules/schemas/rule-file.schema.json",
+  "title": "Rule collection file (core | private | forbidden_actions | workflow)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["blocks"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Optional JSON Schema URL for editor validation"
+    },
+    "blocks": {
+      "type": "array",
+      "description": "Ordered list of rule blocks; add entries as you go",
+      "items": {
+        "$ref": "./rule-block.schema.json"
+      }
+    }
+  }
+}

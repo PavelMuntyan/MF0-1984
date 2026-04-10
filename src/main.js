@@ -6,14 +6,42 @@ import {
   completeChatMessage,
   completeChatMessageStreaming,
   completeImageGeneration,
+  generateThemeDialogTitle,
   PROVIDER_DISPLAY,
 } from "./chatApi.js";
 import { renderAssistantMarkdown } from "./markdown.js";
-import { getModelApiKeys } from "./modelEnv.js";
+import { getModelApiKeys, hasAnyModelApiKey } from "./modelEnv.js";
 import { setTheme } from "./theme.js";
 import { closeMemoryTree, initMemoryTree } from "./memoryTree.js";
+import {
+  apiHealth,
+  bootstrapThemeAndDialog,
+  createDialogInTheme,
+  deleteTheme,
+  fetchContextPack,
+  fetchThemesPayload,
+  fetchTurns,
+  requestTypeFromAttachMode,
+  saveConversationTurn,
+  titleFromUserMessage,
+} from "./chatPersistence.js";
+import { buildModelContext } from "./contextEngine/buildModelContext.js";
+import { fitContextToBudget } from "./contextEngine/fitContextToBudget.js";
+import { renderThemeCards } from "./themesSidebar.js";
 
 const MAX_LOG_LINES = 400;
+/** Верхняя граница оценки входных токенов для сборки контекста треда (до ответа модели). */
+const MF0_MAX_CONTEXT_INPUT_TOKENS = 12000;
+
+/** Active conversation for DB persistence (null = new chat until first send). */
+let activeThemeId = null;
+let activeDialogId = null;
+
+/** У какой темы открыт список диалогов (папка); закрывается только кнопкой папки или открытием папки у другой темы. */
+let expandedThemeDialogListThemeId = null;
+
+/** Анти-дребезг отправки; при true второй клик игнорируется. Сбрасывается в finally отправки и при смене темы/диалога. */
+let chatComposerSending = false;
 
 /** Календарная дата везде в формате YYYY-MM-DD */
 function formatDateYmd(d) {
@@ -218,13 +246,6 @@ const DEEP_RESEARCH_PROVIDER_PRIORITY = [
 /** Для режима «Создать изображение»: только провайдеры с API генерации картинок */
 const IMAGE_CREATION_PROVIDER_PRIORITY = ["openai", "gemini-flash"];
 
-const PROVIDER_LABEL_RU = {
-  "gemini-flash": "Gemini",
-  perplexity: "Perplexity",
-  anthropic: "Claude",
-  openai: "ChatGPT",
-};
-
 function setActiveProviderBadge(providerId) {
   const wrap = document.getElementById("model-badges");
   if (!wrap) return false;
@@ -242,7 +263,7 @@ function activateProviderForWebSearch() {
   const keys = getModelApiKeys();
   for (const id of WEB_SEARCH_PROVIDER_PRIORITY) {
     if (providerHasKey(keys, id) && setActiveProviderBadge(id)) {
-      const label = PROVIDER_LABEL_RU[id] ?? id;
+      const label = PROVIDER_DISPLAY[id] ?? id;
       appendActivityLog(`Web search: using ${label}`);
       return;
     }
@@ -256,7 +277,7 @@ function activateProviderForDeepResearch() {
   const keys = getModelApiKeys();
   for (const id of DEEP_RESEARCH_PROVIDER_PRIORITY) {
     if (providerHasKey(keys, id) && setActiveProviderBadge(id)) {
-      const label = PROVIDER_LABEL_RU[id] ?? id;
+      const label = PROVIDER_DISPLAY[id] ?? id;
       appendActivityLog(`Deep research: using ${label}`);
       return;
     }
@@ -270,7 +291,7 @@ function activateProviderForImageCreation() {
   const keys = getModelApiKeys();
   for (const id of IMAGE_CREATION_PROVIDER_PRIORITY) {
     if (providerHasKey(keys, id) && setActiveProviderBadge(id)) {
-      const label = PROVIDER_LABEL_RU[id] ?? id;
+      const label = PROVIDER_DISPLAY[id] ?? id;
       appendActivityLog(`Create image: using ${label}`);
       return;
     }
@@ -357,35 +378,193 @@ function initProviderBadges() {
   });
 }
 
-function initDialogueFavourites() {
-  const root = document.getElementById("dialogue-cards");
-  if (!root) return;
+const THEME_DELETE_BODY_P1 =
+  "If you delete this theme, all dialogs in it will be removed, along with message context and the details of conversations with AI agents.";
+const THEME_DELETE_BODY_P2 =
+  "However, rules and data stored in project memory will remain in the project structure, because it is not possible to extract them from what is being deleted.";
 
-  root.addEventListener("click", (e) => {
-    const star = e.target.closest(".dialog-star");
-    if (!star) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const on = star.classList.toggle("is-starred");
-    star.setAttribute("aria-pressed", on ? "true" : "false");
-    star.setAttribute("aria-label", on ? "Remove from favorites" : "Add to favorites");
-    appendActivityLog(on ? "Dialogue: added to favorites" : "Dialogue: removed from favorites");
+let themeDeleteModalCallback = null;
+
+function closeThemeDeleteModal(confirmed) {
+  const el = document.getElementById("theme-delete-modal");
+  if (!el || el.hidden) return;
+  el.hidden = true;
+  document.documentElement.classList.remove("theme-delete-modal-open");
+  const cb = themeDeleteModalCallback;
+  themeDeleteModalCallback = null;
+  if (cb) cb(Boolean(confirmed));
+}
+
+function ensureThemeDeleteModal() {
+  let el = document.getElementById("theme-delete-modal");
+  if (el) return el;
+
+  el = document.createElement("div");
+  el.id = "theme-delete-modal";
+  el.className = "theme-delete-modal";
+  el.setAttribute("role", "dialog");
+  el.setAttribute("aria-modal", "true");
+  el.setAttribute("aria-labelledby", "theme-delete-modal-title");
+  el.hidden = true;
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "theme-delete-modal-backdrop";
+
+  const panel = document.createElement("div");
+  panel.className = "theme-delete-modal-panel";
+
+  const title = document.createElement("h2");
+  title.id = "theme-delete-modal-title";
+  title.className = "theme-delete-modal-title";
+  title.textContent = "Delete theme";
+
+  const themeLine = document.createElement("p");
+  themeLine.className = "theme-delete-modal-theme-line";
+
+  const p1 = document.createElement("p");
+  p1.className = "theme-delete-modal-text";
+  p1.textContent = THEME_DELETE_BODY_P1;
+
+  const p2 = document.createElement("p");
+  p2.className = "theme-delete-modal-text";
+  p2.textContent = THEME_DELETE_BODY_P2;
+
+  const actions = document.createElement("div");
+  actions.className = "theme-delete-modal-actions";
+
+  const btnCancel = document.createElement("button");
+  btnCancel.type = "button";
+  btnCancel.className = "btn-ghost theme-delete-modal-btn-cancel";
+  btnCancel.textContent = "Cancel";
+
+  const btnDelete = document.createElement("button");
+  btnDelete.type = "button";
+  btnDelete.className = "theme-delete-modal-btn-delete";
+  btnDelete.textContent = "Delete";
+
+  actions.append(btnCancel, btnDelete);
+  panel.append(title, themeLine, p1, p2, actions);
+  el.append(backdrop, panel);
+
+  backdrop.addEventListener("click", () => closeThemeDeleteModal(false));
+  btnCancel.addEventListener("click", () => closeThemeDeleteModal(false));
+  btnDelete.addEventListener("click", () => closeThemeDeleteModal(true));
+
+  document.body.appendChild(el);
+  return el;
+}
+
+function openThemeDeleteModal(themeTitle, onClose) {
+  const el = ensureThemeDeleteModal();
+  themeDeleteModalCallback = onClose;
+  const t = String(themeTitle ?? "").trim();
+  const nameEl = el.querySelector(".theme-delete-modal-theme-line");
+  if (nameEl) {
+    nameEl.textContent = t ? `Theme: «${t}»` : "Theme: (untitled)";
+  }
+  el.hidden = false;
+  document.documentElement.classList.add("theme-delete-modal-open");
+  requestAnimationFrame(() => {
+    el.querySelector(".theme-delete-modal-btn-delete")?.focus();
   });
 }
 
-/** Узкий экран: список диалогов в выпадающей панели над чатом */
-function initThemeCardSelection() {
+/** Меню темы (три полоски): Favorites, Rename, Delete. */
+function initThemeCardActions() {
   const root = document.getElementById("dialogue-cards");
   if (!root) return;
 
-  root.addEventListener("click", (e) => {
-    if (e.target.closest(".dialog-star") || e.target.closest(".dialog-card-folder-wrap")) return;
-    const card = e.target.closest(".dialog-card");
-    if (!card || !root.contains(card)) return;
-    root.querySelectorAll(".dialog-card--selected").forEach((c) => {
-      c.classList.remove("dialog-card--selected");
+  function closeAllThemeActionMenus() {
+    root.querySelectorAll(".dialog-theme-actions-menu").forEach((m) => {
+      m.hidden = true;
     });
-    card.classList.add("dialog-card--selected");
+    root.querySelectorAll(".dialog-theme-menu-btn").forEach((b) => {
+      b.setAttribute("aria-expanded", "false");
+    });
+  }
+
+  root.addEventListener("click", (e) => {
+    const tmb = e.target.closest(".dialog-theme-menu-btn");
+    if (tmb && root.contains(tmb)) {
+      e.preventDefault();
+      e.stopPropagation();
+      const wrap = tmb.closest(".dialog-card-theme-menu-wrap");
+      const menuEl = wrap?.querySelector(".dialog-theme-actions-menu");
+      if (!menuEl) return;
+      const open = tmb.getAttribute("aria-expanded") === "true";
+      if (open) {
+        tmb.setAttribute("aria-expanded", "false");
+        menuEl.hidden = true;
+      } else {
+        closeAllThemeActionMenus();
+        tmb.setAttribute("aria-expanded", "true");
+        menuEl.hidden = false;
+      }
+      return;
+    }
+
+    const actionBtn = e.target.closest("[data-theme-action]");
+    if (actionBtn && root.contains(actionBtn)) {
+      e.preventDefault();
+      e.stopPropagation();
+      const card = actionBtn.closest(".dialog-card");
+      const themeTitle = card?.querySelector(".dialog-card-title")?.textContent?.trim() ?? "";
+      const kind = actionBtn.getAttribute("data-theme-action");
+      closeAllThemeActionMenus();
+
+      if (kind === "favorites") {
+        const on = card?.classList.toggle("dialog-card--starred");
+        actionBtn.classList.toggle("is-active", Boolean(on));
+        appendActivityLog(on ? "Theme: added to favorites" : "Theme: removed from favorites");
+      } else if (kind === "rename") {
+        const n = window.prompt("Rename theme", themeTitle);
+        if (n != null && String(n).trim()) {
+          appendActivityLog(`Theme rename: «${themeTitle}» → «${String(n).trim()}» (not saved yet)`);
+        }
+      } else if (kind === "delete") {
+        const themeId = String(card?.dataset.themeId ?? "").trim();
+        if (!themeId) return;
+        openThemeDeleteModal(themeTitle, (confirmed) => {
+          if (!confirmed) return;
+          void handleThemeDeleted(themeId, themeTitle);
+        });
+      }
+    }
+  });
+
+  document.addEventListener(
+    "click",
+    (e) => {
+      if (e.target.closest(".dialog-card-theme-menu-wrap")) return;
+      closeAllThemeActionMenus();
+    },
+    true,
+  );
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    const delModal = document.getElementById("theme-delete-modal");
+    if (delModal && !delModal.hidden) {
+      e.preventDefault();
+      closeThemeDeleteModal(false);
+      return;
+    }
+    closeAllThemeActionMenus();
+  });
+}
+
+/** Свернуть списки диалогов у тем; `exceptCard` — не трогать эту карточку (открываем папку на ней). */
+function collapseAllThemeDialogLists(exceptCard = null) {
+  const root = document.getElementById("dialogue-cards");
+  if (!root) return;
+  root.querySelectorAll(".dialog-card").forEach((card) => {
+    if (exceptCard != null && card === exceptCard) return;
+    const btn = card.querySelector(".dialog-folder-btn");
+    const menu = card.querySelector(".dialog-folder-menu");
+    if (btn && menu) {
+      btn.setAttribute("aria-expanded", "false");
+      menu.hidden = true;
+    }
   });
 }
 
@@ -393,24 +572,17 @@ function initThemeFolderMenus() {
   const root = document.getElementById("dialogue-cards");
   if (!root) return;
 
-  function closeAll(exceptWrap) {
-    root.querySelectorAll(".dialog-card-folder-wrap").forEach((wrap) => {
-      if (wrap === exceptWrap) return;
-      const btn = wrap.querySelector(".dialog-folder-btn");
-      const menu = wrap.querySelector(".dialog-folder-menu");
-      if (btn && menu) {
-        btn.setAttribute("aria-expanded", "false");
-        menu.hidden = true;
-      }
-    });
-  }
-
-  /* Закрыть выпадашки при клике по списку тем, но не по папке/меню (панель глушит всплытие до document). */
+  /* Выбор диалога: capture — иначе всплытие не доходит до #dialogue-cards из‑за stopPropagation на панели. */
   root.addEventListener(
     "click",
     (e) => {
-      if (e.target.closest(".dialog-folder-btn") || e.target.closest(".dialog-folder-menu")) return;
-      closeAll(null);
+      const item = e.target.closest(".dialog-folder-menu-item");
+      if (!item || !root.contains(item)) return;
+      const did = item.getAttribute("data-dialog-id");
+      const tid = item.getAttribute("data-theme-id");
+      if (did) {
+        void openDialogById(did, tid || undefined);
+      }
     },
     true,
   );
@@ -418,45 +590,34 @@ function initThemeFolderMenus() {
   root.addEventListener("click", (e) => {
     const item = e.target.closest(".dialog-folder-menu-item");
     if (item) {
-      const wrap = item.closest(".dialog-card-folder-wrap");
-      const btn = wrap?.querySelector(".dialog-folder-btn");
-      const menu = wrap?.querySelector(".dialog-folder-menu");
-      if (btn && menu) {
-        btn.setAttribute("aria-expanded", "false");
-        menu.hidden = true;
-      }
       return;
     }
 
     const folderBtn = e.target.closest(".dialog-folder-btn");
     if (!folderBtn || !root.contains(folderBtn)) return;
     e.stopPropagation();
-    const wrap = folderBtn.closest(".dialog-card-folder-wrap");
-    const menu = wrap?.querySelector(".dialog-folder-menu");
+    const card = folderBtn.closest(".dialog-card");
+    const menu = card?.querySelector(".dialog-folder-menu");
     if (!menu) return;
+    const thisThemeId = String(card?.dataset?.themeId ?? "").trim();
     const open = folderBtn.getAttribute("aria-expanded") === "true";
     if (open) {
       folderBtn.setAttribute("aria-expanded", "false");
       menu.hidden = true;
+      if (String(expandedThemeDialogListThemeId ?? "").trim() === thisThemeId) {
+        expandedThemeDialogListThemeId = null;
+      }
     } else {
-      closeAll(wrap);
+      collapseAllThemeDialogLists(card);
       folderBtn.setAttribute("aria-expanded", "true");
       menu.hidden = false;
+      expandedThemeDialogListThemeId = thisThemeId || null;
     }
   });
-
-  document.addEventListener("click", () => {
-    closeAll(null);
-  });
-
-  document.addEventListener("keydown", (e) => {
-    if (e.key !== "Escape") return;
-    const openBtn = root.querySelector('.dialog-folder-btn[aria-expanded="true"]');
-    if (!openBtn) return;
-    closeAll(null);
-    openBtn.focus();
-  });
 }
+
+/** На узком экране закрывает выпадающий список тем (иначе он перекрывает поле ввода). Назначается в initDialoguesMenu. */
+let closeMobileThemesDropdown = () => {};
 
 function initDialoguesMenu() {
   const panel = document.getElementById("dialogues-panel");
@@ -535,6 +696,13 @@ function initDialoguesMenu() {
 
   mq.addEventListener("change", onMqChange);
   onMqChange();
+
+  closeMobileThemesDropdown = () => {
+    if (!isMobile()) return;
+    if (panel.classList.contains("dialogues-dropdown-open")) {
+      setOpen(false);
+    }
+  };
 }
 
 const ATTACH_TITLES = {
@@ -550,7 +718,12 @@ function initNewDialogueButton() {
   if (!btn) return;
 
   btn.addEventListener("click", () => {
+    chatComposerSending = false;
+    closeMobileThemesDropdown();
     closeMemoryTree();
+    activeThemeId = null;
+    activeDialogId = null;
+    expandedThemeDialogListThemeId = null;
     const list = document.getElementById("messages-list");
     list?.replaceChildren();
     document.getElementById("dialogue-cards")?.querySelectorAll(".dialog-card").forEach((c) => {
@@ -582,6 +755,8 @@ function initNewDialogueButton() {
     if (resetSep instanceof HTMLElement) resetSep.hidden = true;
 
     const ta = document.getElementById("chat-input");
+    const sendNew = document.getElementById("btn-chat-send");
+    if (sendNew) sendNew.disabled = false;
     if (ta instanceof HTMLTextAreaElement) {
       ta.value = "";
       ta.disabled = false;
@@ -1241,6 +1416,136 @@ function finalizeAssistantBubble(el, fullText, providerId, modelHintOverride) {
   });
 }
 
+async function renderThemesSidebar() {
+  const root = document.getElementById("dialogue-cards");
+  if (!root) return;
+  try {
+    const data = await fetchThemesPayload();
+    const themes = data.themes ?? [];
+    renderThemeCards(
+      root,
+      themes,
+      activeDialogId,
+      activeThemeId,
+      (tid) => {
+        void openThemeForNewDialog(tid);
+      },
+      expandedThemeDialogListThemeId,
+    );
+  } catch {
+    root.replaceChildren();
+  }
+}
+
+async function handleThemeDeleted(themeId, themeTitle) {
+  const tid = String(themeId ?? "").trim();
+  if (!tid) return;
+  try {
+    await deleteTheme(tid);
+  } catch (e) {
+    appendActivityLog(`Theme delete failed: ${e instanceof Error ? e.message : String(e)}`);
+    return;
+  }
+  appendActivityLog(`Theme deleted: «${String(themeTitle || "—").trim()}»`);
+  if (String(expandedThemeDialogListThemeId ?? "").trim() === tid) {
+    expandedThemeDialogListThemeId = null;
+  }
+  if (String(activeThemeId ?? "").trim() === tid) {
+    activeThemeId = null;
+    activeDialogId = null;
+    chatComposerSending = false;
+    closeMemoryTree();
+    document.getElementById("messages-list")?.replaceChildren();
+    const viewport = document.getElementById("messages-viewport");
+    if (viewport) viewport.scrollTop = 0;
+    const ta = document.getElementById("chat-input");
+    const sendBtn = document.getElementById("btn-chat-send");
+    if (ta) ta.disabled = false;
+    if (sendBtn) sendBtn.disabled = false;
+  }
+  await renderThemesSidebar();
+  refreshThemeHighlightsFromChat();
+}
+
+function replayTurnInChat(turn) {
+  const reqProvider = turn.requested_provider_id;
+  const respProvider = turn.responding_provider_id || reqProvider;
+  const modelLabel = PROVIDER_DISPLAY[reqProvider] ?? reqProvider;
+  const rt = turn.request_type || "default";
+  appendUserMessage(turn.user_text, modelLabel, {
+    webSearch: rt === "web",
+    imageCreation: rt === "image",
+  });
+  const pending = appendAssistantPending();
+  if (!pending) return;
+  const text = turn.assistant_text;
+  if (text != null && String(text).length > 0) {
+    pending.dataset.assistantWebSearch = rt === "web" ? "1" : "";
+    if (rt === "image") pending.dataset.assistantResponseKind = "image";
+    const te = pending.querySelector(".msg-assistant-text");
+    setAssistantMessageMarkdown(te, text);
+    const imgHint =
+      rt === "image" ? apiImageGenerationModelHint(respProvider) : undefined;
+    finalizeAssistantBubble(pending, text, respProvider, imgHint || undefined);
+  } else {
+    renderAssistantError(pending, "No reply stored for this turn.");
+  }
+}
+
+/** Выбрана тема: пустой чат; первое сообщение создаст новый диалог в теме. */
+async function openThemeForNewDialog(themeId) {
+  const tid = String(themeId ?? "").trim();
+  if (!tid) return;
+  expandedThemeDialogListThemeId = tid;
+  chatComposerSending = false;
+  closeMobileThemesDropdown();
+  activeThemeId = tid;
+  activeDialogId = null;
+  closeMemoryTree();
+  const list = document.getElementById("messages-list");
+  list?.replaceChildren();
+  const viewport = document.getElementById("messages-viewport");
+  if (viewport) viewport.scrollTop = 0;
+  const taOpen = document.getElementById("chat-input");
+  const sendOpen = document.getElementById("btn-chat-send");
+  if (taOpen) taOpen.disabled = false;
+  if (sendOpen) sendOpen.disabled = false;
+  await renderThemesSidebar();
+  scrollMessagesToEnd();
+  refreshThemeHighlightsFromChat();
+}
+
+async function openDialogById(dialogId, themeId) {
+  const did = String(dialogId ?? "").trim();
+  if (!did) return;
+  chatComposerSending = false;
+  closeMobileThemesDropdown();
+  activeDialogId = did;
+  const t = themeId != null ? String(themeId).trim() : "";
+  activeThemeId = t || activeThemeId;
+  expandedThemeDialogListThemeId = String(activeThemeId ?? "").trim() || null;
+  closeMemoryTree();
+  const list = document.getElementById("messages-list");
+  list?.replaceChildren();
+  const viewport = document.getElementById("messages-viewport");
+  if (viewport) viewport.scrollTop = 0;
+  const taDlg = document.getElementById("chat-input");
+  const sendDlg = document.getElementById("btn-chat-send");
+  if (taDlg) taDlg.disabled = false;
+  if (sendDlg) sendDlg.disabled = false;
+  try {
+    const turns = await fetchTurns(did);
+    for (const t of turns) {
+      replayTurnInChat(t);
+    }
+  } catch (e) {
+    appendActivityLog(`Chat DB: could not load thread (${e instanceof Error ? e.message : String(e)})`);
+  }
+  await renderThemesSidebar();
+  scrollMessagesToEnd();
+  refreshThemeHighlightsFromChat();
+}
+
 function initChatComposer() {
   const ta = document.getElementById("chat-input");
   const sendBtn = document.getElementById("btn-chat-send");
@@ -1249,10 +1554,8 @@ function initChatComposer() {
   syncChatInputHeight(ta);
   ta.addEventListener("input", () => syncChatInputHeight(ta));
 
-  let sending = false;
-
   async function submitChat() {
-    if (sending) return;
+    if (chatComposerSending) return;
     const trimmed = ta.value.trim();
     if (!trimmed) return;
 
@@ -1274,92 +1577,179 @@ function initChatComposer() {
     const modelLabel = PROVIDER_DISPLAY[providerId] ?? providerId;
     const modeForSend = composerAttachMode;
     const promptForApi = buildChatPromptForApi(trimmed, modeForSend);
-    sending = true;
-    sendBtn.disabled = true;
-    ta.disabled = true;
 
-    appendActivityLog(
-      `Chat → request: ${attachModeLogLabel(modeForSend)}, model ${modelLabel}, input chars: ${trimmed.length}`,
-    );
+    const userMessageAt = new Date().toISOString();
+    let persistDialogId = activeDialogId;
 
-    appendUserMessage(trimmed, modelLabel, {
-      webSearch: modeForSend === "web",
-      imageCreation: modeForSend === "image",
-    });
-    refreshThemeHighlightsFromChat();
-    ta.value = "";
-    syncChatInputHeight(ta);
-    scrollMessagesToEnd();
+    let pending = null;
+    let fullText = "";
+    let didAppendUserToUi = false;
 
-    const pending = appendAssistantPending();
-    if (pending) {
-      pending.dataset.assistantWebSearch = modeForSend === "web" ? "1" : "";
-      const te0 = pending.querySelector(".msg-assistant-text");
-      if (te0 && modeForSend === "image") {
-        te0.textContent = "Generating image…";
-      }
-    }
-    scrollMessagesToEnd();
-
+    chatComposerSending = true;
     try {
-      if (pending) {
-        delete pending.dataset.assistantResponseKind;
-      }
-      let fullText = "";
-      if (modeForSend === "image") {
-        const { text } = await completeImageGeneration(providerId, promptForApi, key);
-        fullText = text;
-        const te = pending?.querySelector(".msg-assistant-text");
-        if (te) setAssistantMessageMarkdown(te, fullText);
-        scrollMessagesToEnd();
-        const imgHint = apiImageGenerationModelHint(providerId);
-        if (pending) {
-          pending.dataset.assistantResponseKind = "image";
-        }
-        finalizeAssistantBubble(pending, fullText, providerId, imgHint || undefined);
-        appendActivityLog(`Chat ← reply: image, model ${modelLabel}, OK`);
-      } else {
-        const chatOpts = { webSearch: modeForSend === "web" };
-        let buf = "";
+      if (!persistDialogId) {
         try {
-          fullText = await completeChatMessageStreaming(
-            providerId,
-            promptForApi,
-            key,
-            (piece) => {
-              buf += piece;
-              pending.dataset.assistantMarkdown = buf;
-              const te = pending.querySelector(".msg-assistant-text");
-              if (te) setAssistantMessageMarkdown(te, buf);
-              syncAssistantCopyButtonDuringStream(pending);
-              scrollMessagesToEnd();
-            },
-            chatOpts,
+          /** Новый диалог в уже выбранной теме: без лишнего вызова LLM. Новая тема: заголовок через LLM с таймаутом. */
+          const themeIdForNewDialog = String(activeThemeId ?? "").trim();
+          const bootTitle = themeIdForNewDialog
+            ? titleFromUserMessage(trimmed)
+            : await Promise.race([
+                generateThemeDialogTitle(providerId, trimmed, key),
+                new Promise((resolve) => {
+                  setTimeout(() => resolve(titleFromUserMessage(trimmed)), 12000);
+                }),
+              ]);
+          if (themeIdForNewDialog) {
+            const { dialog } = await createDialogInTheme(themeIdForNewDialog, bootTitle);
+            activeThemeId = themeIdForNewDialog;
+            activeDialogId = dialog.id;
+            persistDialogId = dialog.id;
+          } else {
+            const { theme, dialog } = await bootstrapThemeAndDialog(bootTitle);
+            activeThemeId = theme.id;
+            activeDialogId = dialog.id;
+            persistDialogId = dialog.id;
+          }
+          await renderThemesSidebar();
+        } catch (bootErr) {
+          appendActivityLog(
+            `Chat DB: ${bootErr instanceof Error ? bootErr.message : String(bootErr)}`,
           );
-        } catch {
-          appendActivityLog(`Chat: streaming unavailable, full response (${modelLabel})`);
-          const { text } = await completeChatMessage(providerId, promptForApi, key, chatOpts);
+          return;
+        }
+      }
+
+      sendBtn.disabled = true;
+      ta.disabled = true;
+
+      appendActivityLog(
+        `Chat → request: ${attachModeLogLabel(modeForSend)}, model ${modelLabel}, input chars: ${trimmed.length}`,
+      );
+
+      appendUserMessage(trimmed, modelLabel, {
+        webSearch: modeForSend === "web",
+        imageCreation: modeForSend === "image",
+      });
+      didAppendUserToUi = true;
+      refreshThemeHighlightsFromChat();
+      ta.value = "";
+      syncChatInputHeight(ta);
+      scrollMessagesToEnd();
+
+      pending = appendAssistantPending();
+      if (pending) {
+        pending.dataset.assistantWebSearch = modeForSend === "web" ? "1" : "";
+        const te0 = pending.querySelector(".msg-assistant-text");
+        if (te0 && modeForSend === "image") {
+          te0.textContent = "Generating image…";
+        }
+      }
+      scrollMessagesToEnd();
+
+      try {
+        if (pending) {
+          delete pending.dataset.assistantResponseKind;
+        }
+        if (modeForSend === "image") {
+          const { text } = await completeImageGeneration(providerId, promptForApi, key);
           fullText = text;
-          const te = pending.querySelector(".msg-assistant-text");
+          const te = pending?.querySelector(".msg-assistant-text");
           if (te) setAssistantMessageMarkdown(te, fullText);
           scrollMessagesToEnd();
+          const imgHint = apiImageGenerationModelHint(providerId);
+          if (pending) {
+            pending.dataset.assistantResponseKind = "image";
+          }
+          finalizeAssistantBubble(pending, fullText, providerId, imgHint || undefined);
+          appendActivityLog(`Chat ← reply: image, model ${modelLabel}, OK`);
+        } else {
+          const chatOpts = { webSearch: modeForSend === "web" };
+          if (persistDialogId && modeForSend !== "image" && (await apiHealth())) {
+            try {
+              const pack = await fetchContextPack(persistDialogId, promptForApi);
+              const built = buildModelContext({
+                threadId: persistDialogId,
+                userPrompt: promptForApi,
+                contextPack: pack,
+                modelFlags: { recentMessageCount: 10 },
+              });
+              const fitted = fitContextToBudget(built, MF0_MAX_CONTEXT_INPUT_TOKENS);
+              chatOpts.systemInstruction = fitted.systemInstruction;
+              chatOpts.llmMessages = fitted.messagesForApi;
+              if (import.meta.env.DEV) {
+                globalThis.__MF0_LAST_CONTEXT_DEBUG__ = fitted.debug;
+              }
+            } catch (ctxErr) {
+              appendActivityLog(
+                `LLM context: single-turn fallback (${ctxErr instanceof Error ? ctxErr.message : String(ctxErr)})`,
+              );
+            }
+          }
+          let buf = "";
+          try {
+            fullText = await completeChatMessageStreaming(
+              providerId,
+              promptForApi,
+              key,
+              (piece) => {
+                buf += piece;
+                if (pending) pending.dataset.assistantMarkdown = buf;
+                const te = pending?.querySelector(".msg-assistant-text");
+                if (te) setAssistantMessageMarkdown(te, buf);
+                if (pending) syncAssistantCopyButtonDuringStream(pending);
+                scrollMessagesToEnd();
+              },
+              chatOpts,
+            );
+          } catch {
+            appendActivityLog(`Chat: streaming unavailable, full response (${modelLabel})`);
+            const { text } = await completeChatMessage(providerId, promptForApi, key, chatOpts);
+            fullText = text;
+            const te = pending?.querySelector(".msg-assistant-text");
+            if (te) setAssistantMessageMarkdown(te, fullText);
+            scrollMessagesToEnd();
+          }
+          finalizeAssistantBubble(pending, fullText, providerId);
+          appendActivityLog(
+            `Chat ← reply: text, model ${modelLabel}, reply chars: ${String(fullText).length}`,
+          );
         }
-        finalizeAssistantBubble(pending, fullText, providerId);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        fullText = msg;
+        renderAssistantError(pending, msg);
         appendActivityLog(
-          `Chat ← reply: text, model ${modelLabel}, reply chars: ${String(fullText).length}`,
+          `Chat ← error, model ${modelLabel}: ${msg.length > 280 ? `${msg.slice(0, 280)}…` : msg}`,
         );
       }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      renderAssistantError(pending, msg);
-      appendActivityLog(
-        `Chat ← error, model ${modelLabel}: ${msg.length > 280 ? `${msg.slice(0, 280)}…` : msg}`,
-      );
     } finally {
-      sending = false;
+      chatComposerSending = false;
       sendBtn.disabled = false;
       ta.disabled = false;
       scrollMessagesToEnd();
+      if (persistDialogId && didAppendUserToUi) {
+        const assistantMessageAt = new Date().toISOString();
+        const assistantOut =
+          pending?.classList.contains("msg-assistant--error") && pending?.dataset?.assistantMarkdown
+            ? String(pending.dataset.assistantMarkdown)
+            : fullText;
+        try {
+          await saveConversationTurn(persistDialogId, {
+            user_text: trimmed,
+            assistant_text: assistantOut || null,
+            requested_provider_id: providerId,
+            responding_provider_id: providerId,
+            request_type: requestTypeFromAttachMode(modeForSend),
+            user_message_at: userMessageAt,
+            assistant_message_at: assistantMessageAt,
+          });
+          await renderThemesSidebar();
+        } catch (saveErr) {
+          appendActivityLog(
+            `Chat DB save: ${saveErr instanceof Error ? saveErr.message : String(saveErr)}`,
+          );
+        }
+      }
     }
   }
 
@@ -1373,24 +1763,49 @@ function initChatComposer() {
   });
 }
 
-initThemeToggle();
-initActivityPanel();
-initProviderBadges();
-initDialogueFavourites();
-initDialoguesMenu();
-initThemeCardSelection();
-initThemeFolderMenus();
-initMemoryTree(appendActivityLog);
-initNewDialogueButton();
-initAttachMenu();
-initChatComposer();
+function bootApp() {
+  initThemeToggle();
+  initActivityPanel();
+  initProviderBadges();
+  initThemeCardActions();
+  initDialoguesMenu();
+  initThemeFolderMenus();
+  initMemoryTree(appendActivityLog);
+  initNewDialogueButton();
+  initAttachMenu();
+  initChatComposer();
 
-appendActivityLog("MF0-1984 ready.");
+  appendActivityLog("MF0-1984 ready.");
 
-const keys = getModelApiKeys();
-const configured = Object.entries(keys).filter(([, v]) => v.length > 0);
-if (configured.length) {
-  appendActivityLog(`Keys in .env: ${configured.map(([k]) => k).join(", ")}`);
+  void (async () => {
+    try {
+      if (await apiHealth()) {
+        await renderThemesSidebar();
+        appendActivityLog("Chat database connected.");
+      } else {
+        appendActivityLog(
+          "Chat database offline — запустите API и интерфейс вместе (npm run dev) или pm2:restart; порт API по умолчанию 35184.",
+        );
+      }
+    } catch (e) {
+      appendActivityLog(`Chat database: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  })();
+
+  const keys = getModelApiKeys();
+  const configured = Object.entries(keys).filter(([, v]) => v.length > 0);
+  if (configured.length) {
+    appendActivityLog(`Keys in .env: ${configured.map(([k]) => k).join(", ")}`);
+  } else {
+    appendActivityLog("Model keys from .env not loaded (check .env for dev).");
+  }
+}
+
+if (import.meta.env.DEV && !hasAnyModelApiKey()) {
+  const blocker = document.getElementById("env-keys-blocker");
+  const root = document.querySelector(".app-root");
+  if (blocker) blocker.hidden = false;
+  if (root) root.inert = true;
 } else {
-  appendActivityLog("Model keys from .env not loaded (check .env for dev).");
+  bootApp();
 }

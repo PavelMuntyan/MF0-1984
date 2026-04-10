@@ -1,0 +1,4 @@
+{
+  "$schema": "./schemas/rule-file.schema.json",
+  "blocks": []
+}

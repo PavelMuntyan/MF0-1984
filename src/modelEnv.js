@@ -1,6 +1,6 @@
 /**
- * Ключи из `.env` для локальной разработки. В production-сборке намеренно пусто,
- * чтобы секреты не попадали в `dist/`.
+ * Model API keys from `.env` in local dev. In production builds values are empty
+ * so secrets are not shipped in `dist/`.
  */
 export function getModelApiKeys() {
   if (import.meta.env.PROD) {
@@ -18,4 +18,10 @@ export function getModelApiKeys() {
     perplexity: import.meta.env.PERPLEXITY_API_KEY ?? "",
     "gemini-flash": geminiKey,
   };
+}
+
+/** True if at least one model API key is set (dev / `.env`). */
+export function hasAnyModelApiKey() {
+  const keys = getModelApiKeys();
+  return Object.values(keys).some((v) => String(v ?? "").trim().length > 0);
 }

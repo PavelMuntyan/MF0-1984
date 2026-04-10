@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mf-lab.local/rules/schemas/rule-block.schema.json",
+  "title": "Structured model/agent rule block",
+  "description": "One atomic instruction. Prefer short, verifiable rule_text; use examples and negative_examples as string arrays.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "priority", "scope", "trigger", "rule_text"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Stable slug, e.g. read_full_file_before_edit",
+      "pattern": "^[a-z][a-z0-9_-]*$"
+    },
+    "priority": {
+      "type": "string",
+      "description": "e.g. critical | high | medium | low (free string allowed)"
+    },
+    "scope": {
+      "type": "string",
+      "description": "Where the rule applies, e.g. code_edit | chat | workflow"
+    },
+    "trigger": {
+      "type": "string",
+      "description": "When it applies, e.g. before_any_edit"
+    },
+    "rule_text": {
+      "type": "string",
+      "description": "Single atomic instruction the model can follow"
+    },
+    "examples": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Good concrete examples of compliance"
+    },
+    "negative_examples": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Anti-patterns / what not to do"
+    },
+    "validation": {
+      "type": "string",
+      "description": "Optional machine-oriented hook id, e.g. edit_blocked_if_full_read_not_confirmed"
+    }
+  }
+}

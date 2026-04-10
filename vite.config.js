@@ -67,11 +67,23 @@ export default defineConfig({
     port: 1984,
     /** Если 1984 занят (другой процесс / старый Vite), Vite возьмёт следующий порт — смотри URL в терминале. */
     strictPort: false,
-    proxy: llmProxy,
+    proxy: {
+      "/api": {
+        target: `http://127.0.0.1:${process.env.API_PORT || 35184}`,
+        changeOrigin: true,
+      },
+      ...llmProxy,
+    },
   },
   preview: {
     port: 1984,
     strictPort: false,
-    proxy: llmProxy,
+    proxy: {
+      "/api": {
+        target: `http://127.0.0.1:${process.env.API_PORT || 35184}`,
+        changeOrigin: true,
+      },
+      ...llmProxy,
+    },
   },
 });

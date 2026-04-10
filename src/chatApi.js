@@ -7,6 +7,7 @@ import {
   streamGeminiGenerateContent,
   streamOpenAICompatJson,
 } from "./streaming.js";
+import { titleFromUserMessage } from "./chatPersistence.js";
 
 export const PROVIDER_DISPLAY = {
   openai: "ChatGPT",
@@ -82,6 +83,49 @@ async function geminiGenerateContent(modelId, trimmed, key, googleSearch = false
     throw new Error(block ? `Request blocked: ${block}` : "Empty API response");
   }
   return { text: out };
+}
+
+/**
+ * @param {string} trimmed — запасной одиночный user, если нет llmMessages
+ * @param {{ systemInstruction?: string, llmMessages?: Array<{ role: string, content: string }> }} options
+ */
+function openAiCompatMessages(trimmed, options) {
+  /** @type {Array<{ role: string, content: string }>} */
+  const messages = [];
+  if (options.systemInstruction) {
+    messages.push({ role: "system", content: options.systemInstruction });
+  }
+  if (Array.isArray(options.llmMessages) && options.llmMessages.length > 0) {
+    messages.push(...options.llmMessages);
+  } else {
+    messages.push({ role: "user", content: trimmed });
+  }
+  return messages;
+}
+
+/**
+ * @param {string} trimmed
+ * @param {{ systemInstruction?: string, llmMessages?: Array<{ role: string, content: string }> }} options
+ */
+function anthropicApiMessages(trimmed, options) {
+  const raw =
+    Array.isArray(options.llmMessages) && options.llmMessages.length > 0
+      ? options.llmMessages
+      : [{ role: "user", content: trimmed }];
+  return raw.filter((m) => m.role === "user" || m.role === "assistant");
+}
+
+/**
+ * @param {string} systemInstruction
+ * @param {Array<{ role: string, content: string }>} msgs
+ */
+function geminiFlattenChat(systemInstruction, msgs) {
+  const parts = [];
+  if (systemInstruction) parts.push(`[SYSTEM]\n${systemInstruction}`);
+  for (const m of msgs) {
+    parts.push(`[${String(m.role).toUpperCase()}]\n${m.content}`);
+  }
+  return parts.join("\n\n").trim();
 }
 
 async function readErrorBody(res) {
@@ -161,7 +205,7 @@ function humanizeOpenAiImageError(raw, status) {
  * @param {string} providerId
  * @param {string} text
  * @param {string} apiKey
- * @param {{ webSearch?: boolean }} [options] — true = реальный поиск через API провайдера
+ * @param {{ webSearch?: boolean, systemInstruction?: string, llmMessages?: Array<{ role: string, content: string }> }} [options] — true = реальный поиск через API провайдера; llmMessages = собранный контекст треда
  * @returns {Promise<{ text: string }>}
  */
 export async function completeChatMessage(providerId, text, apiKey, options = {}) {
@@ -170,10 +214,12 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
     throw new Error("No API key for the selected model (.env)");
   }
   const trimmed = text.trim();
-  if (!trimmed) {
+  const hasLlm = Array.isArray(options.llmMessages) && options.llmMessages.length > 0;
+  if (!hasLlm && !trimmed) {
     throw new Error("Empty message");
   }
   const webSearch = Boolean(options.webSearch);
+  const oaMsgs = openAiCompatMessages(trimmed, options);
 
   switch (providerId) {
     case "openai": {
@@ -185,7 +231,7 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
         },
         body: JSON.stringify({
           model: webSearch ? OPENAI_MODEL_WEB : OPENAI_MODEL,
-          messages: [{ role: "user", content: trimmed }],
+          messages: oaMsgs,
         }),
       });
       if (!res.ok) throw new Error(await readErrorBody(res));
@@ -198,8 +244,11 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
       const anthropicBody = {
         model: ANTHROPIC_MODEL,
         max_tokens: 4096,
-        messages: [{ role: "user", content: trimmed }],
+        messages: anthropicApiMessages(trimmed, options),
       };
+      if (options.systemInstruction) {
+        anthropicBody.system = options.systemInstruction;
+      }
       if (webSearch) {
         anthropicBody.tools = [
           { type: "web_search_20250305", name: "web_search", max_uses: 5 },
@@ -226,12 +275,18 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
       if (!out) throw new Error("Empty API response");
       return { text: out };
     }
-    case "gemini-flash":
-      return geminiGenerateContent(GEMINI_MODEL_FLASH, trimmed, key, webSearch);
+    case "gemini-flash": {
+      const gMsgs =
+        Array.isArray(options.llmMessages) && options.llmMessages.length > 0
+          ? options.llmMessages
+          : [{ role: "user", content: trimmed }];
+      const combined = geminiFlattenChat(String(options.systemInstruction ?? ""), gMsgs);
+      return geminiGenerateContent(GEMINI_MODEL_FLASH, combined, key, webSearch);
+    }
     case "perplexity": {
       const perplexityBody = {
         model: webSearch ? PERPLEXITY_MODEL_SEARCH : PERPLEXITY_MODEL,
-        messages: [{ role: "user", content: trimmed }],
+        messages: oaMsgs,
       };
       if (webSearch) {
         perplexityBody.disable_search = false;
@@ -259,9 +314,140 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
   }
 }
 
+/** Инструкция для краткого заголовка темы/диалога (5–6 слов). */
+const THEME_TITLE_SYSTEM =
+  "Reply with ONLY a short phrase of exactly 5-6 words: a clear label for what the user wants. " +
+  "Use the same language as the user when possible. No quotes. No explanation. No trailing period.";
+
+/**
+ * Нормализует ответ модели в заголовок темы/диалога.
+ * @param {string} raw
+ */
+export function normalizeThemeDialogTitle(raw) {
+  let s = String(raw ?? "").trim();
+  s = s.replace(/^["'"„«»]+|["'"„«»]+$/g, "").trim();
+  s = s.replace(/\s+/g, " ");
+  if (!s) return "New conversation";
+  const words = s.split(/\s+/).filter(Boolean);
+  if (words.length > 6) s = words.slice(0, 6).join(" ");
+  if (s.length > 90) s = `${s.slice(0, 87)}…`;
+  return s;
+}
+
+/**
+ * Краткий заголовок темы и первого диалога по смыслу запроса (через выбранного провайдера).
+ * При ошибке API — запасной вариант из первой строки сообщения.
+ * @param {string} providerId
+ * @param {string} userMessage
+ * @param {string} apiKey
+ * @returns {Promise<string>}
+ */
+export async function generateThemeDialogTitle(providerId, userMessage, apiKey) {
+  const key = String(apiKey ?? "").trim();
+  const snippet = String(userMessage ?? "").trim().slice(0, 3500);
+  if (!key || !snippet) {
+    return titleFromUserMessage(userMessage);
+  }
+
+  try {
+    let text = "";
+    switch (providerId) {
+      case "openai": {
+        const res = await fetch("/llm/openai/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${key}`,
+          },
+          body: JSON.stringify({
+            model: OPENAI_MODEL,
+            temperature: 0.2,
+            max_tokens: 48,
+            messages: [
+              { role: "system", content: THEME_TITLE_SYSTEM },
+              { role: "user", content: snippet },
+            ],
+          }),
+        });
+        if (!res.ok) throw new Error(await readErrorBody(res));
+        const data = await res.json();
+        const content = data.choices?.[0]?.message?.content;
+        if (content == null) throw new Error("Empty API response");
+        text = typeof content === "string" ? content : String(content);
+        break;
+      }
+      case "anthropic": {
+        const res = await fetch("/llm/anthropic/v1/messages", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+            ...ANTHROPIC_BROWSER_ACCESS_HEADER,
+          },
+          body: JSON.stringify({
+            model: ANTHROPIC_MODEL,
+            max_tokens: 48,
+            system: THEME_TITLE_SYSTEM,
+            messages: [{ role: "user", content: snippet }],
+          }),
+        });
+        if (!res.ok) throw new Error(await readErrorBody(res));
+        const data = await res.json();
+        const blocks = data.content;
+        if (!Array.isArray(blocks)) throw new Error("Unexpected response format");
+        text = blocks
+          .filter((b) => b.type === "text" && b.text)
+          .map((b) => b.text)
+          .join("\n")
+          .trim();
+        if (!text) throw new Error("Empty API response");
+        break;
+      }
+      case "gemini-flash": {
+        const combined =
+          `${THEME_TITLE_SYSTEM}\n\nUser message:\n${snippet}`;
+        const { text: g } = await geminiGenerateContent(GEMINI_MODEL_FLASH, combined, key, false);
+        text = g;
+        break;
+      }
+      case "perplexity": {
+        const res = await fetch("/llm/perplexity/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${key}`,
+          },
+          body: JSON.stringify({
+            model: PERPLEXITY_MODEL,
+            temperature: 0.2,
+            max_tokens: 48,
+            messages: [
+              { role: "system", content: THEME_TITLE_SYSTEM },
+              { role: "user", content: snippet },
+            ],
+          }),
+        });
+        if (!res.ok) throw new Error(await readErrorBody(res));
+        const data = await res.json();
+        const content = data.choices?.[0]?.message?.content;
+        if (content == null) throw new Error("Empty API response");
+        text = typeof content === "string" ? content : String(content);
+        break;
+      }
+      default:
+        return titleFromUserMessage(userMessage);
+    }
+    const normalized = normalizeThemeDialogTitle(text);
+    return normalized === "New conversation" ? titleFromUserMessage(userMessage) : normalized;
+  } catch {
+    return titleFromUserMessage(userMessage);
+  }
+}
+
 /**
  * Потоковый ответ: onDelta вызывается для каждой порции текста по мере прихода.
- * @param {{ webSearch?: boolean }} [options]
+ * @param {{ webSearch?: boolean, systemInstruction?: string, llmMessages?: Array<{ role: string, content: string }> }} [options]
  * @returns {Promise<string>} полный накопленный текст
  */
 export async function completeChatMessageStreaming(providerId, text, apiKey, onDelta, options = {}) {
@@ -270,10 +456,12 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
     throw new Error("No API key for the selected model (.env)");
   }
   const trimmed = text.trim();
-  if (!trimmed) {
+  const hasLlm = Array.isArray(options.llmMessages) && options.llmMessages.length > 0;
+  if (!hasLlm && !trimmed) {
     throw new Error("Empty message");
   }
   const webSearch = Boolean(options.webSearch);
+  const oaMsgs = openAiCompatMessages(trimmed, options);
 
   let full;
 
@@ -288,7 +476,7 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
         },
         body: JSON.stringify({
           model: webSearch ? OPENAI_MODEL_WEB : OPENAI_MODEL,
-          messages: [{ role: "user", content: trimmed }],
+          messages: oaMsgs,
           stream: true,
         }),
       });
@@ -298,7 +486,7 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
     case "perplexity": {
       const pBody = {
         model: webSearch ? PERPLEXITY_MODEL_SEARCH : PERPLEXITY_MODEL,
-        messages: [{ role: "user", content: trimmed }],
+        messages: oaMsgs,
         stream: true,
       };
       if (webSearch) {
@@ -324,9 +512,12 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
       const aStreamBody = {
         model: ANTHROPIC_MODEL,
         max_tokens: 4096,
-        messages: [{ role: "user", content: trimmed }],
+        messages: anthropicApiMessages(trimmed, options),
         stream: true,
       };
+      if (options.systemInstruction) {
+        aStreamBody.system = options.systemInstruction;
+      }
       if (webSearch) {
         aStreamBody.tools = [
           { type: "web_search_20250305", name: "web_search", max_uses: 5 },
@@ -347,6 +538,11 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
       break;
     }
     case "gemini-flash": {
+      const gMsgs =
+        Array.isArray(options.llmMessages) && options.llmMessages.length > 0
+          ? options.llmMessages
+          : [{ role: "user", content: trimmed }];
+      const combined = geminiFlattenChat(String(options.systemInstruction ?? ""), gMsgs);
       // Без alt=sse Google отдаёт не классический SSE (см. ai.google.dev streamGenerateContent) — парсер не получает data:-чанки по мере генерации.
       const url = `/llm/gemini/v1beta/models/${GEMINI_MODEL_FLASH}:streamGenerateContent?key=${encodeURIComponent(key)}&alt=sse`;
       const res = await fetch(url, {
@@ -355,7 +551,7 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
           "Content-Type": "application/json",
           Accept: "text/event-stream",
         },
-        body: JSON.stringify(geminiJsonBody(trimmed, { googleSearch: webSearch })),
+        body: JSON.stringify(geminiJsonBody(combined, { googleSearch: webSearch })),
       });
       full = await streamGeminiGenerateContent(res, onDelta);
       break;
