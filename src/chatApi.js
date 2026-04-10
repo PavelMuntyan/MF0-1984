@@ -79,7 +79,7 @@ async function geminiGenerateContent(modelId, trimmed, key, googleSearch = false
     : "";
   if (!out) {
     const block = data.promptFeedback?.blockReason;
-    throw new Error(block ? `Запрос отклонён: ${block}` : "Пустой ответ API");
+    throw new Error(block ? `Request blocked: ${block}` : "Empty API response");
   }
   return { text: out };
 }
@@ -101,7 +101,7 @@ async function readErrorBody(res) {
 }
 
 /**
- * Текст ошибки OpenAI для показа в чате (русский там, где типовые формулировки).
+ * User-facing OpenAI image error text for the chat UI.
  * @param {string} raw
  * @param {number} [status]
  */
@@ -111,47 +111,47 @@ function humanizeOpenAiImageError(raw, status) {
   if (low.includes("server had an error") || low.includes("sorry about that")) {
     const tail = s.length > 400 ? `${s.slice(0, 400)}…` : s;
     return (
-      "OpenAI вернул ошибку сервера на этапе генерации изображения. " +
-      "Частая причина — устаревшая модель DALL·E; в приложении используется GPT Image. " +
-      "Проверьте в кабинете OpenAI доступ к GPT Image и верификацию организации при необходимости. " +
-      `Текст API: ${tail}`
+      "OpenAI returned a server error while generating the image. " +
+      "A common cause is a legacy DALL·E setup; this app uses GPT Image. " +
+      "Check your OpenAI dashboard for GPT Image access and organization verification if needed. " +
+      `API message: ${tail}`
     );
   }
   if (low.includes("rate_limit") || low.includes("too many requests") || status === 429) {
-    return "Слишком много запросов к OpenAI. Подождите немного и повторите.";
+    return "Too many requests to OpenAI. Wait a moment and try again.";
   }
   if (
     low.includes("insufficient_quota") ||
     low.includes("exceeded your current quota") ||
     (low.includes("billing") && low.includes("openai"))
   ) {
-    return "Проверьте баланс и тариф API OpenAI (квота или оплата).";
+    return "Check your OpenAI API billing and quota.";
   }
   if (low.includes("invalid_api_key") || low.includes("incorrect api key")) {
-    return "Неверный или отозванный ключ OpenAI в .env.";
+    return "Invalid or revoked OpenAI API key in .env.";
   }
   if (
     low.includes("model_not_found") ||
     (low.includes("model") && (low.includes("not found") || low.includes("does not exist")))
   ) {
     return (
-      `Модель ${OPENAI_IMAGE_MODEL} недоступна для этого ключа или региона. ` +
-      `Ответ API: ${s.length > 220 ? `${s.slice(0, 220)}…` : s}`
+      `Model ${OPENAI_IMAGE_MODEL} is not available for this key or region. ` +
+      `API response: ${s.length > 220 ? `${s.slice(0, 220)}…` : s}`
     );
   }
   if (low.includes("must be verified") || low.includes("organization must be verified")) {
     return (
-      "Для GPT Image в OpenAI может требоваться верификация организации в кабинете разработчика. " +
+      "GPT Image may require organization verification in the OpenAI developer dashboard. " +
       (s.length > 200 ? `${s.slice(0, 200)}…` : s)
     );
   }
   if (low.includes("content_policy") || low.includes("content_policy_violation")) {
-    return "Запрос отклонён политикой контента OpenAI. Сформулируйте описание иначе.";
+    return "Request rejected by OpenAI content policy. Try a different prompt.";
   }
   if (!s) {
     return status
-      ? `Не удалось сгенерировать изображение (код ответа ${status}).`
-      : "Не удалось сгенерировать изображение.";
+      ? `Could not generate image (HTTP ${status}).`
+      : "Could not generate image.";
   }
   if (s.length > 280) return `${s.slice(0, 280)}…`;
   return s;
@@ -167,11 +167,11 @@ function humanizeOpenAiImageError(raw, status) {
 export async function completeChatMessage(providerId, text, apiKey, options = {}) {
   const key = String(apiKey ?? "").trim();
   if (!key) {
-    throw new Error("Нет ключа API для выбранной модели (.env)");
+    throw new Error("No API key for the selected model (.env)");
   }
   const trimmed = text.trim();
   if (!trimmed) {
-    throw new Error("Пустое сообщение");
+    throw new Error("Empty message");
   }
   const webSearch = Boolean(options.webSearch);
 
@@ -191,7 +191,7 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
       if (!res.ok) throw new Error(await readErrorBody(res));
       const data = await res.json();
       const content = data.choices?.[0]?.message?.content;
-      if (content == null) throw new Error("Пустой ответ API");
+      if (content == null) throw new Error("Empty API response");
       return { text: typeof content === "string" ? content : String(content) };
     }
     case "anthropic": {
@@ -218,12 +218,12 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
       if (!res.ok) throw new Error(await readErrorBody(res));
       const data = await res.json();
       const blocks = data.content;
-      if (!Array.isArray(blocks)) throw new Error("Неожиданный формат ответа");
+      if (!Array.isArray(blocks)) throw new Error("Unexpected response format");
       const textParts = blocks
         .filter((b) => b.type === "text" && b.text)
         .map((b) => b.text);
       const out = textParts.join("\n").trim();
-      if (!out) throw new Error("Пустой ответ API");
+      if (!out) throw new Error("Empty API response");
       return { text: out };
     }
     case "gemini-flash":
@@ -251,11 +251,11 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
       if (!res.ok) throw new Error(await readErrorBody(res));
       const data = await res.json();
       const content = data.choices?.[0]?.message?.content;
-      if (content == null) throw new Error("Пустой ответ API");
+      if (content == null) throw new Error("Empty API response");
       return { text: typeof content === "string" ? content : String(content) };
     }
     default:
-      throw new Error("Неизвестный провайдер");
+      throw new Error("Unknown provider");
   }
 }
 
@@ -267,11 +267,11 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
 export async function completeChatMessageStreaming(providerId, text, apiKey, onDelta, options = {}) {
   const key = String(apiKey ?? "").trim();
   if (!key) {
-    throw new Error("Нет ключа API для выбранной модели (.env)");
+    throw new Error("No API key for the selected model (.env)");
   }
   const trimmed = text.trim();
   if (!trimmed) {
-    throw new Error("Пустое сообщение");
+    throw new Error("Empty message");
   }
   const webSearch = Boolean(options.webSearch);
 
@@ -361,11 +361,11 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
       break;
     }
     default:
-      throw new Error("Неизвестный провайдер");
+      throw new Error("Unknown provider");
   }
 
   if (!String(full).trim()) {
-    throw new Error("Пустой ответ API");
+    throw new Error("Empty API response");
   }
   return full;
 }
@@ -380,9 +380,9 @@ export function apiModelHint(providerId, extras = {}) {
     case "openai":
       return ws ? OPENAI_MODEL_WEB : OPENAI_MODEL;
     case "anthropic":
-      return ws ? `${ANTHROPIC_MODEL} · поиск в сети` : ANTHROPIC_MODEL;
+      return ws ? `${ANTHROPIC_MODEL} · web search` : ANTHROPIC_MODEL;
     case "gemini-flash":
-      return ws ? `${GEMINI_MODEL_FLASH} · поиск Google` : GEMINI_MODEL_FLASH;
+      return ws ? `${GEMINI_MODEL_FLASH} · Google search` : GEMINI_MODEL_FLASH;
     case "perplexity":
       return ws ? PERPLEXITY_MODEL_SEARCH : PERPLEXITY_MODEL;
     default:
@@ -422,14 +422,14 @@ async function openaiImageGeneration(prompt, key) {
   }
   const data = await res.json();
   const item = data.data?.[0];
-  if (!item) throw new Error("Пустой ответ API изображений");
+  if (!item) throw new Error("Empty image API response");
   if (item.url) {
-    return `![Сгенерированное изображение](${item.url})`;
+    return `![Generated image](${item.url})`;
   }
   if (item.b64_json) {
-    return `![Сгенерированное изображение](data:image/png;base64,${item.b64_json})`;
+    return `![Generated image](data:image/png;base64,${item.b64_json})`;
   }
-  throw new Error("В ответе API нет ни ссылки, ни данных изображения");
+  throw new Error("API response contained no image URL or image data");
 }
 
 async function geminiImageGeneration(prompt, key) {
@@ -446,7 +446,7 @@ async function geminiImageGeneration(prompt, key) {
   const parts = data.candidates?.[0]?.content?.parts;
   if (!Array.isArray(parts) || parts.length === 0) {
     const block = data.promptFeedback?.blockReason;
-    throw new Error(block ? `Запрос отклонён: ${block}` : "Пустой ответ API");
+    throw new Error(block ? `Request blocked: ${block}` : "Empty API response");
   }
   const textBits = [];
   let imageMd = "";
@@ -457,16 +457,16 @@ async function geminiImageGeneration(prompt, key) {
     if (id?.data && id?.mimeType) {
       const mime = String(id.mimeType);
       const b64 = String(id.data);
-      imageMd = `![Сгенерированное изображение](data:${mime};base64,${b64})`;
+      imageMd = `![Generated image](data:${mime};base64,${b64})`;
     } else if (id?.data && id?.mime_type) {
       const mime = String(id.mime_type);
       const b64 = String(id.data);
-      imageMd = `![Сгенерированное изображение](data:${mime};base64,${b64})`;
+      imageMd = `![Generated image](data:${mime};base64,${b64})`;
     }
   }
   if (!imageMd) {
     const t = textBits.join("\n").trim();
-    throw new Error(t || "Модель не вернула изображение");
+    throw new Error(t || "Model did not return an image");
   }
   const prefix = textBits.filter(Boolean).join("\n\n").trim();
   return prefix ? `${prefix}\n\n${imageMd}` : imageMd;
@@ -479,11 +479,11 @@ async function geminiImageGeneration(prompt, key) {
 export async function completeImageGeneration(providerId, prompt, apiKey) {
   const key = String(apiKey ?? "").trim();
   if (!key) {
-    throw new Error("Нет ключа API для выбранной модели (.env)");
+    throw new Error("No API key for the selected model (.env)");
   }
   const trimmed = String(prompt ?? "").trim();
   if (!trimmed) {
-    throw new Error("Пустое сообщение");
+    throw new Error("Empty message");
   }
 
   switch (providerId) {
@@ -498,9 +498,9 @@ export async function completeImageGeneration(providerId, prompt, apiKey) {
     case "anthropic":
     case "perplexity":
       throw new Error(
-        "Эта модель не создаёт изображения. Выберите ChatGPT или Gemini (ключ в .env).",
+        "This model does not generate images. Choose ChatGPT or Gemini (key in .env).",
       );
     default:
-      throw new Error("Неизвестный провайдер");
+      throw new Error("Unknown provider");
   }
 }

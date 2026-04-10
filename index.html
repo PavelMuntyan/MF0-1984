@@ -100,10 +100,10 @@
             </div>
 
             <div class="header-actions">
-              <div class="btn">New dialogue</div>
+              <button type="button" class="btn" id="btn-new-dialogue">New chat</button>
               <div class="btn">Search</div>
               <div class="btn">Analytics</div>
-              <div class="btn">Memory tree</div>
+              <button type="button" class="btn" id="btn-memory-tree">Memory tree</button>
             </div>
 
             <div class="header-icons">
@@ -188,10 +188,10 @@
           </header>
 
           <div class="container">
-            <aside class="sidebar">
+            <aside class="sidebar" id="main-sidebar">
               <div class="sidebar-panel" id="dialogues-panel">
-                <div class="sidebar-panel-header">
-                  <h2 class="sidebar-panel-title">Dialogues</h2>
+                <div class="sidebar-panel-header" id="dialogues-panel-header">
+                  <h2 class="sidebar-panel-title">Themes</h2>
                   <button
                     type="button"
                     class="btn-dialogues-toggle"
@@ -199,7 +199,7 @@
                     aria-expanded="false"
                     aria-controls="dialogue-cards"
                     aria-haspopup="true"
-                    aria-label="Open dialogues list"
+                    aria-label="Open themes list"
                   >
                     <svg
                       class="btn-dialogues-chevron"
@@ -215,6 +215,39 @@
                       <path d="m6 9 6 6 6-6" />
                     </svg>
                   </button>
+                  <div
+                    class="dialogues-mt-expand-cue"
+                    id="dialogues-mt-expand-cue"
+                    hidden
+                    aria-hidden="true"
+                  >
+                    <svg
+                      class="dialogues-mt-chevron"
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="m6 9 6 6 6-6" />
+                    </svg>
+                    <svg
+                      class="dialogues-mt-chevron"
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="m6 9 6 6 6-6" />
+                    </svg>
+                  </div>
                 </div>
                 <div class="sidebar-panel-body" id="dialogue-cards">
                   <div class="dialog-card">
@@ -226,19 +259,69 @@
                           <span class="dialog-card-meta-line">Last action 2026-04-08</span>
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        class="dialog-star"
-                        aria-pressed="false"
-                        aria-label="Add to favorites"
-                      >
-                        <svg class="dialog-star-svg" viewBox="0 0 24 24" aria-hidden="true">
-                          <path
-                            class="dialog-star-path"
-                            d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"
-                          />
-                        </svg>
-                      </button>
+                      <div class="dialog-card-actions">
+                        <button
+                          type="button"
+                          class="dialog-star"
+                          aria-pressed="false"
+                          aria-label="Add to favorites"
+                        >
+                          <svg class="dialog-star-svg" viewBox="0 0 24 24" aria-hidden="true">
+                            <path
+                              class="dialog-star-path"
+                              d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"
+                            />
+                          </svg>
+                        </button>
+                        <div class="dialog-card-folder-wrap">
+                          <button
+                            type="button"
+                            class="dialog-folder-btn"
+                            aria-expanded="false"
+                            aria-haspopup="true"
+                            aria-label="Show dialogues in this theme"
+                          >
+                            <svg
+                              class="dialog-folder-icon dialog-folder-icon--closed"
+                              xmlns="http://www.w3.org/2000/svg"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.53 2.9A2 2 0 0 0 7.56 2H4a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2Z"
+                              />
+                            </svg>
+                            <svg
+                              class="dialog-folder-icon dialog-folder-icon--open"
+                              xmlns="http://www.w3.org/2000/svg"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-1.6-2l-1.8-1.2A2 2 0 0 0 16.74 4H9.5a2 2 0 0 0-2 2v2"
+                              />
+                              <path
+                                d="M2 14h12a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2Z"
+                              />
+                            </svg>
+                          </button>
+                          <div class="dialog-folder-menu" role="menu" aria-label="Theme dialogues" hidden>
+                            <button type="button" class="dialog-folder-menu-item" role="menuitem">Dialogue 1</button>
+                            <button type="button" class="dialog-folder-menu-item" role="menuitem">Dialogue 2</button>
+                            <button type="button" class="dialog-folder-menu-item" role="menuitem">Dialogue 3</button>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   </div>
                   <div class="dialog-card">
@@ -250,19 +333,69 @@
                           <span class="dialog-card-meta-line">Last action 2026-04-05</span>
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        class="dialog-star"
-                        aria-pressed="false"
-                        aria-label="Add to favorites"
-                      >
-                        <svg class="dialog-star-svg" viewBox="0 0 24 24" aria-hidden="true">
-                          <path
-                            class="dialog-star-path"
-                            d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"
-                          />
-                        </svg>
-                      </button>
+                      <div class="dialog-card-actions">
+                        <button
+                          type="button"
+                          class="dialog-star"
+                          aria-pressed="false"
+                          aria-label="Add to favorites"
+                        >
+                          <svg class="dialog-star-svg" viewBox="0 0 24 24" aria-hidden="true">
+                            <path
+                              class="dialog-star-path"
+                              d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"
+                            />
+                          </svg>
+                        </button>
+                        <div class="dialog-card-folder-wrap">
+                          <button
+                            type="button"
+                            class="dialog-folder-btn"
+                            aria-expanded="false"
+                            aria-haspopup="true"
+                            aria-label="Show dialogues in this theme"
+                          >
+                            <svg
+                              class="dialog-folder-icon dialog-folder-icon--closed"
+                              xmlns="http://www.w3.org/2000/svg"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.53 2.9A2 2 0 0 0 7.56 2H4a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2Z"
+                              />
+                            </svg>
+                            <svg
+                              class="dialog-folder-icon dialog-folder-icon--open"
+                              xmlns="http://www.w3.org/2000/svg"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-1.6-2l-1.8-1.2A2 2 0 0 0 16.74 4H9.5a2 2 0 0 0-2 2v2"
+                              />
+                              <path
+                                d="M2 14h12a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2Z"
+                              />
+                            </svg>
+                          </button>
+                          <div class="dialog-folder-menu" role="menu" aria-label="Theme dialogues" hidden>
+                            <button type="button" class="dialog-folder-menu-item" role="menuitem">Dialogue 1</button>
+                            <button type="button" class="dialog-folder-menu-item" role="menuitem">Dialogue 2</button>
+                            <button type="button" class="dialog-folder-menu-item" role="menuitem">Dialogue 3</button>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   </div>
                   <div class="dialog-card">
@@ -274,19 +407,69 @@
                           <span class="dialog-card-meta-line">Last action 2026-04-09</span>
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        class="dialog-star"
-                        aria-pressed="false"
-                        aria-label="Add to favorites"
-                      >
-                        <svg class="dialog-star-svg" viewBox="0 0 24 24" aria-hidden="true">
-                          <path
-                            class="dialog-star-path"
-                            d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"
-                          />
-                        </svg>
-                      </button>
+                      <div class="dialog-card-actions">
+                        <button
+                          type="button"
+                          class="dialog-star"
+                          aria-pressed="false"
+                          aria-label="Add to favorites"
+                        >
+                          <svg class="dialog-star-svg" viewBox="0 0 24 24" aria-hidden="true">
+                            <path
+                              class="dialog-star-path"
+                              d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"
+                            />
+                          </svg>
+                        </button>
+                        <div class="dialog-card-folder-wrap">
+                          <button
+                            type="button"
+                            class="dialog-folder-btn"
+                            aria-expanded="false"
+                            aria-haspopup="true"
+                            aria-label="Show dialogues in this theme"
+                          >
+                            <svg
+                              class="dialog-folder-icon dialog-folder-icon--closed"
+                              xmlns="http://www.w3.org/2000/svg"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.53 2.9A2 2 0 0 0 7.56 2H4a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2Z"
+                              />
+                            </svg>
+                            <svg
+                              class="dialog-folder-icon dialog-folder-icon--open"
+                              xmlns="http://www.w3.org/2000/svg"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-1.6-2l-1.8-1.2A2 2 0 0 0 16.74 4H9.5a2 2 0 0 0-2 2v2"
+                              />
+                              <path
+                                d="M2 14h12a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2Z"
+                              />
+                            </svg>
+                          </button>
+                          <div class="dialog-folder-menu" role="menu" aria-label="Theme dialogues" hidden>
+                            <button type="button" class="dialog-folder-menu-item" role="menuitem">Dialogue 1</button>
+                            <button type="button" class="dialog-folder-menu-item" role="menuitem">Dialogue 2</button>
+                            <button type="button" class="dialog-folder-menu-item" role="menuitem">Dialogue 3</button>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   </div>
                   <div class="dialog-card">
@@ -298,26 +481,599 @@
                           <span class="dialog-card-meta-line">Last action 2026-04-09</span>
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        class="dialog-star"
-                        aria-pressed="false"
-                        aria-label="Add to favorites"
-                      >
-                        <svg class="dialog-star-svg" viewBox="0 0 24 24" aria-hidden="true">
-                          <path
-                            class="dialog-star-path"
-                            d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"
-                          />
-                        </svg>
-                      </button>
+                      <div class="dialog-card-actions">
+                        <button
+                          type="button"
+                          class="dialog-star"
+                          aria-pressed="false"
+                          aria-label="Add to favorites"
+                        >
+                          <svg class="dialog-star-svg" viewBox="0 0 24 24" aria-hidden="true">
+                            <path
+                              class="dialog-star-path"
+                              d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"
+                            />
+                          </svg>
+                        </button>
+                        <div class="dialog-card-folder-wrap">
+                          <button
+                            type="button"
+                            class="dialog-folder-btn"
+                            aria-expanded="false"
+                            aria-haspopup="true"
+                            aria-label="Show dialogues in this theme"
+                          >
+                            <svg
+                              class="dialog-folder-icon dialog-folder-icon--closed"
+                              xmlns="http://www.w3.org/2000/svg"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.53 2.9A2 2 0 0 0 7.56 2H4a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2Z"
+                              />
+                            </svg>
+                            <svg
+                              class="dialog-folder-icon dialog-folder-icon--open"
+                              xmlns="http://www.w3.org/2000/svg"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-1.6-2l-1.8-1.2A2 2 0 0 0 16.74 4H9.5a2 2 0 0 0-2 2v2"
+                              />
+                              <path
+                                d="M2 14h12a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2Z"
+                              />
+                            </svg>
+                          </button>
+                          <div class="dialog-folder-menu" role="menu" aria-label="Theme dialogues" hidden>
+                            <button type="button" class="dialog-folder-menu-item" role="menuitem">Dialogue 1</button>
+                            <button type="button" class="dialog-folder-menu-item" role="menuitem">Dialogue 2</button>
+                            <button type="button" class="dialog-folder-menu-item" role="menuitem">Dialogue 3</button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="dialog-card">
+                    <div class="dialog-card-inner">
+                      <div class="dialog-card-info">
+                        <div class="dialog-card-title">Onboarding flow</div>
+                        <div class="dialog-card-meta">
+                          <span class="dialog-card-meta-line">Starter 2026-01-28</span>
+                          <span class="dialog-card-meta-line">Last action 2026-04-02</span>
+                        </div>
+                      </div>
+                      <div class="dialog-card-actions">
+                        <button
+                          type="button"
+                          class="dialog-star"
+                          aria-pressed="false"
+                          aria-label="Add to favorites"
+                        >
+                          <svg class="dialog-star-svg" viewBox="0 0 24 24" aria-hidden="true">
+                            <path
+                              class="dialog-star-path"
+                              d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"
+                            />
+                          </svg>
+                        </button>
+                        <div class="dialog-card-folder-wrap">
+                          <button
+                            type="button"
+                            class="dialog-folder-btn"
+                            aria-expanded="false"
+                            aria-haspopup="true"
+                            aria-label="Show dialogues in this theme"
+                          >
+                            <svg
+                              class="dialog-folder-icon dialog-folder-icon--closed"
+                              xmlns="http://www.w3.org/2000/svg"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.53 2.9A2 2 0 0 0 7.56 2H4a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2Z"
+                              />
+                            </svg>
+                            <svg
+                              class="dialog-folder-icon dialog-folder-icon--open"
+                              xmlns="http://www.w3.org/2000/svg"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-1.6-2l-1.8-1.2A2 2 0 0 0 16.74 4H9.5a2 2 0 0 0-2 2v2"
+                              />
+                              <path
+                                d="M2 14h12a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2Z"
+                              />
+                            </svg>
+                          </button>
+                          <div class="dialog-folder-menu" role="menu" aria-label="Theme dialogues" hidden>
+                            <button type="button" class="dialog-folder-menu-item" role="menuitem">Dialogue 1</button>
+                            <button type="button" class="dialog-folder-menu-item" role="menuitem">Dialogue 2</button>
+                            <button type="button" class="dialog-folder-menu-item" role="menuitem">Dialogue 3</button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="dialog-card">
+                    <div class="dialog-card-inner">
+                      <div class="dialog-card-info">
+                        <div class="dialog-card-title">API smoke tests</div>
+                        <div class="dialog-card-meta">
+                          <span class="dialog-card-meta-line">Starter 2026-02-18</span>
+                          <span class="dialog-card-meta-line">Last action 2026-04-07</span>
+                        </div>
+                      </div>
+                      <div class="dialog-card-actions">
+                        <button
+                          type="button"
+                          class="dialog-star"
+                          aria-pressed="false"
+                          aria-label="Add to favorites"
+                        >
+                          <svg class="dialog-star-svg" viewBox="0 0 24 24" aria-hidden="true">
+                            <path
+                              class="dialog-star-path"
+                              d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"
+                            />
+                          </svg>
+                        </button>
+                        <div class="dialog-card-folder-wrap">
+                          <button
+                            type="button"
+                            class="dialog-folder-btn"
+                            aria-expanded="false"
+                            aria-haspopup="true"
+                            aria-label="Show dialogues in this theme"
+                          >
+                            <svg
+                              class="dialog-folder-icon dialog-folder-icon--closed"
+                              xmlns="http://www.w3.org/2000/svg"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.53 2.9A2 2 0 0 0 7.56 2H4a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2Z"
+                              />
+                            </svg>
+                            <svg
+                              class="dialog-folder-icon dialog-folder-icon--open"
+                              xmlns="http://www.w3.org/2000/svg"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-1.6-2l-1.8-1.2A2 2 0 0 0 16.74 4H9.5a2 2 0 0 0-2 2v2"
+                              />
+                              <path
+                                d="M2 14h12a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2Z"
+                              />
+                            </svg>
+                          </button>
+                          <div class="dialog-folder-menu" role="menu" aria-label="Theme dialogues" hidden>
+                            <button type="button" class="dialog-folder-menu-item" role="menuitem">Dialogue 1</button>
+                            <button type="button" class="dialog-folder-menu-item" role="menuitem">Dialogue 2</button>
+                            <button type="button" class="dialog-folder-menu-item" role="menuitem">Dialogue 3</button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="dialog-card">
+                    <div class="dialog-card-inner">
+                      <div class="dialog-card-info">
+                        <div class="dialog-card-title">Legal Q&amp;A draft</div>
+                        <div class="dialog-card-meta">
+                          <span class="dialog-card-meta-line">Starter 2026-03-05</span>
+                          <span class="dialog-card-meta-line">Last action 2026-04-04</span>
+                        </div>
+                      </div>
+                      <div class="dialog-card-actions">
+                        <button
+                          type="button"
+                          class="dialog-star"
+                          aria-pressed="false"
+                          aria-label="Add to favorites"
+                        >
+                          <svg class="dialog-star-svg" viewBox="0 0 24 24" aria-hidden="true">
+                            <path
+                              class="dialog-star-path"
+                              d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"
+                            />
+                          </svg>
+                        </button>
+                        <div class="dialog-card-folder-wrap">
+                          <button
+                            type="button"
+                            class="dialog-folder-btn"
+                            aria-expanded="false"
+                            aria-haspopup="true"
+                            aria-label="Show dialogues in this theme"
+                          >
+                            <svg
+                              class="dialog-folder-icon dialog-folder-icon--closed"
+                              xmlns="http://www.w3.org/2000/svg"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.53 2.9A2 2 0 0 0 7.56 2H4a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2Z"
+                              />
+                            </svg>
+                            <svg
+                              class="dialog-folder-icon dialog-folder-icon--open"
+                              xmlns="http://www.w3.org/2000/svg"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-1.6-2l-1.8-1.2A2 2 0 0 0 16.74 4H9.5a2 2 0 0 0-2 2v2"
+                              />
+                              <path
+                                d="M2 14h12a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2Z"
+                              />
+                            </svg>
+                          </button>
+                          <div class="dialog-folder-menu" role="menu" aria-label="Theme dialogues" hidden>
+                            <button type="button" class="dialog-folder-menu-item" role="menuitem">Dialogue 1</button>
+                            <button type="button" class="dialog-folder-menu-item" role="menuitem">Dialogue 2</button>
+                            <button type="button" class="dialog-folder-menu-item" role="menuitem">Dialogue 3</button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="dialog-card">
+                    <div class="dialog-card-inner">
+                      <div class="dialog-card-info">
+                        <div class="dialog-card-title">Weekly retro notes</div>
+                        <div class="dialog-card-meta">
+                          <span class="dialog-card-meta-line">Starter 2026-03-11</span>
+                          <span class="dialog-card-meta-line">Last action 2026-04-10</span>
+                        </div>
+                      </div>
+                      <div class="dialog-card-actions">
+                        <button
+                          type="button"
+                          class="dialog-star"
+                          aria-pressed="false"
+                          aria-label="Add to favorites"
+                        >
+                          <svg class="dialog-star-svg" viewBox="0 0 24 24" aria-hidden="true">
+                            <path
+                              class="dialog-star-path"
+                              d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"
+                            />
+                          </svg>
+                        </button>
+                        <div class="dialog-card-folder-wrap">
+                          <button
+                            type="button"
+                            class="dialog-folder-btn"
+                            aria-expanded="false"
+                            aria-haspopup="true"
+                            aria-label="Show dialogues in this theme"
+                          >
+                            <svg
+                              class="dialog-folder-icon dialog-folder-icon--closed"
+                              xmlns="http://www.w3.org/2000/svg"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.53 2.9A2 2 0 0 0 7.56 2H4a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2Z"
+                              />
+                            </svg>
+                            <svg
+                              class="dialog-folder-icon dialog-folder-icon--open"
+                              xmlns="http://www.w3.org/2000/svg"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-1.6-2l-1.8-1.2A2 2 0 0 0 16.74 4H9.5a2 2 0 0 0-2 2v2"
+                              />
+                              <path
+                                d="M2 14h12a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2Z"
+                              />
+                            </svg>
+                          </button>
+                          <div class="dialog-folder-menu" role="menu" aria-label="Theme dialogues" hidden>
+                            <button type="button" class="dialog-folder-menu-item" role="menuitem">Dialogue 1</button>
+                            <button type="button" class="dialog-folder-menu-item" role="menuitem">Dialogue 2</button>
+                            <button type="button" class="dialog-folder-menu-item" role="menuitem">Dialogue 3</button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="dialog-card">
+                    <div class="dialog-card-inner">
+                      <div class="dialog-card-info">
+                        <div class="dialog-card-title">Investor update Apr</div>
+                        <div class="dialog-card-meta">
+                          <span class="dialog-card-meta-line">Starter 2026-03-29</span>
+                          <span class="dialog-card-meta-line">Last action 2026-04-06</span>
+                        </div>
+                      </div>
+                      <div class="dialog-card-actions">
+                        <button
+                          type="button"
+                          class="dialog-star"
+                          aria-pressed="false"
+                          aria-label="Add to favorites"
+                        >
+                          <svg class="dialog-star-svg" viewBox="0 0 24 24" aria-hidden="true">
+                            <path
+                              class="dialog-star-path"
+                              d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"
+                            />
+                          </svg>
+                        </button>
+                        <div class="dialog-card-folder-wrap">
+                          <button
+                            type="button"
+                            class="dialog-folder-btn"
+                            aria-expanded="false"
+                            aria-haspopup="true"
+                            aria-label="Show dialogues in this theme"
+                          >
+                            <svg
+                              class="dialog-folder-icon dialog-folder-icon--closed"
+                              xmlns="http://www.w3.org/2000/svg"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.53 2.9A2 2 0 0 0 7.56 2H4a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2Z"
+                              />
+                            </svg>
+                            <svg
+                              class="dialog-folder-icon dialog-folder-icon--open"
+                              xmlns="http://www.w3.org/2000/svg"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-1.6-2l-1.8-1.2A2 2 0 0 0 16.74 4H9.5a2 2 0 0 0-2 2v2"
+                              />
+                              <path
+                                d="M2 14h12a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2Z"
+                              />
+                            </svg>
+                          </button>
+                          <div class="dialog-folder-menu" role="menu" aria-label="Theme dialogues" hidden>
+                            <button type="button" class="dialog-folder-menu-item" role="menuitem">Dialogue 1</button>
+                            <button type="button" class="dialog-folder-menu-item" role="menuitem">Dialogue 2</button>
+                            <button type="button" class="dialog-folder-menu-item" role="menuitem">Dialogue 3</button>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
               </div>
+
+              <div class="sidebar-panel sidebar-ir-panel" id="sidebar-intro-rules-access">
+                <div class="sidebar-panel-body sidebar-ir-panel-body">
+                  <div class="sidebar-ir-bubble">
+                    <span class="sidebar-ir-bubble-label">Intro</span>
+                    <button
+                      type="button"
+                      class="sidebar-ir-lock sidebar-ir-lock--open"
+                      id="btn-lock-intro"
+                      aria-label="Intro: unlocked"
+                      title="Unlocked"
+                    >
+                      <svg
+                        class="sidebar-ir-lock-svg"
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M8 11V7.5C8 5.01 9.79 3 12 3s4 2.01 4 4.5V8" />
+                        <rect x="4" y="11" width="16" height="10" rx="2" />
+                      </svg>
+                    </button>
+                  </div>
+                  <div class="sidebar-ir-bubble">
+                    <span class="sidebar-ir-bubble-label">Rules</span>
+                    <button
+                      type="button"
+                      class="sidebar-ir-lock sidebar-ir-lock--open"
+                      id="btn-lock-rules"
+                      aria-label="Rules: unlocked"
+                      title="Unlocked"
+                    >
+                      <svg
+                        class="sidebar-ir-lock-svg"
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M8 11V7.5C8 5.01 9.79 3 12 3s4 2.01 4 4.5V8" />
+                        <rect x="4" y="11" width="16" height="10" rx="2" />
+                      </svg>
+                    </button>
+                  </div>
+                  <div class="sidebar-ir-bubble">
+                    <span class="sidebar-ir-bubble-label">Access</span>
+                    <button
+                      type="button"
+                      class="sidebar-ir-lock sidebar-ir-lock--open"
+                      id="btn-lock-access"
+                      aria-label="Access: unlocked"
+                      title="Unlocked"
+                    >
+                      <svg
+                        class="sidebar-ir-lock-svg"
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M8 11V7.5C8 5.01 9.79 3 12 3s4 2.01 4 4.5V8" />
+                        <rect x="4" y="11" width="16" height="10" rx="2" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div
+                class="sidebar-panel memory-tree-side-panel"
+                id="memory-tree-side-panel"
+                hidden
+                aria-hidden="true"
+              >
+                <div class="sidebar-panel-header">
+                  <h2 class="sidebar-panel-title">Memory tree</h2>
+                </div>
+                <div class="mt-ui">
+                  <div class="mt-subtitle">
+                    Demo 3D graph; you can swap the data source for JSON/API without changing the renderer.
+                  </div>
+                  <div class="mt-stats">
+                    <div class="mt-card">
+                      <div class="mt-label">Nodes</div>
+                      <div class="mt-value" id="mt-stat-nodes">0</div>
+                    </div>
+                    <div class="mt-card">
+                      <div class="mt-label">Links</div>
+                      <div class="mt-value" id="mt-stat-links">0</div>
+                    </div>
+                    <div class="mt-card">
+                      <div class="mt-label">Groups</div>
+                      <div class="mt-value" id="mt-stat-groups">0</div>
+                    </div>
+                  </div>
+                  <div class="mt-controls">
+                    <input id="mt-search" type="text" placeholder="Search nodes by name…" />
+                    <div class="mt-control-row">
+                      <label for="mt-group-filter">Group filter</label>
+                      <select id="mt-group-filter">
+                        <option value="all">All groups</option>
+                      </select>
+                    </div>
+                    <div class="mt-control-row">
+                      <label for="mt-link-distance">Link distance</label>
+                      <input id="mt-link-distance" type="range" min="40" max="220" value="110" />
+                    </div>
+                    <div class="mt-control-row">
+                      <label for="mt-charge">Repulsion</label>
+                      <input id="mt-charge" type="range" min="-400" max="-20" value="-140" />
+                    </div>
+                  </div>
+                  <div class="mt-buttons">
+                    <button type="button" class="mt-btn" id="mt-btn-random">Focus random node</button>
+                    <button type="button" class="mt-btn secondary" id="mt-btn-reset">Reset filters</button>
+                    <button type="button" class="mt-btn secondary" id="mt-btn-spin">Toggle spin</button>
+                  </div>
+                  <div class="mt-details" id="mt-details">
+                    <div class="mt-details-title">Node details</div>
+                    <div class="mt-details-text">Click a node to see details.</div>
+                  </div>
+                  <div class="mt-legend" id="mt-legend"></div>
+                </div>
+              </div>
             </aside>
 
-            <div class="chat">
+            <div class="chat" id="main-chat">
+              <div
+                class="memory-tree-graph-host"
+                id="memory-tree-graph-host"
+                hidden
+                aria-hidden="true"
+                role="application"
+                aria-label="Memory tree graph"
+              >
+                <div class="memory-tree-graph-wrap-inner">
+                  <div id="memory-graph-root"></div>
+                </div>
+                <div class="mt-hint">
+                  Drag to rotate, scroll to zoom, drag background to pan. Click a node to focus and highlight
+                  links.
+                </div>
+              </div>
               <div
                 class="messages-viewport"
                 id="messages-viewport"
@@ -345,7 +1101,7 @@
                     aria-expanded="false"
                     aria-haspopup="menu"
                     aria-controls="attach-menu"
-                    title="Добавить"
+                    title="Add"
                   >
                     <span id="btn-attach-visual" class="btn-attach-visual">+</span>
                   </button>
@@ -353,7 +1109,7 @@
                     id="attach-menu"
                     class="attach-menu"
                     role="menu"
-                    aria-label="Действия вложения"
+                    aria-label="Attachment actions"
                     hidden
                   >
                     <button
@@ -365,7 +1121,7 @@
                       hidden
                     >
                       <span class="attach-menu-icon attach-menu-icon-plus" aria-hidden="true">+</span>
-                      <span class="attach-menu-label">Обычный ввод</span>
+                      <span class="attach-menu-label">Default input</span>
                     </button>
                     <div class="attach-menu-sep attach-menu-reset-sep" role="separator" hidden></div>
                     <button type="button" class="attach-menu-item" role="menuitem" data-action="files">
@@ -374,7 +1130,7 @@
                           <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.2-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
                         </svg>
                       </span>
-                      <span class="attach-menu-label">Добавить фото и файлы</span>
+                      <span class="attach-menu-label">Add photos &amp; files</span>
                     </button>
                     <div class="attach-menu-sep" role="separator"></div>
                     <button type="button" class="attach-menu-item" role="menuitem" data-action="image">
@@ -385,7 +1141,7 @@
                           <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
                         </svg>
                       </span>
-                      <span class="attach-menu-label">Создать изображение</span>
+                      <span class="attach-menu-label">Create image</span>
                     </button>
                     <button type="button" class="attach-menu-item" role="menuitem" data-action="research">
                       <span class="attach-menu-icon" aria-hidden="true">
@@ -398,7 +1154,7 @@
                           <path d="M8 13h8" />
                         </svg>
                       </span>
-                      <span class="attach-menu-label">Глубокое исследование</span>
+                      <span class="attach-menu-label">Deep research</span>
                     </button>
                     <button type="button" class="attach-menu-item" role="menuitem" data-action="web">
                       <span class="attach-menu-icon" aria-hidden="true">
@@ -408,7 +1164,7 @@
                           <path d="M2 12h20" />
                         </svg>
                       </span>
-                      <span class="attach-menu-label">Поиск в сети</span>
+                      <span class="attach-menu-label">Web search</span>
                     </button>
                   </div>
                   <input type="file" id="attach-file-input" class="attach-file-input" multiple accept="image/*,.pdf,.txt,.doc,.docx" hidden />

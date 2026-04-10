@@ -65,12 +65,13 @@ export default defineConfig({
   envPrefix: MODEL_ENV_PREFIXES,
   server: {
     port: 1984,
-    strictPort: true,
+    /** Если 1984 занят (другой процесс / старый Vite), Vite возьмёт следующий порт — смотри URL в терминале. */
+    strictPort: false,
     proxy: llmProxy,
   },
   preview: {
     port: 1984,
-    strictPort: true,
+    strictPort: false,
     proxy: llmProxy,
   },
 });

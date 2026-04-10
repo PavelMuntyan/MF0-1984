@@ -1,6 +1,6 @@
 {
   "name": "mf-lab",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,7 +12,10 @@
     "vite": "^6.2.0"
   },
   "dependencies": {
+    "3d-force-graph": "^1.80.0",
     "dompurify": "^3.3.3",
-    "marked": "^18.0.0"
+    "marked": "^18.0.0",
+    "three": "^0.183.2",
+    "three-spritetext": "^1.10.0"
   }
 }

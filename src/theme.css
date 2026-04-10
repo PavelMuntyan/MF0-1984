@@ -383,6 +383,7 @@ button.btn {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
+  gap: 0.75rem;
   min-height: 0;
   min-width: 0;
   align-self: stretch;
@@ -487,6 +488,31 @@ button.btn {
   background: hsl(var(--muted) / 0.35);
 }
 
+.dialog-card.dialog-card--mentioned {
+  border-color: hsl(var(--ring) / 0.65);
+  background: hsl(var(--primary) / 0.08);
+  box-shadow: 0 0 0 1px hsl(var(--ring) / 0.25);
+}
+
+.dark .dialog-card.dialog-card--mentioned {
+  background: hsl(var(--primary) / 0.12);
+}
+
+.dialog-card.dialog-card--selected {
+  border-color: hsl(var(--primary));
+  background: hsl(var(--primary) / 0.07);
+  box-shadow: 0 0 0 2px hsl(var(--primary) / 0.3);
+}
+
+.dark .dialog-card.dialog-card--selected {
+  background: hsl(var(--primary) / 0.14);
+}
+
+.dialog-card.dialog-card--selected.dialog-card--mentioned {
+  border-color: hsl(var(--primary));
+  box-shadow: 0 0 0 2px hsl(var(--primary) / 0.38);
+}
+
 .dialog-card-inner {
   display: flex;
   align-items: flex-start;
@@ -555,6 +581,185 @@ button.btn {
   stroke-width: 2;
   stroke-linejoin: round;
   transition: fill 0.15s ease;
+}
+
+.dialog-card-actions {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: flex-start;
+  gap: 0.1rem;
+  margin: -0.15rem -0.05rem 0 0;
+}
+
+.dialog-card-folder-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.dialog-folder-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.35rem;
+  margin: 0 -0.1rem 0 0;
+  border: none;
+  border-radius: 0.25rem;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.dialog-folder-btn:hover {
+  background: hsl(var(--muted) / 0.45);
+  color: hsl(var(--foreground));
+}
+
+.dialog-folder-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px hsl(var(--background)), 0 0 0 4px hsl(var(--ring) / 0.35);
+}
+
+.dialog-folder-icon {
+  width: 1.125rem;
+  height: 1.125rem;
+  display: block;
+  flex-shrink: 0;
+}
+
+.dialog-folder-icon--open {
+  display: none;
+}
+
+.dialog-folder-btn[aria-expanded="true"] .dialog-folder-icon--closed {
+  display: none;
+}
+
+.dialog-folder-btn[aria-expanded="true"] .dialog-folder-icon--open {
+  display: block;
+}
+
+.dialog-folder-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 60;
+  min-width: 10.5rem;
+  padding: 0.35rem 0;
+  margin: 0;
+  list-style: none;
+  border-radius: 0.5rem;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+  color: hsl(var(--card-foreground));
+  box-shadow:
+    0 10px 15px -3px rgb(0 0 0 / 0.1),
+    0 4px 6px -4px rgb(0 0 0 / 0.08);
+}
+
+.dark .dialog-folder-menu {
+  box-shadow:
+    0 10px 40px rgb(0 0 0 / 0.35),
+    0 4px 12px rgb(0 0 0 / 0.2);
+}
+
+.dialog-folder-menu-item {
+  display: block;
+  width: 100%;
+  padding: 0.45rem 0.85rem;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 0.8125rem;
+  line-height: 1.25;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.dialog-folder-menu-item:hover {
+  background: hsl(var(--muted) / 0.45);
+}
+
+.dialog-folder-menu-item:focus-visible {
+  outline: none;
+  background: hsl(var(--muted) / 0.45);
+}
+
+/* Intro / Rules / Access — bubbles under Themes */
+.sidebar-ir-panel {
+  flex: 0 0 auto;
+}
+
+.sidebar-ir-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-top: 0.65rem;
+}
+
+.sidebar-ir-bubble {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border-radius: 1rem;
+  border: 2px solid hsl(var(--border));
+  padding: 0.65rem 0.6rem 0.65rem 0.85rem;
+  color: hsl(var(--foreground));
+  background: hsl(var(--card));
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.sidebar-ir-bubble:hover {
+  background: hsl(var(--muted) / 0.35);
+}
+
+.sidebar-ir-bubble-label {
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.sidebar-ir-lock {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.35rem;
+  margin: -0.2rem -0.15rem -0.2rem 0;
+  border: none;
+  border-radius: 0.375rem;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.sidebar-ir-lock:hover {
+  background: hsl(var(--muted) / 0.45);
+  color: hsl(var(--foreground));
+}
+
+.sidebar-ir-lock:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px hsl(var(--background)), 0 0 0 4px hsl(var(--ring) / 0.35);
+}
+
+.sidebar-ir-lock-svg {
+  width: 1.125rem;
+  height: 1.125rem;
+  display: block;
 }
 
 .dialog-star.is-starred {
@@ -1456,7 +1661,8 @@ button.btn {
     display: inline-flex;
   }
 
-  .sidebar-panel-body {
+  /* Только список диалогов — не панель Intro/Rules/Access */
+  #dialogues-panel > .sidebar-panel-body {
     position: absolute;
     left: 0;
     right: 0;
@@ -1483,7 +1689,7 @@ button.btn {
       box-shadow 0.2s ease;
   }
 
-  .sidebar-panel.dialogues-dropdown-open .sidebar-panel-body {
+  #dialogues-panel.dialogues-dropdown-open > .sidebar-panel-body {
     max-height: min(calc(var(--app-vh, 100dvh) * 0.7), 28rem);
     opacity: 1;
     visibility: visible;
@@ -1495,7 +1701,7 @@ button.btn {
       0 4px 6px -4px rgb(0 0 0 / 0.08);
   }
 
-  .dark .sidebar-panel.dialogues-dropdown-open .sidebar-panel-body {
+  .dark #dialogues-panel.dialogues-dropdown-open > .sidebar-panel-body {
     box-shadow:
       0 10px 40px rgb(0 0 0 / 0.4),
       0 4px 12px rgb(0 0 0 / 0.25);

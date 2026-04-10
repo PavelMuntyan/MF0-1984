@@ -19,7 +19,7 @@ export async function streamOpenAICompatJson(res, onDelta) {
     throw new Error(msg || res.statusText);
   }
   const reader = res.body?.getReader();
-  if (!reader) throw new Error("Нет тела ответа");
+  if (!reader) throw new Error("No response body");
   const dec = new TextDecoder();
   let buffer = "";
   let full = "";
@@ -80,7 +80,7 @@ export async function streamAnthropicMessages(res, onDelta) {
     throw new Error(msg || res.statusText);
   }
   const reader = res.body?.getReader();
-  if (!reader) throw new Error("Нет тела ответа");
+  if (!reader) throw new Error("No response body");
   const dec = new TextDecoder();
   let buffer = "";
   let full = "";
@@ -132,7 +132,7 @@ export async function streamGeminiGenerateContent(res, onDelta) {
     throw new Error(msg || res.statusText);
   }
   const reader = res.body?.getReader();
-  if (!reader) throw new Error("Нет тела ответа");
+  if (!reader) throw new Error("No response body");
   const dec = new TextDecoder();
   let buffer = "";
   let full = "";

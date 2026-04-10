@@ -11,6 +11,7 @@ import {
 import { renderAssistantMarkdown } from "./markdown.js";
 import { getModelApiKeys } from "./modelEnv.js";
 import { setTheme } from "./theme.js";
+import { closeMemoryTree, initMemoryTree } from "./memoryTree.js";
 
 const MAX_LOG_LINES = 400;
 
@@ -40,11 +41,11 @@ function appendActivityLog(text) {
 /** Подпись режима меню «+» для журнала активности */
 function attachModeLogLabel(mode) {
   const m = String(mode ?? "");
-  if (m === "web") return "поиск в сети";
-  if (m === "image") return "изображение";
-  if (m === "research") return "глубокое исследование";
-  if (m === "files") return "файлы (только выбор)";
-  return "обычный текст";
+  if (m === "web") return "web search";
+  if (m === "image") return "image";
+  if (m === "research") return "deep research";
+  if (m === "files") return "files (picker only)";
+  return "default text";
 }
 
 /** Первый URL или data: из markdown-картинки `![](...)` */
@@ -144,7 +145,7 @@ function initThemeToggle() {
     const isDark = document.documentElement.classList.contains("dark");
     setTheme(isDark ? "light" : "dark");
     syncThemeIcons();
-    appendActivityLog(isDark ? "Тема: включена светлая" : "Тема: включена тёмная");
+    appendActivityLog(isDark ? "Theme: light" : "Theme: dark");
   });
 }
 
@@ -164,18 +165,18 @@ function initActivityPanel() {
   toggleBtn?.addEventListener("click", () => {
     const show = panel?.hidden ?? true;
     setOpen(show);
-    appendActivityLog(show ? "Журнал активности: открыт" : "Журнал активности: скрыт");
+    appendActivityLog(show ? "Activity log: opened" : "Activity log: hidden");
   });
 
   clearBtn?.addEventListener("click", () => {
-    appendActivityLog("Журнал активности: очищен");
+    appendActivityLog("Activity log: cleared");
     activityLogLines = [];
     renderActivityLog();
     setOpen(false);
   });
 
   closeBtn?.addEventListener("click", () => {
-    appendActivityLog("Журнал активности: закрыт");
+    appendActivityLog("Activity log: closed");
     setOpen(false);
   });
 }
@@ -242,12 +243,12 @@ function activateProviderForWebSearch() {
   for (const id of WEB_SEARCH_PROVIDER_PRIORITY) {
     if (providerHasKey(keys, id) && setActiveProviderBadge(id)) {
       const label = PROVIDER_LABEL_RU[id] ?? id;
-      appendActivityLog(`Поиск в сети: активен ${label}`);
+      appendActivityLog(`Web search: using ${label}`);
       return;
     }
   }
   appendActivityLog(
-    "Поиск в сети: в .env нет ключей Gemini / Perplexity / Claude / ChatGPT",
+    "Web search: no Gemini / Perplexity / Claude / ChatGPT keys in .env",
   );
 }
 
@@ -256,12 +257,12 @@ function activateProviderForDeepResearch() {
   for (const id of DEEP_RESEARCH_PROVIDER_PRIORITY) {
     if (providerHasKey(keys, id) && setActiveProviderBadge(id)) {
       const label = PROVIDER_LABEL_RU[id] ?? id;
-      appendActivityLog(`Глубокое исследование: активен ${label}`);
+      appendActivityLog(`Deep research: using ${label}`);
       return;
     }
   }
   appendActivityLog(
-    "Глубокое исследование: в .env нет ключей Perplexity / ChatGPT / Gemini / Claude",
+    "Deep research: no Perplexity / ChatGPT / Gemini / Claude keys in .env",
   );
 }
 
@@ -270,11 +271,11 @@ function activateProviderForImageCreation() {
   for (const id of IMAGE_CREATION_PROVIDER_PRIORITY) {
     if (providerHasKey(keys, id) && setActiveProviderBadge(id)) {
       const label = PROVIDER_LABEL_RU[id] ?? id;
-      appendActivityLog(`Создать изображение: активен ${label}`);
+      appendActivityLog(`Create image: using ${label}`);
       return;
     }
   }
-  appendActivityLog("Создать изображение: в .env нет ключей ChatGPT или Gemini");
+  appendActivityLog("Create image: no ChatGPT or Gemini keys in .env");
 }
 
 /** В режиме «Создать изображение» недоступны провайдеры без API картинок */
@@ -303,7 +304,7 @@ function refreshModelBadges() {
       btn.classList.add("badge--mode-locked");
       btn.disabled = true;
       btn.setAttribute("aria-disabled", "true");
-      btn.title = "В режиме «Создать изображение» доступны только ChatGPT и Gemini";
+      btn.title = "In Create image mode only ChatGPT and Gemini are available";
     } else {
       btn.disabled = false;
       btn.removeAttribute("aria-disabled");
@@ -352,7 +353,7 @@ function initProviderBadges() {
     }
     t.classList.add("active");
     const pid = t.getAttribute("data-provider");
-    appendActivityLog(`Модель: выбран ${PROVIDER_DISPLAY[pid] ?? pid ?? "—"}`);
+    appendActivityLog(`Model: ${PROVIDER_DISPLAY[pid] ?? pid ?? "—"}`);
   });
 }
 
@@ -368,11 +369,95 @@ function initDialogueFavourites() {
     const on = star.classList.toggle("is-starred");
     star.setAttribute("aria-pressed", on ? "true" : "false");
     star.setAttribute("aria-label", on ? "Remove from favorites" : "Add to favorites");
-    appendActivityLog(on ? "Диалог: в избранном" : "Диалог: убран из избранного");
+    appendActivityLog(on ? "Dialogue: added to favorites" : "Dialogue: removed from favorites");
   });
 }
 
 /** Узкий экран: список диалогов в выпадающей панели над чатом */
+function initThemeCardSelection() {
+  const root = document.getElementById("dialogue-cards");
+  if (!root) return;
+
+  root.addEventListener("click", (e) => {
+    if (e.target.closest(".dialog-star") || e.target.closest(".dialog-card-folder-wrap")) return;
+    const card = e.target.closest(".dialog-card");
+    if (!card || !root.contains(card)) return;
+    root.querySelectorAll(".dialog-card--selected").forEach((c) => {
+      c.classList.remove("dialog-card--selected");
+    });
+    card.classList.add("dialog-card--selected");
+  });
+}
+
+function initThemeFolderMenus() {
+  const root = document.getElementById("dialogue-cards");
+  if (!root) return;
+
+  function closeAll(exceptWrap) {
+    root.querySelectorAll(".dialog-card-folder-wrap").forEach((wrap) => {
+      if (wrap === exceptWrap) return;
+      const btn = wrap.querySelector(".dialog-folder-btn");
+      const menu = wrap.querySelector(".dialog-folder-menu");
+      if (btn && menu) {
+        btn.setAttribute("aria-expanded", "false");
+        menu.hidden = true;
+      }
+    });
+  }
+
+  /* Закрыть выпадашки при клике по списку тем, но не по папке/меню (панель глушит всплытие до document). */
+  root.addEventListener(
+    "click",
+    (e) => {
+      if (e.target.closest(".dialog-folder-btn") || e.target.closest(".dialog-folder-menu")) return;
+      closeAll(null);
+    },
+    true,
+  );
+
+  root.addEventListener("click", (e) => {
+    const item = e.target.closest(".dialog-folder-menu-item");
+    if (item) {
+      const wrap = item.closest(".dialog-card-folder-wrap");
+      const btn = wrap?.querySelector(".dialog-folder-btn");
+      const menu = wrap?.querySelector(".dialog-folder-menu");
+      if (btn && menu) {
+        btn.setAttribute("aria-expanded", "false");
+        menu.hidden = true;
+      }
+      return;
+    }
+
+    const folderBtn = e.target.closest(".dialog-folder-btn");
+    if (!folderBtn || !root.contains(folderBtn)) return;
+    e.stopPropagation();
+    const wrap = folderBtn.closest(".dialog-card-folder-wrap");
+    const menu = wrap?.querySelector(".dialog-folder-menu");
+    if (!menu) return;
+    const open = folderBtn.getAttribute("aria-expanded") === "true";
+    if (open) {
+      folderBtn.setAttribute("aria-expanded", "false");
+      menu.hidden = true;
+    } else {
+      closeAll(wrap);
+      folderBtn.setAttribute("aria-expanded", "true");
+      menu.hidden = false;
+    }
+  });
+
+  document.addEventListener("click", () => {
+    closeAll(null);
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    const openBtn = root.querySelector('.dialog-folder-btn[aria-expanded="true"]');
+    if (!openBtn) return;
+    closeAll(null);
+    openBtn.focus();
+  });
+}
+
 function initDialoguesMenu() {
   const panel = document.getElementById("dialogues-panel");
   const btn = document.getElementById("btn-dialogues-menu");
@@ -396,7 +481,7 @@ function initDialoguesMenu() {
   function applyDesktop() {
     panel.classList.remove("dialogues-dropdown-open");
     btn.setAttribute("aria-expanded", "false");
-    btn.setAttribute("aria-label", "Open dialogues list");
+    btn.setAttribute("aria-label", "Open themes list");
     cards.removeAttribute("aria-hidden");
   }
 
@@ -407,7 +492,7 @@ function initDialoguesMenu() {
     }
     panel.classList.toggle("dialogues-dropdown-open", open);
     btn.setAttribute("aria-expanded", open ? "true" : "false");
-    btn.setAttribute("aria-label", open ? "Close dialogues list" : "Open dialogues list");
+    btn.setAttribute("aria-label", open ? "Close themes list" : "Open themes list");
     syncCardsAria(open);
   }
 
@@ -416,7 +501,7 @@ function initDialoguesMenu() {
     if (!isMobile()) return;
     const willOpen = !panel.classList.contains("dialogues-dropdown-open");
     setOpen(willOpen);
-    appendActivityLog(willOpen ? "Диалоги (моб.): открыт список" : "Диалоги (моб.): закрыт список");
+    appendActivityLog(willOpen ? "Themes (mobile): list opened" : "Themes (mobile): list closed");
   });
 
   panel.addEventListener("click", (e) => {
@@ -453,12 +538,59 @@ function initDialoguesMenu() {
 }
 
 const ATTACH_TITLES = {
-  "": "Добавить",
-  files: "Добавить фото и файлы",
-  image: "Создать изображение",
-  research: "Глубокое исследование",
-  web: "Поиск в сети",
+  "": "Add",
+  files: "Add photos & files",
+  image: "Create image",
+  research: "Deep research",
+  web: "Web search",
 };
+
+function initNewDialogueButton() {
+  const btn = document.getElementById("btn-new-dialogue");
+  if (!btn) return;
+
+  btn.addEventListener("click", () => {
+    closeMemoryTree();
+    const list = document.getElementById("messages-list");
+    list?.replaceChildren();
+    document.getElementById("dialogue-cards")?.querySelectorAll(".dialog-card").forEach((c) => {
+      c.classList.remove("dialog-card--selected");
+    });
+    refreshThemeHighlightsFromChat();
+    const viewport = document.getElementById("messages-viewport");
+    if (viewport) viewport.scrollTop = 0;
+
+    composerAttachMode = "";
+    refreshModelBadges();
+
+    const menu = document.getElementById("attach-menu");
+    if (menu) menu.hidden = true;
+    const attachBtn = document.getElementById("btn-attach-menu");
+    if (attachBtn) {
+      attachBtn.setAttribute("aria-expanded", "false");
+      attachBtn.title = ATTACH_TITLES[""];
+      attachBtn.setAttribute("aria-label", ATTACH_TITLES[""]);
+    }
+    const visual = document.getElementById("btn-attach-visual");
+    if (visual) {
+      visual.textContent = "+";
+      visual.classList.remove("btn-attach-visual--icon");
+    }
+    const resetBtn = document.getElementById("attach-menu-reset");
+    if (resetBtn) resetBtn.hidden = true;
+    const resetSep = document.querySelector(".attach-menu-reset-sep");
+    if (resetSep instanceof HTMLElement) resetSep.hidden = true;
+
+    const ta = document.getElementById("chat-input");
+    if (ta instanceof HTMLTextAreaElement) {
+      ta.value = "";
+      ta.disabled = false;
+      syncChatInputHeight(ta);
+      ta.focus();
+    }
+    appendActivityLog("New chat: cleared, new thread started");
+  });
+}
 
 function initAttachMenu() {
   const btn = document.getElementById("btn-attach-menu");
@@ -542,7 +674,7 @@ function initAttachMenu() {
         composerAttachMode = "";
         syncAttachButton();
         refreshModelBadges();
-        appendActivityLog('Меню «+»: обычный ввод');
+        appendActivityLog('Attach menu: default input');
         close();
         return;
       }
@@ -553,14 +685,14 @@ function initAttachMenu() {
       if (action === "files") {
         fileInput?.click();
       } else if (action === "image") {
-        appendActivityLog('Меню «+»: режим «Создать изображение»');
+        appendActivityLog('Attach menu: Create image');
         activateProviderForImageCreation();
-        appendActivityLog("В этом режиме доступны только ChatGPT и Gemini (остальные модели отключены)");
+        appendActivityLog("In this mode only ChatGPT and Gemini are available (other models disabled)");
       } else if (action === "research") {
-        appendActivityLog('Меню «+»: режим «Глубокое исследование»');
+        appendActivityLog('Attach menu: Deep research');
         activateProviderForDeepResearch();
       } else if (action === "web") {
-        appendActivityLog('Меню «+»: режим «Поиск в сети»');
+        appendActivityLog('Attach menu: Web search');
         activateProviderForWebSearch();
       }
       refreshModelBadges();
@@ -571,7 +703,7 @@ function initAttachMenu() {
   fileInput?.addEventListener("change", () => {
     const n = fileInput.files?.length ?? 0;
     if (n > 0) {
-      appendActivityLog(`Добавить фото и файлы: выбрано файлов — ${n}`);
+      appendActivityLog(`Add photos & files: ${n} file(s) selected`);
     }
     fileInput.value = "";
   });
@@ -604,9 +736,9 @@ function buildChatPromptForApi(userText, mode) {
   if (!t) return t;
   if (mode === "web") {
     return (
-      "Выполни поиск в интернете по следующему запросу пользователя и ответь, опираясь на актуальные данные из сети. " +
-      "По возможности укажи источники (ссылки).\n\n" +
-      "Запрос пользователя:\n" +
+      "Search the web for the following user request and answer using up-to-date information. " +
+      "Include sources (links) when possible.\n\n" +
+      "User request:\n" +
       t
     );
   }
@@ -705,13 +837,13 @@ function makeCopyButton(getText, labelOrOpts) {
     labelOrOpts != null && typeof labelOrOpts === "object"
       ? labelOrOpts
       : { label: typeof labelOrOpts === "string" ? labelOrOpts : undefined };
-  const label = opts.label ?? "Копировать в буфер обмена";
+  const label = opts.label ?? "Copy to clipboard";
   const tryImg = Boolean(opts.tryCopyImageFromMarkdown);
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "msg-bubble-action-btn msg-bubble-copy";
   btn.setAttribute("aria-label", label);
-  btn.title = opts.title ?? (tryImg ? "Копировать изображение" : "Копировать");
+  btn.title = opts.title ?? (tryImg ? "Copy image" : "Copy");
   btn.appendChild(createCopyIcon());
   btn.addEventListener("click", async (e) => {
     e.preventDefault();
@@ -724,7 +856,7 @@ function makeCopyButton(getText, labelOrOpts) {
       }
       if (src) {
         appendActivityLog(
-          "Буфер: не удалось скопировать изображение (сеть или ограничения браузера); скопирован текст ответа",
+          "Clipboard: could not copy image (network or browser limits); copied reply text instead",
         );
       }
     }
@@ -744,8 +876,8 @@ function enhanceAssistantMarkdownCodeBlocks(root) {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "msg-md-code-copy";
-    btn.setAttribute("aria-label", "Копировать код");
-    btn.title = "Копировать код";
+    btn.setAttribute("aria-label", "Copy code");
+    btn.title = "Copy code";
     const icon = createCopyIcon("msg-md-code-copy-icon");
     icon.setAttribute("width", "14");
     icon.setAttribute("height", "14");
@@ -849,23 +981,23 @@ function appendUserMessage(rawText, modelLabel, options) {
   if (webSearch) {
     const webBadge = document.createElement("span");
     webBadge.className = "msg-user-web-badge";
-    webBadge.setAttribute("aria-label", "Поиск в сети");
-    webBadge.title = "Поиск в сети";
+    webBadge.setAttribute("aria-label", "Web search");
+    webBadge.title = "Web search";
     webBadge.appendChild(createWebSearchBadgeIcon());
     head.appendChild(webBadge);
   }
   if (imageCreation) {
     const imageBadge = document.createElement("span");
     imageBadge.className = "msg-user-image-badge";
-    imageBadge.setAttribute("aria-label", "Создать изображение");
-    imageBadge.title = "Создать изображение";
+    imageBadge.setAttribute("aria-label", "Create image");
+    imageBadge.title = "Create image";
     imageBadge.appendChild(createImageCreationBadgeIcon());
     head.appendChild(imageBadge);
   }
   const badge = document.createElement("span");
   badge.className = "msg-model-badge";
   badge.textContent = modelLabel;
-  badge.setAttribute("aria-label", `Модель: ${modelLabel}`);
+  badge.setAttribute("aria-label", `Model: ${modelLabel}`);
   head.appendChild(badge);
 
   const content = document.createElement("div");
@@ -883,15 +1015,15 @@ function appendUserMessage(rawText, modelLabel, options) {
   expandBtn.type = "button";
   expandBtn.className = "msg-bubble-action-btn msg-bubble-chevron";
   expandBtn.setAttribute("aria-expanded", "false");
-  expandBtn.setAttribute("aria-label", "Развернуть сообщение");
-  expandBtn.title = "Развернуть / свернуть";
+  expandBtn.setAttribute("aria-label", "Expand message");
+  expandBtn.title = "Expand / collapse";
   expandBtn.appendChild(createBubbleChevronIcon());
 
   expandBtn.addEventListener("click", (e) => {
     e.preventDefault();
     const now = msg.classList.toggle("msg-user--expanded");
     expandBtn.setAttribute("aria-expanded", now ? "true" : "false");
-    expandBtn.setAttribute("aria-label", now ? "Свернуть сообщение" : "Развернуть сообщение");
+    expandBtn.setAttribute("aria-label", now ? "Collapse message" : "Expand message");
     if (!now) {
       requestAnimationFrame(() => updateUserExpandVisibility(msg, textEl, expandBtn));
     } else {
@@ -909,6 +1041,31 @@ function appendUserMessage(rawText, modelLabel, options) {
 
   requestAnimationFrame(() => {
     requestAnimationFrame(() => updateUserExpandVisibility(msg, textEl, expandBtn));
+  });
+}
+
+/** Подсветка карточек тем в сайдбаре, если название темы встречается в последнем сообщении пользователя. */
+function refreshThemeHighlightsFromChat() {
+  const cardsRoot = document.getElementById("dialogue-cards");
+  if (!cardsRoot) return;
+  cardsRoot.querySelectorAll(".dialog-card").forEach((card) => {
+    card.classList.remove("dialog-card--mentioned");
+  });
+
+  const list = document.getElementById("messages-list");
+  if (!list) return;
+  const userMsgs = list.querySelectorAll(".msg-user");
+  const last = userMsgs[userMsgs.length - 1];
+  const text = last?.querySelector(".msg-user-text")?.textContent?.trim() ?? "";
+  if (!text) return;
+
+  const norm = text.toLowerCase();
+  cardsRoot.querySelectorAll(".dialog-card").forEach((card) => {
+    const title = card.querySelector(".dialog-card-title")?.textContent?.trim() ?? "";
+    if (title.length < 2) return;
+    if (norm.includes(title.toLowerCase())) {
+      card.classList.add("dialog-card--mentioned");
+    }
   });
 }
 
@@ -940,7 +1097,7 @@ function appendAssistantPending() {
   body.className = "msg-assistant-body";
   const textEl = document.createElement("div");
   textEl.className = "msg-assistant-text";
-  textEl.textContent = "Ответ…";
+  textEl.textContent = "Reply…";
   body.appendChild(textEl);
   wrap.appendChild(body);
   list.appendChild(wrap);
@@ -1032,8 +1189,8 @@ function finalizeAssistantBubble(el, fullText, providerId, modelHintOverride) {
     actions.appendChild(
       makeCopyButton(() => el.dataset.assistantMarkdown ?? "", {
         tryCopyImageFromMarkdown: copyAsImage,
-        label: copyAsImage ? "Копировать изображение в буфер обмена" : "Копировать в буфер обмена",
-        title: copyAsImage ? "Копировать изображение" : "Копировать",
+        label: copyAsImage ? "Copy image to clipboard" : "Copy to clipboard",
+        title: copyAsImage ? "Copy image" : "Copy",
       }),
     );
     body.appendChild(actions);
@@ -1046,7 +1203,7 @@ function finalizeAssistantBubble(el, fullText, providerId, modelHintOverride) {
     modelHintOverride != null && String(modelHintOverride).trim()
       ? String(modelHintOverride).trim()
       : apiModelHint(providerId, { webSearch: el.dataset.assistantWebSearch === "1" });
-  meta.textContent = hint ? `Ответил: ${label} · ${hint}` : `Ответил: ${label}`;
+  meta.textContent = hint ? `Replied: ${label} · ${hint}` : `Replied: ${label}`;
   el.appendChild(meta);
 
   function assistantAnswerNeedsToggle(te) {
@@ -1070,15 +1227,15 @@ function finalizeAssistantBubble(el, fullText, providerId, modelHintOverride) {
       btn.type = "button";
       btn.className = "msg-bubble-action-btn msg-bubble-chevron";
       btn.setAttribute("aria-expanded", "true");
-      btn.setAttribute("aria-label", "Свернуть ответ");
-      btn.title = "Свернуть / развернуть";
+      btn.setAttribute("aria-label", "Collapse reply");
+      btn.title = "Collapse / expand";
       btn.appendChild(createBubbleChevronIcon());
       actions.appendChild(btn);
       btn.addEventListener("click", (e) => {
         e.preventDefault();
         const collapsed = el.classList.toggle("msg-assistant--collapsed");
         btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
-        btn.setAttribute("aria-label", collapsed ? "Развернуть ответ" : "Свернуть ответ");
+        btn.setAttribute("aria-label", collapsed ? "Expand reply" : "Collapse reply");
       });
     });
   });
@@ -1101,7 +1258,7 @@ function initChatComposer() {
 
     const providerId = getActiveProviderId();
     if (!providerId) {
-      appendActivityLog("Чат → запрос отменён: нет выбранной модели с ключом (.env)");
+      appendActivityLog("Chat → request cancelled: no selected model with a key (.env)");
       return;
     }
 
@@ -1109,7 +1266,7 @@ function initChatComposer() {
     const key = keys[providerId];
     if (!String(key ?? "").trim()) {
       appendActivityLog(
-        `Чат → запрос отменён: нет ключа для ${PROVIDER_DISPLAY[providerId] ?? providerId}`,
+        `Chat → request cancelled: no API key for ${PROVIDER_DISPLAY[providerId] ?? providerId}`,
       );
       return;
     }
@@ -1122,13 +1279,14 @@ function initChatComposer() {
     ta.disabled = true;
 
     appendActivityLog(
-      `Чат → запрос: ${attachModeLogLabel(modeForSend)}, модель ${modelLabel}, символов ввода: ${trimmed.length}`,
+      `Chat → request: ${attachModeLogLabel(modeForSend)}, model ${modelLabel}, input chars: ${trimmed.length}`,
     );
 
     appendUserMessage(trimmed, modelLabel, {
       webSearch: modeForSend === "web",
       imageCreation: modeForSend === "image",
     });
+    refreshThemeHighlightsFromChat();
     ta.value = "";
     syncChatInputHeight(ta);
     scrollMessagesToEnd();
@@ -1138,7 +1296,7 @@ function initChatComposer() {
       pending.dataset.assistantWebSearch = modeForSend === "web" ? "1" : "";
       const te0 = pending.querySelector(".msg-assistant-text");
       if (te0 && modeForSend === "image") {
-        te0.textContent = "Генерация изображения…";
+        te0.textContent = "Generating image…";
       }
     }
     scrollMessagesToEnd();
@@ -1159,7 +1317,7 @@ function initChatComposer() {
           pending.dataset.assistantResponseKind = "image";
         }
         finalizeAssistantBubble(pending, fullText, providerId, imgHint || undefined);
-        appendActivityLog(`Чат ← ответ: изображение, модель ${modelLabel}, OK`);
+        appendActivityLog(`Chat ← reply: image, model ${modelLabel}, OK`);
       } else {
         const chatOpts = { webSearch: modeForSend === "web" };
         let buf = "";
@@ -1179,7 +1337,7 @@ function initChatComposer() {
             chatOpts,
           );
         } catch {
-          appendActivityLog(`Чат: стрим недоступен, запрос целиком (${modelLabel})`);
+          appendActivityLog(`Chat: streaming unavailable, full response (${modelLabel})`);
           const { text } = await completeChatMessage(providerId, promptForApi, key, chatOpts);
           fullText = text;
           const te = pending.querySelector(".msg-assistant-text");
@@ -1188,14 +1346,14 @@ function initChatComposer() {
         }
         finalizeAssistantBubble(pending, fullText, providerId);
         appendActivityLog(
-          `Чат ← ответ: текст, модель ${modelLabel}, символов ответа: ${String(fullText).length}`,
+          `Chat ← reply: text, model ${modelLabel}, reply chars: ${String(fullText).length}`,
         );
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       renderAssistantError(pending, msg);
       appendActivityLog(
-        `Чат ← ошибка, модель ${modelLabel}: ${msg.length > 280 ? `${msg.slice(0, 280)}…` : msg}`,
+        `Chat ← error, model ${modelLabel}: ${msg.length > 280 ? `${msg.slice(0, 280)}…` : msg}`,
       );
     } finally {
       sending = false;
@@ -1220,6 +1378,10 @@ initActivityPanel();
 initProviderBadges();
 initDialogueFavourites();
 initDialoguesMenu();
+initThemeCardSelection();
+initThemeFolderMenus();
+initMemoryTree(appendActivityLog);
+initNewDialogueButton();
 initAttachMenu();
 initChatComposer();
 
@@ -1228,7 +1390,7 @@ appendActivityLog("MF0-1984 ready.");
 const keys = getModelApiKeys();
 const configured = Object.entries(keys).filter(([, v]) => v.length > 0);
 if (configured.length) {
-  appendActivityLog(`Ключи в .env: ${configured.map(([k]) => k).join(", ")}`);
+  appendActivityLog(`Keys in .env: ${configured.map(([k]) => k).join(", ")}`);
 } else {
-  appendActivityLog("Ключи моделей в .env не загружены (проверьте .env для dev).");
+  appendActivityLog("Model keys from .env not loaded (check .env for dev).");
 }
