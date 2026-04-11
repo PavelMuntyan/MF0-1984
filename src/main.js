@@ -8,6 +8,8 @@ import {
   completeImageGeneration,
   extractIntroMemoryGraphForIngest,
   extractChatInterestSketchForIngest,
+  extractAccessKeeper2EntriesFromTranscript,
+  extractAccessExternalServiceStubsFromBulkListText,
   normalizeIntroMemoryGraphForDb,
   generateThemeDialogTitle,
   PROVIDER_DISPLAY,
@@ -40,6 +42,11 @@ import {
   fetchAssistantFavorites,
   fetchContextPack,
   fetchIntroSession,
+  fetchAccessSession,
+  fetchAccessExternalServices,
+  fetchAccessDataDumpEnrichment,
+  fetchAccessExternalServicesCatalog,
+  putAccessExternalServices,
   fetchMemoryGraphFromApi,
   fetchAnalytics,
   fetchThemesPayload,
@@ -77,11 +84,21 @@ let activeDialogId = null;
 /** Intro section dialog (created by API `/api/intro/session`). */
 let introSessionDialogId = null;
 
+/** Access section dialog (created by API `/api/access/session`). */
+let accessSessionDialogId = null;
+
 async function ensureIntroSessionClient() {
   if (introSessionDialogId) return introSessionDialogId;
   const s = await fetchIntroSession();
   introSessionDialogId = s.dialogId;
   return introSessionDialogId;
+}
+
+async function ensureAccessSessionClient() {
+  if (accessSessionDialogId) return accessSessionDialogId;
+  const s = await fetchAccessSession();
+  accessSessionDialogId = s.dialogId;
+  return accessSessionDialogId;
 }
 
 async function loadIntroChatThreadIntoUi() {
@@ -99,6 +116,60 @@ async function loadIntroChatThreadIntoUi() {
   } catch (e) {
     appendActivityLog(`Intro: ${e instanceof Error ? e.message : String(e)}`);
   }
+}
+
+async function loadAccessChatThreadIntoUi() {
+  try {
+    const s = await fetchAccessSession();
+    accessSessionDialogId = s.dialogId;
+    const list = document.getElementById("messages-list");
+    list?.replaceChildren();
+    const turns = await fetchTurns(accessSessionDialogId);
+    for (const t of turns) {
+      replayTurnInChat(t);
+    }
+    scrollMessagesToEnd();
+  } catch (e) {
+    appendActivityLog(`Access: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+const ACCESS_ENTRY_NOTES_MAX = 12000;
+
+/**
+ * Merge Keeper 2 patches into the Access external-services list (key = normalized name).
+ * @param {Array<{ id?: string, name?: string, description?: string, endpointUrl?: string, accessKey?: string, notes?: string, updatedAt?: string }>} existing
+ * @param {Array<{ name?: string, description?: string, endpointUrl?: string, accessKey?: string, notes?: string }>} patch
+ */
+function mergeAccessExternalServiceEntries(existing, patch) {
+  const map = new Map();
+  const keyOf = (n) => String(n ?? "").trim().toLowerCase();
+  for (const e of existing) {
+    const k = keyOf(e.name);
+    if (k) map.set(k, { ...e, notes: String(e.notes ?? "").trim() });
+  }
+  const now = new Date().toISOString();
+  for (const p of patch) {
+    const name = String(p.name ?? "").trim().slice(0, 200);
+    if (!name) continue;
+    const k = keyOf(name);
+    const prev = map.get(k) ?? {};
+    const id = String(prev.id ?? "").trim() || crypto.randomUUID();
+    const patchNotes = String(p.notes ?? "").trim();
+    const notesOut = patchNotes
+      ? patchNotes.slice(0, ACCESS_ENTRY_NOTES_MAX)
+      : String(prev.notes ?? "").trim().slice(0, ACCESS_ENTRY_NOTES_MAX);
+    map.set(k, {
+      id,
+      name,
+      description: String(p.description ?? prev.description ?? "").trim().slice(0, 2000),
+      endpointUrl: String(p.endpointUrl ?? prev.endpointUrl ?? "").trim().slice(0, 2000),
+      accessKey: String(p.accessKey ?? prev.accessKey ?? "").trim().slice(0, 2000),
+      notes: notesOut,
+      updatedAt: now,
+    });
+  }
+  return [...map.values()].slice(0, 200);
 }
 
 function syncIrPanelVaultDom() {
@@ -158,6 +229,42 @@ const INTRO_COACH_SYSTEM_APPEND =
   "If you still know very little about them, start with basics (how they want to be addressed, what matters now, what they do) before going deep.\n" +
   "When the user explicitly asks to **open**, **close**, or **refresh** the **Memory tree** (the 3D memory graph), the app runs that action automatically when possible: confirm briefly what happened, or say the graph is not ready yet if there is no data.\n" +
   "**Memory tree data:** You cannot edit the stored graph yourself. The **Keeper** runs after each turn and updates the tree from **the user's message alone** (not from your reply); do **not** tell the user you merged nodes, saved the graph, or did the Keeper's job — acknowledge in natural language only; the UI will change when that pipeline succeeds.";
+
+const ACCESS_SECTION_SYSTEM_APPEND =
+  "You are in the **Access** section: the user records **third-party** services they rely on — HTTP APIs, hosted inference or job-queue endpoints, geodata feeds, docs URLs, and **credentials those services require** (API keys, bearer tokens, `Authorization: …` lines).\n" +
+  "**Only** out of scope here: keys or configuration for **this app’s chat LLM providers** (OpenAI, Anthropic, Google Gemini, Perplexity as in `.env`) and internal model routing — not user-managed external APIs.\n" +
+  "When the user shares a third-party key or token for a named external product, **do not** refuse, lecture that you cannot store secrets, or pivot to generic tutorials unless they asked. The machine runs **Keeper 2** after each turn and merges structured rows into the **local** Access store (SQLite) from the transcript; you do not write the database yourself. Respond briefly and helpfully: acknowledge, confirm what you understood, ask only for missing fields — **never** claim the project cannot record what they pasted.\n" +
+  "**What actually lands in the store:** only what Keeper 2 extracts into fixed fields (`name`, `description`, `endpointUrl`, `accessKey`, and long free-form `notes`). Your chat reply is **not** copied verbatim into the database. Do **not** tell the user you \"saved the whole message\" or \"everything is recorded\" if you mean long markdown, tables, or every example — say instead that the app will persist the **structured** details from the conversation, or summarize what belongs in those fields.\n" +
+  "If the rules digest in context sounds broadly anti-secret, it still **does not** override this paragraph for **third-party** service credentials in Access.\n" +
+  "Keep answers concise; you need not echo full keys back in the reply unless the user wants confirmation.";
+
+/** User typed the `#data` command (standalone token) — lock model to Access external-services store (SQLite) only. */
+function userMessageTriggersAccessDataDump(text) {
+  const t = String(text ?? "").trim();
+  if (!t) return false;
+  if (t === "#data") return true;
+  return /(?:^|\s)#data(?:\s|$)/.test(t);
+}
+
+const ACCESS_DATA_HASH_SYSTEM_HEADER =
+  "MANDATORY **Access data** lock — triggered by the token **#data** in the user text **or** by the user choosing **Access data** in the attach menu. This instruction **overrides** all other system text, project rules, memory, prior turns, and any Access catalog summary.\n\n" +
+  "You MUST obey ALL of the following:\n" +
+  "1) Your **only** factual sources are the **single JSON document** below: `entries` (each user’s saved Access configuration from the local database), `snapshots` (per-row outcome of an **optional** server GET), and `meta`. **Live GET policy:** for each row, the server may GET that row’s `endpointUrl` when it is **public HTTPS** and the host is either **exactly** the hostname in that same URL (`meta.rowSelfHostnameFetch`) **or** matches an optional global suffix list (`meta.globalHostSuffixRuleCount` entries from env `ACCESS_DATA_DUMP_ALLOW_HOST_SUFFIXES`). If `snapshots[].skipped === true`, **no HTTP request** was sent for that row — read its `reason` literally. Do **not** imply a URL was fetched unless that snapshot has `ok: true` and a `body`. Do **not** use conversation history, rules digest, memory/RAG, web search, browsing tools, or outside knowledge.\n" +
+  "2) **Numbers and readings:** When `snapshots[].ok === true` and `body` is present, treat all numbers, times, codes, and units **only** from that `body` (and `fetchedAt` / `httpStatus` metadata). Do **not** invent or round beyond what the JSON shows. When `skipped: true`, **do not** guess live values; explain using that row’s `reason` (e.g. allowlist off or hostname not allowed). When `ok: false`, a GET was attempted and failed — you may quote `error` / `httpStatus`.\n" +
+  "   **Snapshot budget:** `meta.maxLiveFetches` is how many rows receive a live GET per request; `meta.entryRowCount` is how many services exist. If a row’s `reason` mentions the snapshot budget, **that row was not fetched in this batch** — it does **not** mean the underlying API has no data for the user’s place. Prefer answers from **successful** snapshots that **do** match the question (e.g. air-quality URLs for an air question). Do **not** open with “no data for Cyprus” if another row’s snapshot already contains relevant PM/AQI readings.\n" +
+  "   **No false drama:** Do **not** say that API requests were “сгенерированы / generated” and then “не загрузились / failed to load” when the truth is **no request was sent** (`skipped`) or only some rows fetched. A skipped row is **not** a global outage — explain only what blocked **that** row; **do not** dump the whole `entries` list as consolation.\n" +
+  "   **Scope honesty:** If the user asks for a **time range** (e.g. “last 14 days”) but the stored URL is clearly **latest-only** (e.g. `/v6/latest/…`) or only one dated snapshot exists, say plainly what the snapshot **can** show vs what would require a **different** documented URL (still under the same allowlist) or turning off Access data — **never** sound as if “the system refused” data that the configured endpoint simply does not return.\n" +
+  "3) **Inference / image / video / upscale / job-queue requests** (anything that would require **calling** a third-party API from this chat, using credentials in `entries`): This mode **does not** execute POST calls, queues, or paid inference **from this app** — there is no agent step that performs HTTP with their key; you only **read** the injected `entries` plus GET `snapshots`. **Never** explain refusal by saying the service “does not support real-time data extraction”, “cannot extract data”, or that the request “failed” in that sense — that is the wrong frame.\n" +
+  "   **Mandatory answer order** when the user asks for generation, editing, upscaling, or rendering: (1) **First** a short, practical block built **only** from `entries` — which row matches their ask, `endpointUrl`, and anything in `description` / `notes` (method, path, headers, JSON keys, queue URL). Do **not** invent hosts or tokens not present in the JSON. (2) **Then** one clear sentence that **you** cannot execute that call or return a new image **in this locked mode** (read-only snapshot). (3) **Optionally** suggest turning off **Access data** / **#data** for free-form help or image flows — but **never** skip step (1); a reply that is **only** refusal with no concrete detail from `entries` is **invalid**.\n" +
+  "4) **Answer shape (not an API manual):** Use the **same language as the user’s message**. **Stay on topic:** deliver **only** what they asked (weather → forecast snapshot fields; air → air-quality snapshot fields; sea state → marine snapshot; etc.). Other `entries` / `snapshots` may inform your choice of row but **must not** appear in the visible answer unless the user explicitly asks for **all configured services**, a **full Access overview**, or **copy-paste URLs/keys**.\n" +
+  "   • **If** they ask for environmental **measurements** and a matching snapshot has `ok: true` with `body`, reply with a **short** consumer block: bullets or a small table of **only** the requested readings (units and observation time from that `body` / snapshot metadata).\n" +
+  "   • **If** there are **no** such snapshots for their question (e.g. image API / upscale), **do not** use a weather-style lead — answer directly from `entries` and snapshot status where relevant.\n" +
+  "   • **Forbidden by default:** numbered “configured services” lists with links; sections titled like configured-services / available-APIs catalogs; repeating the same URL in prose **and** in a code block; dumping query strings or every row’s `endpointUrl`; long `[label](https://…)` link lines. **Optional:** at most **one** short line naming the matched row’s `name` (which feed the numbers came from). Raw URLs or keys **only** if the user explicitly asked for technical copy-paste — then **one** short fenced block, no duplicate.\n" +
+  "   • **Do not** close with filler like «эти API могут быть использованы» — state facts or what is missing, briefly.\n" +
+  "5) **Row selection:** Internally use the **minimal** set of rows that answers the question; do not inventory unrelated services.\n" +
+  "6) **Secrets / URLs:** Do **not** print `accessKey` or full stored URLs unless the user explicitly asks for keys, headers, or exact endpoints.\n" +
+  "7) **Catalog mode only:** If the user **clearly** asks to list everything, show the whole Access store, or describe every saved API, **then** give a structured per-row overview (still avoid duplicate URL spam).\n\n" +
+  "JSON document:\n";
 
 /** Which theme has its dialog list expanded; closes only via folder button or opening another theme's folder. */
 let expandedThemeDialogListThemeId = null;
@@ -229,6 +336,7 @@ function attachModeLogLabel(mode) {
   if (m === "web") return "web search";
   if (m === "image") return "image";
   if (m === "research") return "deep research";
+  if (m === "accessData") return "access data";
   return "default text";
 }
 
@@ -997,6 +1105,11 @@ function openIrChatPanel(mode) {
       void loadIntroChatThreadIntoUi();
     }
   }
+  if (cfg.mode === "access") {
+    if (!getIrPanelLockedSync("access")) {
+      void loadAccessChatThreadIntoUi();
+    }
+  }
   syncIrPanelVaultDom();
 }
 
@@ -1293,6 +1406,7 @@ const ATTACH_TITLES = {
   image: "Create image",
   research: "Deep research",
   web: "Web search",
+  accessData: "Access data",
 };
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -1378,11 +1492,14 @@ function normalizeStoredUserAttachmentKind(k) {
   return "other";
 }
 
-function buildUserMessageCopyText(rawText, attachmentStrip) {
+function buildUserMessageCopyText(rawText, attachmentStrip, extras = {}) {
   const t = String(rawText ?? "").trim();
   const names = (attachmentStrip ?? [])
     .map((x) => String(x?.name ?? "").trim())
     .filter(Boolean);
+  if (!t && extras.accessData) {
+    return names.length ? `[Access data]\n\n${names.join("\n")}` : "[Access data]";
+  }
   if (!t) return names.join("\n");
   if (!names.length) return t;
   return `${t}\n\n${names.join("\n")}`;
@@ -1492,7 +1609,8 @@ function syncComposerSendButtonState() {
   if (chatComposerSending) return;
   const hasText = ta.value.trim().length > 0;
   const hasFiles = composerAttachmentRows.length > 0;
-  sendBtn.disabled = !hasText && !hasFiles;
+  const accessDataReady = composerAttachMode === "accessData";
+  sendBtn.disabled = !hasText && !hasFiles && !accessDataReady;
 }
 
 function initNewDialogueButton() {
@@ -1603,7 +1721,10 @@ function initAttachMenu() {
     btn.setAttribute("aria-label", ATTACH_TITLES[composerAttachMode] ?? ATTACH_TITLES[""]);
     btn.classList.toggle(
       "btn-attach-trigger--mode-active",
-      composerAttachMode === "web" || composerAttachMode === "image" || composerAttachMode === "research",
+      composerAttachMode === "web" ||
+        composerAttachMode === "image" ||
+        composerAttachMode === "research" ||
+        composerAttachMode === "accessData",
     );
     syncResetRow();
   }
@@ -1665,6 +1786,9 @@ function initAttachMenu() {
       } else if (action === "web") {
         appendActivityLog('Attach menu: Web search');
         activateProviderForWebSearch();
+      } else if (action === "accessData") {
+        clearComposerAttachmentRows();
+        appendActivityLog("Attach menu: Access data");
       }
       refreshModelBadges();
       close();
@@ -1705,6 +1829,9 @@ function getActiveProviderId() {
 /** API prompt text: in Web search mode, append instructions to search from the user's input. */
 function buildChatPromptForApi(userText, mode) {
   const t = String(userText ?? "").trim();
+  if (mode === "accessData") {
+    return t || "(Access data — follow the locked system JSON for this reply.)";
+  }
   if (!t) return t;
   if (mode === "web") {
     return (
@@ -2006,6 +2133,32 @@ function createImageCreationBadgeIcon() {
   return svg;
 }
 
+/** Access data (info-in-circle), same motif as attach menu */
+function createAccessDataBadgeIcon() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "14");
+  svg.setAttribute("height", "14");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  c.setAttribute("cx", "12");
+  c.setAttribute("cy", "12");
+  c.setAttribute("r", "10");
+  const p1 = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  p1.setAttribute("d", "M12 16v-4");
+  const p2 = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  p2.setAttribute("d", "M12 8h.01");
+  svg.appendChild(c);
+  svg.appendChild(p1);
+  svg.appendChild(p2);
+  return svg;
+}
+
 /** Deep research icon (same as in the attachment menu) */
 function createDeepResearchBadgeIcon() {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -2040,6 +2193,7 @@ function createDeepResearchBadgeIcon() {
  *   webSearch?: boolean;
  *   imageCreation?: boolean;
  *   deepResearch?: boolean;
+ *   accessData?: boolean;
  *   attachmentStrip?: Array<{ name: string; kind: string }>;
  * }} [options]
  */
@@ -2050,6 +2204,7 @@ function appendUserMessage(rawText, modelLabel, options) {
   const webSearch = Boolean(options?.webSearch);
   const imageCreation = Boolean(options?.imageCreation);
   const deepResearch = Boolean(options?.deepResearch);
+  const accessData = Boolean(options?.accessData);
   const attachmentStrip = Array.isArray(options?.attachmentStrip) ? options.attachmentStrip : [];
 
   const msg = document.createElement("div");
@@ -2083,6 +2238,14 @@ function appendUserMessage(rawText, modelLabel, options) {
     researchBadge.title = "Deep research";
     researchBadge.appendChild(createDeepResearchBadgeIcon());
     head.appendChild(researchBadge);
+  }
+  if (accessData) {
+    const adBadge = document.createElement("span");
+    adBadge.className = "msg-user-access-data-badge";
+    adBadge.setAttribute("aria-label", "Access data");
+    adBadge.title = "Access data";
+    adBadge.appendChild(createAccessDataBadgeIcon());
+    head.appendChild(adBadge);
   }
   const badge = document.createElement("span");
   badge.className = "msg-model-badge";
@@ -2123,7 +2286,7 @@ function appendUserMessage(rawText, modelLabel, options) {
 
   const actions = document.createElement("div");
   actions.className = "msg-bubble-actions";
-  const copyPlain = buildUserMessageCopyText(rawText, attachmentStrip);
+  const copyPlain = buildUserMessageCopyText(rawText, attachmentStrip, { accessData });
   actions.appendChild(makeCopyButton(() => copyPlain));
 
   const expandBtn = document.createElement("button");
@@ -2447,6 +2610,7 @@ function replayTurnInChat(turn) {
     webSearch: rt === "web",
     imageCreation: rt === "image",
     deepResearch: rt === "research",
+    accessData: rt === "access_data",
     attachmentStrip: attachmentStrip.length > 0 ? attachmentStrip : undefined,
   });
   const pending = appendAssistantPending();
@@ -2555,7 +2719,7 @@ function initChatComposer() {
     const trimmed = ta.value.trim();
     const modeForSend = composerAttachMode;
     const filesSnapshot = composerAttachmentRows.map((r) => r.file);
-    if (!trimmed && filesSnapshot.length === 0) return;
+    if (!trimmed && filesSnapshot.length === 0 && modeForSend !== "accessData") return;
 
     const mainChatEl = document.getElementById("main-chat");
     const introChatOpen = Boolean(mainChatEl?.classList.contains("chat--intro"));
@@ -2573,7 +2737,13 @@ function initChatComposer() {
       appendActivityLog("Access is locked — unlock it to send messages.");
       return;
     }
-    if (mainChatEl && irChatPanelIsOpen(mainChatEl) && !introChatOpen) {
+    if (
+      mainChatEl &&
+      irChatPanelIsOpen(mainChatEl) &&
+      !introChatOpen &&
+      !accessChatOpen &&
+      !rulesChatOpen
+    ) {
       closeIrChatPanel();
     }
 
@@ -2595,6 +2765,9 @@ function initChatComposer() {
     const modelLabel = PROVIDER_DISPLAY[providerId] ?? providerId;
 
     const persistUserText = trimmed;
+    const accessDataDumpMode =
+      modeForSend !== "image" &&
+      (userMessageTriggersAccessDataDump(trimmed) || modeForSend === "accessData");
 
     const attachmentStripMeta =
       filesSnapshot.length > 0
@@ -2606,6 +2779,7 @@ function initChatComposer() {
 
     const titleSeed =
       trimmed.trim() ||
+      (modeForSend === "accessData" ? "Access data" : "") ||
       (filesSnapshot.length > 0 ? filesSnapshot.map((f) => f.name || "file").join(", ") : "");
 
     const userMessageAt = new Date().toISOString();
@@ -2615,6 +2789,14 @@ function initChatComposer() {
         persistDialogId = await ensureIntroSessionClient();
       } catch (e) {
         appendActivityLog(`Intro session: ${e instanceof Error ? e.message : String(e)}`);
+        return;
+      }
+    }
+    if (accessChatOpen) {
+      try {
+        persistDialogId = await ensureAccessSessionClient();
+      } catch (e) {
+        appendActivityLog(`Access session: ${e instanceof Error ? e.message : String(e)}`);
         return;
       }
     }
@@ -2700,6 +2882,7 @@ function initChatComposer() {
         webSearch: modeForSend === "web",
         imageCreation: modeForSend === "image",
         deepResearch: modeForSend === "research",
+        accessData: modeForSend === "accessData",
         attachmentStrip: attachmentStripMeta.length > 0 ? attachmentStripMeta : undefined,
       });
       didAppendUserToUi = true;
@@ -2756,30 +2939,89 @@ function initChatComposer() {
           appendActivityLog(`Chat ← reply: image, model ${modelLabel}, OK`);
         } else {
           const chatOpts = {
-            webSearch: modeForSend === "web",
-            deepResearch: modeForSend === "research",
+            webSearch: accessDataDumpMode ? false : modeForSend === "web",
+            deepResearch: accessDataDumpMode ? false : modeForSend === "research",
           };
-          if (chatAttachments) {
+          if (chatAttachments && !accessDataDumpMode) {
             chatOpts.chatAttachments = chatAttachments;
           }
-          if (persistDialogId && modeForSend !== "image" && (await apiHealth())) {
+          if (persistDialogId && modeForSend !== "image") {
             try {
-              const pack = await fetchContextPack(persistDialogId, promptForApi);
-              const built = buildModelContext({
-                threadId: persistDialogId,
-                userPrompt: promptForApi,
-                contextPack: pack,
-                modelFlags: { recentMessageCount: 10 },
-              });
-              const fitted = fitContextToBudget(built, MF0_MAX_CONTEXT_INPUT_TOKENS);
-              let sysOut = fitted.systemInstruction;
-              if (introChatOpen) {
-                sysOut = [sysOut, INTRO_COACH_SYSTEM_APPEND].filter(Boolean).join("\n\n");
-              }
-              chatOpts.systemInstruction = sysOut;
-              chatOpts.llmMessages = fitted.messagesForApi;
-              if (import.meta.env.DEV) {
-                globalThis.__MF0_LAST_CONTEXT_DEBUG__ = fitted.debug;
+              if (accessDataDumpMode) {
+                if (!(await apiHealth())) {
+                  chatOpts.systemInstruction = `${ACCESS_DATA_HASH_SYSTEM_HEADER}{"entries":[],"note":"MF0 local API offline — Access external-services store was not loaded."}`;
+                  chatOpts.llmMessages = [{ role: "user", content: promptForApi }];
+                  chatOpts.accessDataDumpMode = true;
+                  appendActivityLog("Chat: #data — API offline; locked prompt with empty-store notice only.");
+                } else {
+                  const enriched = await fetchAccessDataDumpEnrichment().catch(() => ({
+                    entries: [],
+                    snapshots: [],
+                    meta: {
+                      globalHostSuffixRuleCount: 0,
+                      rowSelfHostnameFetch: true,
+                      maxLiveFetches: 48,
+                      entryRowCount: 0,
+                    },
+                  }));
+                  const entries = Array.isArray(enriched.entries) ? enriched.entries : [];
+                  const snapshots = Array.isArray(enriched.snapshots) ? enriched.snapshots : [];
+                  const meta =
+                    enriched.meta && typeof enriched.meta === "object"
+                      ? enriched.meta
+                      : {
+                          globalHostSuffixRuleCount: 0,
+                          rowSelfHostnameFetch: true,
+                          maxLiveFetches: 48,
+                          entryRowCount: entries.length,
+                        };
+                  const doc = { entries, snapshots, meta };
+                  let jsonBody = JSON.stringify(doc, null, 2);
+                  const maxJson = 88000;
+                  if (jsonBody.length > maxJson) {
+                    jsonBody = `${jsonBody.slice(0, maxJson)}\n…(truncated for request size)`;
+                  }
+                  chatOpts.systemInstruction = `${ACCESS_DATA_HASH_SYSTEM_HEADER}${jsonBody}`;
+                  chatOpts.llmMessages = [{ role: "user", content: promptForApi }];
+                  chatOpts.accessDataDumpMode = true;
+                  appendActivityLog(
+                    `Chat: #data — store + live JSON GET (max ${meta?.maxLiveFetches ?? "?"} / ${meta?.entryRowCount ?? "?"} rows; ${snapshots.filter((s) => s && s.ok).length}/${snapshots.length} OK); no thread/RAG/web.`,
+                  );
+                  if (import.meta.env.DEV) {
+                    globalThis.__MF0_LAST_CONTEXT_DEBUG__ = {
+                      accessDataDumpMode: true,
+                      entries: entries.length,
+                      snapshots: snapshots.length,
+                    };
+                  }
+                }
+              } else if (await apiHealth()) {
+                const catalogPromise = accessChatOpen
+                  ? Promise.resolve({ entries: [] })
+                  : fetchAccessExternalServicesCatalog().catch(() => ({ entries: [] }));
+                const [pack, catalogRes] = await Promise.all([
+                  fetchContextPack(persistDialogId, promptForApi),
+                  catalogPromise,
+                ]);
+                const built = buildModelContext({
+                  threadId: persistDialogId,
+                  userPrompt: promptForApi,
+                  contextPack: pack,
+                  modelFlags: { recentMessageCount: 10 },
+                  accessServicesCatalog: catalogRes.entries ?? [],
+                });
+                const fitted = fitContextToBudget(built, MF0_MAX_CONTEXT_INPUT_TOKENS);
+                let sysOut = fitted.systemInstruction;
+                if (introChatOpen) {
+                  sysOut = [sysOut, INTRO_COACH_SYSTEM_APPEND].filter(Boolean).join("\n\n");
+                } else if (accessChatOpen) {
+                  sysOut = [sysOut, ACCESS_SECTION_SYSTEM_APPEND].filter(Boolean).join("\n\n");
+                }
+                chatOpts.systemInstruction = sysOut;
+                chatOpts.llmMessages = fitted.messagesForApi;
+                if (import.meta.env.DEV) {
+                  globalThis.__MF0_LAST_CONTEXT_DEBUG__ = fitted.debug;
+                }
               }
             } catch (ctxErr) {
               appendActivityLog(
@@ -2787,12 +3029,19 @@ function initChatComposer() {
               );
             }
           }
-          if (introChatOpen && modeForSend !== "image") {
+          if (!accessDataDumpMode && introChatOpen && modeForSend !== "image") {
             const cur = String(chatOpts.systemInstruction ?? "").trim();
             if (!cur) {
               chatOpts.systemInstruction = INTRO_COACH_SYSTEM_APPEND;
             } else if (!cur.includes("Intro section")) {
               chatOpts.systemInstruction = `${cur}\n\n${INTRO_COACH_SYSTEM_APPEND}`;
+            }
+          } else if (!accessDataDumpMode && accessChatOpen && modeForSend !== "image") {
+            const curA = String(chatOpts.systemInstruction ?? "").trim();
+            if (!curA) {
+              chatOpts.systemInstruction = ACCESS_SECTION_SYSTEM_APPEND;
+            } else if (!curA.includes("Access section")) {
+              chatOpts.systemInstruction = `${curA}\n\n${ACCESS_SECTION_SYSTEM_APPEND}`;
             }
           }
           let buf = "";
@@ -2819,7 +3068,12 @@ function initChatComposer() {
             if (te) setAssistantMessageMarkdown(te, fullText);
             scrollMessagesToEnd();
           }
-          finalizeAssistantBubble(pending, fullText, providerId);
+          finalizeAssistantBubble(
+            pending,
+            fullText,
+            providerId,
+            accessDataDumpMode ? "Access data" : undefined,
+          );
           appendActivityLog(
             `Chat ← reply: text, model ${modelLabel}, reply chars: ${String(fullText).length}`,
           );
@@ -2852,7 +3106,7 @@ function initChatComposer() {
             assistant_text: assistantOut || null,
             requested_provider_id: providerId,
             responding_provider_id: providerId,
-            request_type: requestTypeFromAttachMode(modeForSend),
+            request_type: accessDataDumpMode ? "access_data" : requestTypeFromAttachMode(modeForSend),
             user_message_at: userMessageAt,
             assistant_message_at: assistantMessageAt,
             assistant_error: hadAssistantError ? 1 : 0,
@@ -2863,7 +3117,12 @@ function initChatComposer() {
           const saveRes = await saveConversationTurn(persistDialogId, turnPayload);
           const tid =
             saveRes && typeof saveRes === "object" && saveRes.id != null ? String(saveRes.id) : "";
-          if (introChatOpen && modeForSend !== "image" && !hadAssistantError) {
+          if (
+            !accessDataDumpMode &&
+            introChatOpen &&
+            modeForSend !== "image" &&
+            !hadAssistantError
+          ) {
             try {
               appendActivityLog("Keeper (Intro): start — extracting from user text…");
               const extracted = await extractIntroMemoryGraphForIngest(providerId, key, persistUserText);
@@ -2926,7 +3185,64 @@ function initChatComposer() {
             } catch {
               /* loadMemoryGraphIntoUi logs */
             }
-          } else if (!introChatOpen && modeForSend !== "image" && !hadAssistantError) {
+          } else if (accessChatOpen && modeForSend !== "image" && !hadAssistantError) {
+            try {
+              appendActivityLog("Keeper 2 (Access): start — scanning conversation…");
+              const turnsAcc = await fetchTurns(persistDialogId);
+              const accParts = [];
+              for (const row of turnsAcc.slice(-40)) {
+                const u = String(row.user_text ?? "").trim();
+                const a = String(row.assistant_text ?? "").trim();
+                if (u) accParts.push(`USER:\n${u}`);
+                if (a) accParts.push(`ASSISTANT:\n${a}`);
+              }
+              /** Long bulk API lists: keep enough transcript for Keeper 2 (chars). */
+              const transcript = accParts.join("\n\n").slice(0, 72000);
+              const store = await fetchAccessExternalServices();
+              const existingAcc = Array.isArray(store.entries) ? store.entries : [];
+              const existingSummary = JSON.stringify(
+                existingAcc.map((e) => ({
+                  name: e.name,
+                  description: String(e.description ?? "").slice(0, 160),
+                })),
+              ).slice(0, 12000);
+              const extractedAcc = await extractAccessKeeper2EntriesFromTranscript(
+                providerId,
+                key,
+                transcript,
+                existingSummary,
+              );
+              let patchAcc = Array.isArray(extractedAcc.entries) ? extractedAcc.entries : [];
+              if (patchAcc.length === 0) {
+                const stubs = extractAccessExternalServiceStubsFromBulkListText(persistUserText);
+                if (stubs.length > 0) {
+                  patchAcc = stubs;
+                  appendActivityLog(
+                    `Keeper 2 (Access): model returned no rows — applied list parser (${stubs.length} stub row(s) from your last message).`,
+                  );
+                }
+              }
+              if (patchAcc.length === 0) {
+                appendActivityLog("Keeper 2 (Access): no new external-service rows for this turn.");
+              } else {
+                const mergedAcc = mergeAccessExternalServiceEntries(existingAcc, patchAcc);
+                await putAccessExternalServices({ entries: mergedAcc });
+                appendActivityLog(
+                  `Keeper 2 (Access): merged ${patchAcc.length} update(s); ${mergedAcc.length} service row(s) in store.`,
+                );
+              }
+            } catch (k2Err) {
+              appendActivityLog(
+                `Keeper 2 (Access): failure — ${k2Err instanceof Error ? k2Err.message : String(k2Err)}`,
+              );
+            }
+          } else if (
+            !accessDataDumpMode &&
+            !introChatOpen &&
+            !accessChatOpen &&
+            modeForSend !== "image" &&
+            !hadAssistantError
+          ) {
             try {
               appendActivityLog("Keeper (chat): start — interest sketch from user text…");
               const extracted = await extractChatInterestSketchForIngest(providerId, key, persistUserText);
@@ -3172,6 +3488,7 @@ function bootApp() {
   initIrPanelPinLock({
     appendActivityLog,
     loadIntroThreadIntoUi: loadIntroChatThreadIntoUi,
+    loadAccessThreadIntoUi: loadAccessChatThreadIntoUi,
     syncIrPanelVaultDom,
   });
   initAnalyticsDashboard({

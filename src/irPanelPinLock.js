@@ -31,6 +31,9 @@ let appendActivityLog = null;
 /** @type {(() => Promise<void>) | null} */
 let loadIntroThreadIntoUi = null;
 
+/** @type {(() => Promise<void>) | null} */
+let loadAccessThreadIntoUi = null;
+
 /** @type {(() => void) | null} */
 let syncIrPanelVaultDom = null;
 
@@ -166,11 +169,12 @@ function applySetModalCopy(panel) {
 }
 
 /**
- * @param {{ appendActivityLog: (s: string) => void, loadIntroThreadIntoUi: () => Promise<void>, syncIrPanelVaultDom: () => void }} deps
+ * @param {{ appendActivityLog: (s: string) => void, loadIntroThreadIntoUi: () => Promise<void>, loadAccessThreadIntoUi?: () => Promise<void>, syncIrPanelVaultDom: () => void }} deps
  */
 export function initIrPanelPinLock(deps) {
   appendActivityLog = deps.appendActivityLog;
   loadIntroThreadIntoUi = deps.loadIntroThreadIntoUi;
+  loadAccessThreadIntoUi = deps.loadAccessThreadIntoUi ?? null;
   syncIrPanelVaultDom = deps.syncIrPanelVaultDom;
 
   const setModal = document.getElementById("modal-ir-set-pin");
@@ -279,6 +283,9 @@ export function initIrPanelPinLock(deps) {
       const chat = document.getElementById("main-chat");
       if (panel === "intro" && chat?.classList.contains("chat--intro")) {
         await loadIntroThreadIntoUi?.();
+      }
+      if (panel === "access" && chat?.classList.contains("chat--access")) {
+        await loadAccessThreadIntoUi?.();
       }
       appendActivityLog?.(`${PANEL_LABEL[panel]}: unlocked. Set a new PIN to lock again.`);
     } catch (e) {

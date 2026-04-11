@@ -595,17 +595,16 @@
                   <h2 id="chat-access-heading" class="chat-ir-title">Access</h2>
                   <div class="chat-ir-informer">
                     <p>
-                      This section is for specifying how AI models should reach external data sources when a
-                      request requires that kind of access.
+                      Use this thread to note <strong>third-party</strong> data you want the project to
+                      remember: public APIs, REST endpoints, and simple services (weather, market quotes,
+                      reservoir levels, and the like). This is <strong>not</strong> for LLM provider keys or
+                      <code>.env</code> secrets — only external services you name here.
                     </p>
                     <p>
-                      For example, if you want answers to use weather data, you can indicate that models
-                      should use a service such as the following:
-                      <code>https://api.open-meteo.com/v1/forecast?latitude=34.77&amp;longitude=32.42&amp;current_weather=true</code>
-                    </p>
-                    <p>
-                      When set up accordingly, all configured models will call that endpoint when the user’s
-                      request calls for that data.
+                      After each exchange, <strong>Keeper 2</strong> may save structured rows (name,
+                      description, URL, service-specific key) into a local store from the conversation. Example
+                      example endpoint (replace with your own HTTPS URL):
+                      <code>https://api.example.org/v1/resource?…</code>
                     </p>
                   </div>
                 </header>
@@ -802,6 +801,16 @@
                         </svg>
                       </span>
                       <span class="attach-menu-label">Web search</span>
+                    </button>
+                    <button type="button" class="attach-menu-item" role="menuitem" data-action="accessData">
+                      <span class="attach-menu-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                          <circle cx="12" cy="12" r="10" />
+                          <path d="M12 16v-4" />
+                          <path d="M12 8h.01" />
+                        </svg>
+                      </span>
+                      <span class="attach-menu-label">Access data</span>
                     </button>
                   </div>
                   <input type="file" id="attach-file-input" class="attach-file-input" multiple accept="*/*" hidden />

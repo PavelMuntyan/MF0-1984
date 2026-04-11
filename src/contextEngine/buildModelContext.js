@@ -91,6 +91,38 @@ function userTurnContentForModel(base, attachmentsJson) {
   return b ? `${b}\n\n${hint}` : hint;
 }
 
+/**
+ * @param {import("./types.js").AccessCatalogEntry[]} entries
+ * @returns {string}
+ */
+function buildAccessCatalogBlock(entries) {
+  const arr = Array.isArray(entries) ? entries : [];
+  if (arr.length === 0) return "";
+  const lines = [];
+  let charBudget = 2800;
+  for (const e of arr.slice(0, 32)) {
+    const name = String(e?.name ?? "").trim().slice(0, 120);
+    if (!name) continue;
+    const desc = String(e?.description ?? "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 220);
+    const url = String(e?.endpointUrl ?? "").trim().slice(0, 500);
+    const line = `- **${name}**${desc ? `: ${desc}` : ""}${url ? ` — endpoint: ${url}` : ""}`;
+    if (line.length + 1 > charBudget) break;
+    lines.push(line);
+    charBudget -= line.length + 1;
+  }
+  if (lines.length === 0) return "";
+  return (
+    "The user keeps this **project Access catalog** (metadata only: names, descriptions, public endpoints). " +
+    "**API keys and tokens are not included here** and must not be invented.\n" +
+    "When the user's request clearly matches a listed service, **prefer** that endpoint and description. " +
+    "If authentication is required, state what is missing and ask the user to supply it in chat if appropriate — do not guess secrets.\n\n" +
+    lines.join("\n")
+  );
+}
+
 function flattenHistoryMessages(pack) {
   /** @type {Array<{ id: string, role: string, content: string, created_at: string }>} */
   const fromMirror = (pack.threadMessages ?? []).map((m) => ({
@@ -130,12 +162,13 @@ function flattenHistoryMessages(pack) {
  * @returns {import("./types.js").BuiltModelContext}
  */
 export function buildModelContext(input) {
-  const { threadId, userPrompt, contextPack, modelFlags } = input;
+  const { threadId, userPrompt, contextPack, modelFlags, accessServicesCatalog } = input;
   const pack = contextPack;
   const rules = pack.rules ?? [];
 
   const systemCore = pickSystemCore(rules);
   const activeRulesDigest = buildRulesDigest(rules);
+  const accessCatalogBlock = buildAccessCatalogBlock(accessServicesCatalog ?? []);
   const memoryLayer = buildMemoryLayers(pack.memoryItems ?? [], threadId);
 
   const relevantMemoryBlock = memoryLayer
@@ -196,6 +229,7 @@ export function buildModelContext(input) {
     systemCore,
     "=== ACTIVE RULES (digest) ===",
     activeRulesDigest || "(none)",
+    accessCatalogBlock.trim() ? "=== ACCESS CATALOG (metadata only) ===\n" + accessCatalogBlock : "",
     "=== MEMORY (compact) ===",
     relevantMemoryBlock || "(none)",
     globalConstraints ? "=== CRITICAL CONSTRAINTS ===\n" + globalConstraints : "",
@@ -208,6 +242,7 @@ export function buildModelContext(input) {
     layerTokens: {
       systemCore: estimateTokens(systemCore),
       rulesDigest: estimateTokens(activeRulesDigest),
+      accessCatalog: estimateTokens(accessCatalogBlock),
       memory: estimateTokens(relevantMemoryBlock),
       retrieved: estimateTokens(retrievedText),
       recent: recentMessages.reduce((a, m) => a + estimateTokens(m.content), 0),
@@ -228,6 +263,7 @@ export function buildModelContext(input) {
     systemCore,
     activeRulesDigest,
     relevantMemoryBlock,
+    accessCatalogBlock,
     retrievedChunks,
     recentMessages,
     finalMessagesForModel,

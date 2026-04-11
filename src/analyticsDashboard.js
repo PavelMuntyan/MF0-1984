@@ -49,6 +49,7 @@ function renderAnalytics(root, raw) {
     const im = Number(p.imageRequests) || 0;
     const dr = Number(p.researchRequests) || 0;
     const wb = Number(p.webRequests) || 0;
+    const ar = Number(p.accessRequests) || 0;
     return `
       <section class="analytics-model-card" data-provider="${id}">
         <h3 class="analytics-model-title">${label}</h3>
@@ -58,6 +59,7 @@ function renderAnalytics(root, raw) {
           <div class="analytics-dl-row"><dt>Create image</dt><dd>${im}</dd></div>
           <div class="analytics-dl-row"><dt>Deep research</dt><dd>${dr}</dd></div>
           <div class="analytics-dl-row"><dt>Web search</dt><dd>${wb}</dd></div>
+          <div class="analytics-dl-row"><dt>Access requests</dt><dd>${ar}</dd></div>
         </dl>
       </section>`;
   }).join("");

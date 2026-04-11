@@ -75,11 +75,20 @@
  */
 
 /**
+ * @typedef {Object} AccessCatalogEntry
+ * @property {string} [id]
+ * @property {string} name
+ * @property {string} [description]
+ * @property {string} [endpointUrl]
+ */
+
+/**
  * @typedef {Object} BuildModelContextInput
  * @property {string} threadId
  * @property {string} userPrompt
  * @property {ContextPack} contextPack
  * @property {Record<string, unknown>} [modelFlags]
+ * @property {AccessCatalogEntry[]} [accessServicesCatalog]
  */
 
 /**
@@ -87,6 +96,7 @@
  * @property {string} systemCore
  * @property {string} activeRulesDigest
  * @property {string} relevantMemoryBlock
+ * @property {string} accessCatalogBlock
  * @property {RetrievedChunk[]} retrievedChunks
  * @property {ModelMessage[]} recentMessages
  * @property {ModelMessage[]} finalMessagesForModel

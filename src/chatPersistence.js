@@ -28,6 +28,7 @@ export function requestTypeFromAttachMode(mode) {
   if (m === "web") return "web";
   if (m === "image") return "image";
   if (m === "research") return "research";
+  if (m === "accessData") return "access_data";
   return "default";
 }
 
@@ -252,6 +253,71 @@ export async function fetchIntroSession() {
   const dialogId = String(data?.dialogId ?? "").trim();
   if (!dialogId) throw new Error("Intro session: empty dialog id");
   return { themeId: String(data?.themeId ?? "").trim(), dialogId };
+}
+
+/** Ensures Access theme and dialog exist for the Access section. */
+export async function fetchAccessSession() {
+  const res = await fetch(apiUrl("api/access/session"));
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Access session ${res.status}`);
+  }
+  const data = await res.json();
+  const dialogId = String(data?.dialogId ?? "").trim();
+  if (!dialogId) throw new Error("Access session: empty dialog id");
+  return { themeId: String(data?.themeId ?? "").trim(), dialogId };
+}
+
+/** Keeper 2 store: third-party APIs / endpoints (not model keys). */
+export async function fetchAccessExternalServices() {
+  const res = await fetch(apiUrl("api/access/external-services"));
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Access external services ${res.status}`);
+  }
+  const data = await res.json();
+  return { entries: Array.isArray(data.entries) ? data.entries : [] };
+}
+
+/**
+ * For `#data`: full `entries`, per-row `snapshots`, and `meta` (live GET policy from env allowlist).
+ * @returns {Promise<{ ok?: boolean, entries: unknown[], snapshots: unknown[], meta?: { globalHostSuffixRuleCount: number, rowSelfHostnameFetch: boolean, maxLiveFetches: number, entryRowCount: number } }>}
+ */
+export async function fetchAccessDataDumpEnrichment() {
+  const res = await fetch(apiUrl("api/access/data-dump-enrichment"));
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Access data-dump enrichment ${res.status}`);
+  }
+  return res.json();
+}
+
+/**
+ * Same services as Access store, **without** `accessKey` — safe to merge into LLM system context.
+ * @returns {Promise<{ entries: Array<{ id: string, name: string, description: string, endpointUrl: string }> }>}
+ */
+export async function fetchAccessExternalServicesCatalog() {
+  const res = await fetch(apiUrl("api/access/external-services/catalog"));
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Access catalog ${res.status}`);
+  }
+  const data = await res.json();
+  return { entries: Array.isArray(data.entries) ? data.entries : [] };
+}
+
+/** @param {{ entries: unknown[] }} body */
+export async function putAccessExternalServices(body) {
+  const res = await fetch(apiUrl("api/access/external-services"), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body ?? { entries: [] }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok !== true) {
+    throw new Error(data.error || `Access external services PUT ${res.status}`);
+  }
+  return { entries: Array.isArray(data.entries) ? data.entries : [] };
 }
 
 /** @typedef {"intro"|"rules"|"access"} IrPanelId */

@@ -26,7 +26,11 @@ const migration004 = path.join(root, "db", "migrations", "004_memory_graph.sql")
 const migration005 = path.join(root, "db", "migrations", "005_assistant_error.sql");
 const migration006 = path.join(root, "db", "migrations", "006_intro_pin_lock.sql");
 const migration007 = path.join(root, "db", "migrations", "007_ir_panel_pin_lock.sql");
+const migration008 = path.join(root, "db", "migrations", "008_access_external_services.sql");
 const PORT = Number(process.env.API_PORT || 35184, 10);
+
+/** Max length for Access `notes` field (DB + JSON import). */
+const ACCESS_ENTRY_NOTES_MAX = 12000;
 
 const ANALYTICS_PROVIDER_IDS = ["openai", "perplexity", "gemini-flash", "anthropic"];
 
@@ -126,6 +130,80 @@ function applyIrPanelPinLockMigration(database) {
   }
 }
 
+function applyAccessExternalServicesMigration(database) {
+  const row = database
+    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='access_external_services'`)
+    .get();
+  if (row) return;
+  if (!fs.existsSync(migration008)) {
+    throw new Error("Missing migration 008_access_external_services.sql");
+  }
+  database.exec(fs.readFileSync(migration008, "utf8"));
+}
+
+/**
+ * One-time: import legacy JSON into SQLite when the table is empty, then remove the file.
+ * @param {import("better-sqlite3").Database} database
+ */
+function migrateAccessExternalServicesFromJsonIfNeeded(database) {
+  const accessExternalServicesPath = path.join(root, "data", "access-external-services.json");
+  const n = database.prepare(`SELECT COUNT(*) AS c FROM access_external_services`).get();
+  const count = Number(n?.c ?? 0);
+  if (count > 0) return;
+  if (!fs.existsSync(accessExternalServicesPath)) return;
+  let raw;
+  try {
+    raw = fs.readFileSync(accessExternalServicesPath, "utf8");
+  } catch {
+    return;
+  }
+  let j;
+  try {
+    j = JSON.parse(raw);
+  } catch {
+    console.warn("[mf-lab-api] access-external-services.json: invalid JSON, skipping migration");
+    return;
+  }
+  const entries = sanitizeAccessExternalEntries(j.entries);
+  if (entries.length === 0) {
+    try {
+      fs.unlinkSync(accessExternalServicesPath);
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+  const ins = database.prepare(
+    `INSERT INTO access_external_services (id, name, description, endpoint_url, access_key, notes, updated_at)
+     VALUES (@id, @name, @description, @endpointUrl, @accessKey, @notes, @updatedAt)`,
+  );
+  const tx = database.transaction((rows) => {
+    for (const e of rows) {
+      ins.run({
+        id: e.id,
+        name: e.name,
+        description: e.description,
+        endpointUrl: e.endpointUrl,
+        accessKey: e.accessKey,
+        notes: e.notes,
+        updatedAt: e.updatedAt,
+      });
+    }
+  });
+  tx(entries);
+  try {
+    fs.unlinkSync(accessExternalServicesPath);
+    console.log(
+      "[mf-lab-api] Migrated access-external-services.json → access_external_services table; legacy file removed.",
+    );
+  } catch (e) {
+    console.warn(
+      "[mf-lab-api] Migrated access JSON to DB but could not remove file:",
+      e instanceof Error ? e.message : String(e),
+    );
+  }
+}
+
 function parseTurnUserAttachmentsJson(raw) {
   if (raw == null || String(raw).trim() === "") return [];
   try {
@@ -174,6 +252,8 @@ function ensureDatabase() {
   applyMemoryGraphMigration(database);
   applyAssistantErrorColumn(database);
   applyIrPanelPinLockMigration(database);
+  applyAccessExternalServicesMigration(database);
+  migrateAccessExternalServicesFromJsonIfNeeded(database);
   return database;
 }
 
@@ -214,12 +294,364 @@ function rawDbTimestamp(value) {
   return String(value);
 }
 
+function sanitizeAccessExternalEntries(entries) {
+  const now = new Date().toISOString();
+  /** @type {Array<{ id: string, name: string, description: string, endpointUrl: string, accessKey: string, notes: string, updatedAt: string }>} */
+  const out = [];
+  const arr = Array.isArray(entries) ? entries : [];
+  for (const e of arr.slice(0, 200)) {
+    if (!e || typeof e !== "object") continue;
+    const id = String(e.id ?? "").trim() || crypto.randomUUID();
+    const name = String(e.name ?? "").trim().slice(0, 200);
+    if (!name) continue;
+    out.push({
+      id,
+      name,
+      description: String(e.description ?? "").trim().slice(0, 2000),
+      endpointUrl: String(e.endpointUrl ?? e.endpoint_or_url ?? "").trim().slice(0, 2000),
+      accessKey: String(e.accessKey ?? e.access_key ?? "").trim().slice(0, 2000),
+      notes: String(e.notes ?? "").trim().slice(0, ACCESS_ENTRY_NOTES_MAX),
+      updatedAt: String(e.updatedAt ?? e.updated_at ?? now).slice(0, 40),
+    });
+  }
+  return out;
+}
+
+function readAccessExternalServicesPayload() {
+  const rows = db
+    .prepare(
+      `SELECT id, name, description, endpoint_url AS endpointUrl, access_key AS accessKey, notes, updated_at AS updatedAt
+       FROM access_external_services ORDER BY name COLLATE NOCASE`,
+    )
+    .all();
+  /** @type {Array<{ id: string, name: string, description: string, endpointUrl: string, accessKey: string, notes: string, updatedAt: string }>} */
+  const entries = (rows ?? []).map((r) => ({
+    id: String(r.id ?? "").trim(),
+    name: String(r.name ?? "").trim(),
+    description: String(r.description ?? "").trim(),
+    endpointUrl: String(r.endpointUrl ?? "").trim(),
+    accessKey: String(r.accessKey ?? "").trim(),
+    notes: String(r.notes ?? "").trim(),
+    updatedAt: String(r.updatedAt ?? "").trim(),
+  }));
+  return { entries: sanitizeAccessExternalEntries(entries) };
+}
+
+/**
+ * #data / Access data: optional live JSON GET for each row’s `endpointUrl`.
+ * - **Always:** host must be the same as that row’s URL hostname **or** match optional global suffix rules (env).
+ * - **Optional:** `ACCESS_DATA_DUMP_ALLOW_HOST_SUFFIXES` — comma-separated host suffixes (e.g. CDN parents) in addition to self-host.
+ * No per-vendor URLs are hardcoded in code.
+ */
+function getAccessDataDumpAllowHostSuffixes() {
+  const raw = String(process.env.ACCESS_DATA_DUMP_ALLOW_HOST_SUFFIXES ?? "").trim();
+  if (!raw) return [];
+  return raw
+    .split(/[,;]+/)
+    .map((s) => s.trim().toLowerCase().replace(/^\.+/, ""))
+    .filter((s) => s.length > 1 && /^[a-z0-9.-]+$/.test(s));
+}
+
+/** Hostname from this row’s stored URL (lowercase), or empty if invalid. */
+function rowEndpointHostname(entry) {
+  try {
+    return new URL(String(entry?.endpointUrl ?? "").trim()).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Live GET allowed for this row if public HTTPS host matches **this row’s** endpoint hostname,
+ * or matches any configured global suffix (parent/CDN domains).
+ * @param {string} hostname
+ * @param {{ endpointUrl?: string }} entry
+ */
+function hostnameAllowedForDataDumpRow(hostname, entry) {
+  const h = String(hostname ?? "").toLowerCase();
+  const self = rowEndpointHostname(entry);
+  if (self && h === self) return true;
+  const host = h.replace(/\.$/, "");
+  for (const suf of getAccessDataDumpAllowHostSuffixes()) {
+    if (host === suf || host.endsWith("." + suf)) return true;
+  }
+  return false;
+}
+
+function isSafePublicHttpsUrlForDataDump(urlStr) {
+  try {
+    const u = new URL(String(urlStr ?? "").trim());
+    if (u.protocol !== "https:") return false;
+    const h = u.hostname.toLowerCase();
+    if (!h || h === "localhost" || h === "[::1]") return false;
+    if (h.endsWith(".local")) return false;
+    if (/^(127\.|10\.|192\.168\.|169\.254\.)/.test(h)) return false;
+    const ipv4 = h.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+    if (ipv4) {
+      const a = Number(ipv4[1]);
+      const b = Number(ipv4[2]);
+      if (a === 0 || a === 127) return false;
+      if (a === 10) return false;
+      if (a === 172 && b >= 16 && b <= 31) return false;
+      if (a === 192 && b === 168) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Generic JSON trim for LLM context (no product-specific field lists).
+ * @param {unknown} value
+ * @param {number} depth
+ * @param {WeakSet<object>} seen
+ */
+function genericPruneJsonForDataDump(value, depth = 0, seen = new WeakSet()) {
+  const maxDepth = 7;
+  const maxStr = 1800;
+  const maxKeys = 72;
+  const maxArr = 48;
+  if (depth > maxDepth) return "[truncated-depth]";
+  if (value === null || typeof value === "boolean" || typeof value === "number") return value;
+  if (typeof value === "string") {
+    return value.length > maxStr ? `${value.slice(0, maxStr)}…` : value;
+  }
+  if (typeof value !== "object") return value;
+  if (seen.has(/** @type {object} */ (value))) return "[circular]";
+  seen.add(/** @type {object} */ (value));
+  if (Array.isArray(value)) {
+    const out = value.slice(0, maxArr).map((x) => genericPruneJsonForDataDump(x, depth + 1, seen));
+    if (value.length > maxArr) out.push(`[…+${value.length - maxArr} items]`);
+    return out;
+  }
+  const o = /** @type {Record<string, unknown>} */ ({});
+  const keys = Object.keys(value).slice(0, maxKeys);
+  for (const k of keys) {
+    o[k] = genericPruneJsonForDataDump(value[k], depth + 1, seen);
+  }
+  if (Object.keys(value).length > maxKeys) o._truncatedKeys = true;
+  return o;
+}
+
+/**
+ * @param {{ id?: string, name?: string, endpointUrl?: string }} entry
+ */
+async function fetchSafeAllowlistedJsonSnapshotForEntry(entry) {
+  const url = String(entry?.endpointUrl ?? "").trim();
+  if (!url) return { skipped: true, reason: "no endpointUrl" };
+  if (!isSafePublicHttpsUrlForDataDump(url)) {
+    return { skipped: true, reason: "only public HTTPS URLs (non-loopback) are allowed" };
+  }
+  let hostname = "";
+  try {
+    hostname = new URL(url).hostname.toLowerCase();
+  } catch {
+    return { skipped: true, reason: "invalid URL" };
+  }
+  if (!hostnameAllowedForDataDumpRow(hostname, entry)) {
+    return {
+      skipped: true,
+      reason:
+        "hostname does not match this row’s endpointUrl host and does not match ACCESS_DATA_DUMP_ALLOW_HOST_SUFFIXES",
+    };
+  }
+  try {
+    const ctrl = new AbortController();
+    const tid = setTimeout(() => ctrl.abort(), 9000);
+    const res = await fetch(url, {
+      method: "GET",
+      signal: ctrl.signal,
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "MF0-1984-local-api/data-dump",
+      },
+    });
+    clearTimeout(tid);
+    const text = await res.text();
+    if (!res.ok) {
+      return { ok: false, httpStatus: res.status, error: text.slice(0, 500) };
+    }
+    if (text.length > 1_200_000) {
+      return { ok: false, error: "response body too large" };
+    }
+    let parsed = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return { ok: false, httpStatus: res.status, error: "non-JSON body", snippet: text.slice(0, 400) };
+    }
+    const pruned = genericPruneJsonForDataDump(parsed);
+    return {
+      ok: true,
+      httpStatus: res.status,
+      fetchedAt: new Date().toISOString(),
+      body: pruned,
+    };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+function getAccessDataDumpMaxLiveFetches() {
+  const n = Number(process.env.ACCESS_DATA_DUMP_MAX_LIVE_FETCHES);
+  if (Number.isFinite(n) && n >= 1 && n <= 120) return Math.floor(n);
+  return 48;
+}
+
+/**
+ * Prefer likely air-quality rows first so a small fetch budget still hits relevant JSON APIs.
+ * @param {Array<{ name?: string, endpointUrl?: string }>} list
+ */
+function sortEntriesForDataDumpFetchPriority(list) {
+  /** @param {{ name?: string, endpointUrl?: string }} e */
+  const score = (e) => {
+    const u = String(e?.endpointUrl ?? "").toLowerCase();
+    const n = String(e?.name ?? "").toLowerCase();
+    const h = `${u} ${n}`;
+    let p = 0;
+    if (/air-quality|airquality|aqi|pm2|pm10|pollution|smog|чистот|воздух|качеств/i.test(h)) p += 8;
+    if (/marine|wave|морск/i.test(h)) p += 2;
+    if (/forecast|current_weather|погод|weather/i.test(h)) p += 1;
+    return p;
+  };
+  return [...list].sort((a, b) => {
+    const d = score(b) - score(a);
+    if (d !== 0) return d;
+    return String(a?.name ?? "").localeCompare(String(b?.name ?? ""), "und", { sensitivity: "base" });
+  });
+}
+
+async function getAccessDataDumpEnrichmentPayload() {
+  const { entries: entriesRaw } = readAccessExternalServicesPayload();
+  const entries = sortEntriesForDataDumpFetchPriority(entriesRaw);
+  /** @type {unknown[]} */
+  const snapshots = [];
+  let fetchCount = 0;
+  const suffixes = getAccessDataDumpAllowHostSuffixes();
+  const maxFetches = getAccessDataDumpMaxLiveFetches();
+  for (const e of entries) {
+    const url = String(e?.endpointUrl ?? "").trim();
+    if (!url) {
+      snapshots.push({
+        entryId: e.id,
+        entryName: e.name,
+        skipped: true,
+        reason: "no endpointUrl",
+      });
+      continue;
+    }
+    if (!isSafePublicHttpsUrlForDataDump(url)) {
+      snapshots.push({
+        entryId: e.id,
+        entryName: e.name,
+        endpointUrl: url,
+        skipped: true,
+        reason: "only public HTTPS URLs are considered for live fetch",
+      });
+      continue;
+    }
+    let hostname = "";
+    try {
+      hostname = new URL(url).hostname.toLowerCase();
+    } catch {
+      snapshots.push({
+        entryId: e.id,
+        entryName: e.name,
+        endpointUrl: url,
+        skipped: true,
+        reason: "invalid URL",
+      });
+      continue;
+    }
+    if (!hostnameAllowedForDataDumpRow(hostname, e)) {
+      snapshots.push({
+        entryId: e.id,
+        entryName: e.name,
+        endpointUrl: url,
+        skipped: true,
+        reason:
+          "hostname not allowed for live fetch (must match this row’s endpointUrl host, or a suffix from ACCESS_DATA_DUMP_ALLOW_HOST_SUFFIXES)",
+      });
+      continue;
+    }
+    if (fetchCount >= maxFetches) {
+      snapshots.push({
+        entryId: e.id,
+        entryName: e.name,
+        endpointUrl: url,
+        skipped: true,
+        reason: `not fetched this round — server snapshot budget (${maxFetches} GETs per request; set ACCESS_DATA_DUMP_MAX_LIVE_FETCHES up to 120 to raise)`,
+      });
+      continue;
+    }
+    fetchCount += 1;
+    const snap = await fetchSafeAllowlistedJsonSnapshotForEntry(e);
+    snapshots.push({
+      entryId: e.id,
+      entryName: e.name,
+      endpointUrl: url,
+      ...snap,
+    });
+  }
+  return {
+    ok: true,
+    entries,
+    snapshots,
+    meta: {
+      globalHostSuffixRuleCount: suffixes.length,
+      rowSelfHostnameFetch: true,
+      maxLiveFetches: maxFetches,
+      entryRowCount: entries.length,
+    },
+  };
+}
+
+/** Prompt-safe catalog: names, descriptions, URLs only — never credentials. */
+function readAccessExternalServicesCatalogPayload() {
+  const { entries } = readAccessExternalServicesPayload();
+  return {
+    entries: entries.map((e) => ({
+      id: e.id,
+      name: e.name,
+      description: e.description,
+      endpointUrl: e.endpointUrl,
+      /* notes omitted from catalog — may echo secrets; full store still has them */
+    })),
+  };
+}
+
+function writeAccessExternalServicesPayload(body) {
+  const entries = sanitizeAccessExternalEntries(body?.entries);
+  const del = db.prepare(`DELETE FROM access_external_services`);
+  const ins = db.prepare(
+    `INSERT INTO access_external_services (id, name, description, endpoint_url, access_key, notes, updated_at)
+     VALUES (@id, @name, @description, @endpointUrl, @accessKey, @notes, @updatedAt)`,
+  );
+  const tx = db.transaction((rows) => {
+    del.run();
+    for (const e of rows) {
+      ins.run({
+        id: e.id,
+        name: e.name,
+        description: e.description,
+        endpointUrl: e.endpointUrl,
+        accessKey: e.accessKey,
+        notes: e.notes,
+        updatedAt: e.updatedAt,
+      });
+    }
+  });
+  tx(entries);
+  return { entries };
+}
+
 function listThemesWithDialogs() {
-  /** Hide the Intro service dialog's theme in the list — Intro is opened only from the Intro control. */
+  /** Hide Intro / Access service themes — those panels open from their own controls, not the theme list. */
   const themes = db
     .prepare(
       `SELECT id, title, created_at, updated_at FROM themes
-       WHERE id NOT IN (SELECT theme_id FROM dialogs WHERE IFNULL(purpose, '') = 'intro')
+       WHERE id NOT IN (SELECT theme_id FROM dialogs WHERE IFNULL(purpose, '') IN ('intro', 'access'))
        ORDER BY datetime(updated_at) DESC, datetime(created_at) DESC`,
     )
     .all();
@@ -357,6 +789,13 @@ function listContextPack(dialogId, userQuery) {
     turns,
     userQuery: userQuery || "",
   };
+}
+
+function userTextTriggersAccessDataDumpLockdown(userText) {
+  const t = String(userText ?? "").trim();
+  if (!t) return false;
+  if (t === "#data") return true;
+  return /(?:^|\s)#data(?:\s|$)/.test(t);
 }
 
 function runAfterTurnPipeline(dialogId, turnId, userText, assistantText, userMessageAt, assistantMessageAt) {
@@ -593,6 +1032,33 @@ function getOrCreateIntroSession() {
   return { themeId, dialogId };
 }
 
+function getOrCreateAccessSession() {
+  applyDialogsPurposeColumn(db);
+  applyMemoryGraphMigration(db);
+  const row = db
+    .prepare(`SELECT d.id AS dialog_id, d.theme_id AS theme_id FROM dialogs d WHERE d.purpose = 'access' LIMIT 1`)
+    .get();
+  if (row) {
+    return { themeId: row.theme_id, dialogId: row.dialog_id };
+  }
+  const themeId = crypto.randomUUID();
+  const dialogId = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const tx = db.transaction(() => {
+    db.prepare(`INSERT INTO themes (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)`).run(
+      themeId,
+      "Access",
+      now,
+      now,
+    );
+    db.prepare(
+      `INSERT INTO dialogs (id, theme_id, title, created_at, updated_at, purpose) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(dialogId, themeId, "External services", now, now, "access");
+  });
+  tx();
+  return { themeId, dialogId };
+}
+
 function memoryGraphIsProtectedHubNode(category, label) {
   const c = normalizeMemoryGraphCategory(category);
   const lab = normGraphLabel(label);
@@ -801,7 +1267,7 @@ function analyticsDialogWhereSql(alias = "d") {
 
 /**
  * @returns {{
- *   providers: Record<string, { requestsSent: number, responsesOk: number, imageRequests: number, researchRequests: number, webRequests: number }>,
+ *   providers: Record<string, { requestsSent: number, responsesOk: number, imageRequests: number, researchRequests: number, webRequests: number, accessRequests: number }>,
  *   dailyUsage: Array<{ date: string, byProvider: Record<string, number> }>,
  *   themesCount: number,
  *   dialogsCount: number,
@@ -809,7 +1275,7 @@ function analyticsDialogWhereSql(alias = "d") {
  * }}
  */
 function getAnalyticsPayload() {
-  /** @type {Record<string, { requestsSent: number, responsesOk: number, imageRequests: number, researchRequests: number, webRequests: number }>} */
+  /** @type {Record<string, { requestsSent: number, responsesOk: number, imageRequests: number, researchRequests: number, webRequests: number, accessRequests: number }>} */
   const providers = {};
   for (const id of ANALYTICS_PROVIDER_IDS) {
     providers[id] = {
@@ -818,6 +1284,7 @@ function getAnalyticsPayload() {
       imageRequests: 0,
       researchRequests: 0,
       webRequests: 0,
+      accessRequests: 0,
     };
   }
 
@@ -829,7 +1296,8 @@ function getAnalyticsPayload() {
          SUM(CASE WHEN t.assistant_message_at IS NOT NULL AND IFNULL(t.assistant_error, 0) = 0 THEN 1 ELSE 0 END) AS responses_ok,
          SUM(CASE WHEN t.request_type = 'image' THEN 1 ELSE 0 END) AS image_requests,
          SUM(CASE WHEN t.request_type = 'research' THEN 1 ELSE 0 END) AS research_requests,
-         SUM(CASE WHEN t.request_type = 'web' THEN 1 ELSE 0 END) AS web_requests
+         SUM(CASE WHEN t.request_type = 'web' THEN 1 ELSE 0 END) AS web_requests,
+         SUM(CASE WHEN t.request_type = 'access_data' THEN 1 ELSE 0 END) AS access_requests
        FROM conversation_turns t
        INNER JOIN dialogs d ON d.id = t.dialog_id
        WHERE ${analyticsDialogWhereSql("d")}
@@ -844,6 +1312,7 @@ function getAnalyticsPayload() {
     providers[pid].imageRequests = Number(row.image_requests) || 0;
     providers[pid].researchRequests = Number(row.research_requests) || 0;
     providers[pid].webRequests = Number(row.web_requests) || 0;
+    providers[pid].accessRequests = Number(row.access_requests) || 0;
   }
 
   const dayRows = db
@@ -886,7 +1355,7 @@ function getAnalyticsPayload() {
   const themesRow = db
     .prepare(
       `SELECT COUNT(*) AS n FROM themes WHERE id NOT IN (
-         SELECT DISTINCT theme_id FROM dialogs WHERE IFNULL(purpose, '') = 'intro'
+         SELECT DISTINCT theme_id FROM dialogs WHERE IFNULL(purpose, '') IN ('intro', 'access')
        )`,
     )
     .get();
@@ -1062,6 +1531,35 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && p === "/api/intro/session") {
       const s = getOrCreateIntroSession();
       return json(res, 200, { ok: true, themeId: s.themeId, dialogId: s.dialogId });
+    }
+
+    if (req.method === "GET" && p === "/api/access/session") {
+      const s = getOrCreateAccessSession();
+      return json(res, 200, { ok: true, themeId: s.themeId, dialogId: s.dialogId });
+    }
+
+    if (req.method === "GET" && p === "/api/access/external-services") {
+      return json(res, 200, { ok: true, ...readAccessExternalServicesPayload() });
+    }
+
+    if (req.method === "GET" && p === "/api/access/external-services/catalog") {
+      return json(res, 200, { ok: true, ...readAccessExternalServicesCatalogPayload() });
+    }
+
+    if (req.method === "GET" && p === "/api/access/data-dump-enrichment") {
+      try {
+        const out = await getAccessDataDumpEnrichmentPayload();
+        return json(res, 200, out);
+      } catch (e) {
+        console.error("[mf-lab-api] data-dump-enrichment:", e);
+        return json(res, 500, { ok: false, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+
+    if (req.method === "PUT" && p === "/api/access/external-services") {
+      const body = await readBody(req);
+      const out = writeAccessExternalServicesPayload(body);
+      return json(res, 200, { ok: true, ...out });
     }
 
     if (req.method === "GET" && p === "/api/ir-panel-lock") {
@@ -1348,7 +1846,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && p.startsWith("/api/dialogs/") && p.endsWith("/turns")) {
       const dialogId = decodeURIComponent(p.slice("/api/dialogs/".length, -"/turns".length));
       if (!dialogId) return json(res, 400, { error: "Missing dialog id" });
-      const drow = db.prepare(`SELECT id, theme_id FROM dialogs WHERE id = ?`).get(dialogId);
+      const drow = db
+        .prepare(`SELECT id, theme_id, IFNULL(purpose, '') AS purpose FROM dialogs WHERE id = ?`)
+        .get(dialogId);
       if (!drow) return json(res, 404, { error: "Dialog not found" });
 
       const body = await readBody(req);
@@ -1369,7 +1869,8 @@ const server = http.createServer(async (req, res) => {
       const attachRows = parseTurnUserAttachmentsJson(userAttachmentsJson);
       const hasUserChars = String(userText).trim().length > 0;
       const hasAttach = attachRows.length > 0;
-      if ((!hasUserChars && !hasAttach) || !requestedProviderId || !userMessageAt) {
+      const allowEmptyUserText = requestType === "access_data";
+      if ((!hasUserChars && !hasAttach && !allowEmptyUserText) || !requestedProviderId || !userMessageAt) {
         return json(res, 400, {
           error: "user_text (or attachments), requested_provider_id, user_message_at required",
         });
@@ -1403,14 +1904,19 @@ const server = http.createServer(async (req, res) => {
       });
       tx();
       try {
-        runAfterTurnPipeline(
-          dialogId,
-          turnId,
-          pipelineUserText,
-          assistantText,
-          userMessageAt,
-          assistantMessageAt || now,
-        );
+        /** Access thread, #data in text, or Access data menu: persist turns only; no RAG / memory extraction side lane. */
+        const dataDumpLockdown =
+          userTextTriggersAccessDataDumpLockdown(userText) || requestType === "access_data";
+        if (String(drow.purpose ?? "") !== "access" && !dataDumpLockdown) {
+          runAfterTurnPipeline(
+            dialogId,
+            turnId,
+            pipelineUserText,
+            assistantText,
+            userMessageAt,
+            assistantMessageAt || now,
+          );
+        }
       } catch (e) {
         console.error("context pipeline after turn:", e);
       }

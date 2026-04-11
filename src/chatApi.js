@@ -363,7 +363,7 @@ function humanizeOpenAiImageError(raw, status) {
  * @param {string} providerId
  * @param {string} text
  * @param {string} apiKey
- * @param {{ webSearch?: boolean, deepResearch?: boolean, systemInstruction?: string, llmMessages?: Array<{ role: string, content: string }>, chatAttachments?: { images?: Array<{ mimeType: string, base64: string }> } }} [options] — webSearch/deepResearch: search-capable models where supported; llmMessages: assembled thread context; chatAttachments: images for the last user turn (file text is already in `text`)
+ * @param {{ webSearch?: boolean, deepResearch?: boolean, systemInstruction?: string, llmMessages?: Array<{ role: string, content: string }>, chatAttachments?: { images?: Array<{ mimeType: string, base64: string }> }, accessDataDumpMode?: boolean }} [options] — webSearch/deepResearch: search-capable models where supported; llmMessages: assembled thread context; chatAttachments: images for the last user turn (file text is already in `text`); accessDataDumpMode: #data lockdown
  * @returns {Promise<{ text: string }>}
  */
 export async function completeChatMessage(providerId, text, apiKey, options = {}) {
@@ -377,8 +377,9 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
   if (!hasLlm && !trimmed && !hasAttImg) {
     throw new Error("Empty message");
   }
-  const webSearch = Boolean(options.webSearch);
-  const deepResearch = Boolean(options.deepResearch);
+  const lockdown = Boolean(options.accessDataDumpMode);
+  const webSearch = Boolean(options.webSearch) && !lockdown;
+  const deepResearch = Boolean(options.deepResearch) && !lockdown;
   const useWebGrounding = webSearch || deepResearch;
   const oaMsgs = applyChatAttachmentsToOpenAiMessages(
     openAiCompatMessages(trimmed, options),
@@ -469,6 +470,8 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
           search_context_size: "high",
           search_type: "pro",
         };
+      } else if (lockdown) {
+        perplexityBody.disable_search = true;
       }
       const res = await fetch("/llm/perplexity/chat/completions", {
         method: "POST",
@@ -767,6 +770,245 @@ function clampGraphPayloadToInterestsOnly(pack) {
  * @param {string} apiKey
  * @param {string} userText
  */
+const ACCESS_KEEPER2_EXTRACT_SYSTEM =
+  "You are **Keeper 2** for the **Access** section of the app.\n" +
+  "You read the **full conversation** (USER and ASSISTANT lines) in the Access thread.\n" +
+  "Your job: extract **third-party** services the human is configuring — HTTP APIs, hosted inference or media pipelines, async job/queue endpoints, geocoding, weather, and **their** API keys, tokens, or auth headers the user stated (e.g. `Authorization: Key …`, `Bearer …`).\n" +
+  "Put the secret material in `accessKey` when it is a key/token/header value; put base URLs, queue URLs, or doc links in `endpointUrl` when that fits.\n" +
+  "**Markdown / bullet inventories:** If the user pastes a **list** of public data APIs (lines with `•`, `-`, em-dash `—`, service name + **domain or URL** + short blurb), treat **each distinct service** as one `entries` row. Use `https://…` in `endpointUrl` when the user gave only a hostname (e.g. `api.example.com/v1` → `https://api.example.com/v1`). `accessKey` may be empty for free/no-key APIs. Put the original line or extra hints in `notes` when helpful.\n" +
+  "**Never** extract or invent: OpenAI / Anthropic / Google Gemini / Perplexity keys, this app’s `.env` layout, or internal LLM routing — only **external** products the user named.\n" +
+  "If the user clearly added or updated one or more third-party services (including a bulk list) in the last turns, you **must** output a non-empty `entries` array with one object per distinct service you can tie to a name and/or URL — do **not** return {\"entries\":[]} out of caution.\n" +
+  "If this turn truly adds nothing identifiable (no names, no domains, no URLs), return {\"entries\":[]}.\n" +
+  "When updating an existing service (see EXISTING_STORE_SUMMARY_JSON), reuse the same short **name** so records can merge.\n" +
+  'Output **one** JSON object: { "entries": [ { "name": string, "description": string, "endpointUrl": string, "accessKey": string, "notes": string } ] }.\n' +
+  "- `name`: short unique title for the service (user language).\n" +
+  "- `description`: what the service is for (one or two sentences).\n" +
+  "- `endpointUrl`: base URL, queue URL, or primary endpoint; empty string only if none given.\n" +
+  "- `accessKey`: API key, token, or literal `Authorization: …` line for **that** external service only; empty string only if none mentioned.\n" +
+  "- `notes`: optional long text (examples, sample HTTP requests, vendor-specific headers or flags the user mentioned, model lists, warnings) copied or summarized from the conversation — **not** a substitute for putting secrets in `accessKey` when they are explicit.\n" +
+  "At most **32** entries per response; if the user pasted many services in one message, include as many distinct rows as fit (up to 32), prioritizing clearly named URLs/keys from the latest user turns.\n" +
+  "Output JSON only, no markdown fences.";
+
+const ACCESS_KEEPER_NOTES_MAX = 12000;
+
+/**
+ * @param {unknown} raw
+ * @returns {Array<{ name: string, description: string, endpointUrl: string, accessKey: string, notes: string }>}
+ */
+function normalizeAccessKeeperEntriesFromRaw(raw) {
+  /** @type {Array<{ name: string, description: string, endpointUrl: string, accessKey: string, notes: string }>} */
+  const out = [];
+  if (!raw || typeof raw !== "object") return out;
+  const arr = Array.isArray(raw.entries) ? raw.entries : [];
+  for (const e of arr) {
+    if (!e || typeof e !== "object") continue;
+    const name = String(e.name ?? "").trim().slice(0, 200);
+    if (!name) continue;
+    out.push({
+      name,
+      description: String(e.description ?? "").trim().slice(0, 2000),
+      endpointUrl: String(e.endpointUrl ?? e.endpoint_or_url ?? "").trim().slice(0, 2000),
+      accessKey: String(e.accessKey ?? e.access_key ?? e.credential ?? "").trim().slice(0, 2000),
+      notes: String(e.notes ?? "").trim().slice(0, ACCESS_KEEPER_NOTES_MAX),
+    });
+  }
+  return out.slice(0, 32);
+}
+
+/** Strip leading bullets / numbering from a list line. */
+function stripAccessListLinePrefix(s) {
+  return String(s ?? "")
+    .replace(/^[\s\u2022\u2023\u25CF\u25E6\u25AA\*\u2014\u2013\-]+(?:\d{1,2}[\.\)])?\s*/u, "")
+    .trim();
+}
+
+/**
+ * When the LLM extractor returns nothing, infer rows from a **bulk paste**: lines like
+ * `• Name — host.com/path — description` (em dash) or lines containing `https://…` / a plausible hostname.
+ * @param {string} text — usually the latest user message in Access
+ * @returns {Array<{ name: string, description: string, endpointUrl: string, accessKey: string, notes: string }>}
+ */
+export function extractAccessExternalServiceStubsFromBulkListText(text) {
+  const raw = String(text ?? "").trim();
+  if (raw.length < 24) return [];
+  const seen = new Set();
+  /** @type {Array<{ name: string, description: string, endpointUrl: string, accessKey: string, notes: string }>} */
+  const out = [];
+  const dashSplit = /\s*[\u2014\u2013]\s*/;
+  /** @param {string} line */
+  const splitListLine = (line) => {
+    if (/[\u2014\u2013]/.test(line)) return line.split(dashSplit).map((p) => p.trim()).filter(Boolean);
+    if (/\s-\s/.test(line)) return line.split(/\s-\s/).map((p) => p.trim()).filter(Boolean);
+    return [];
+  };
+  for (const line0 of raw.split(/\r?\n/)) {
+    const line = line0.trim();
+    if (line.length < 12) continue;
+    if (/^(🌍|💰|🚀|📊|👥|📈|🏥|⚡|✅|❗)\s+[^\n•]{0,80}$/u.test(line) && !/[a-z0-9]+\.[a-z]{2,}/i.test(line)) {
+      continue;
+    }
+
+    let name = "";
+    let description = "";
+    let endpointUrl = "";
+    const parts = splitListLine(line);
+
+    if (parts.length >= 3) {
+      name = stripAccessListLinePrefix(parts[0]).slice(0, 200);
+      let hostPart = parts[1].replace(/\s+/g, "");
+      const rest = parts.slice(2).join(" — ").trim();
+      if (hostPart.length >= 4 && hostPart.includes(".") && /^[a-z0-9./:_-]+$/i.test(hostPart)) {
+        endpointUrl = /^https?:\/\//i.test(hostPart) ? hostPart : `https://${hostPart}`;
+        description = rest.slice(0, 2000);
+      }
+    }
+
+    if (!endpointUrl) {
+      const urlM = line.match(/https?:\/\/[^\s\])'",]+/i);
+      if (urlM) {
+        endpointUrl = urlM[0].replace(/[,;]+$/, "").slice(0, 2000);
+        name = stripAccessListLinePrefix(line.slice(0, urlM.index))
+          .replace(/\s*[\u2014\u2013]\s*$/u, "")
+          .trim()
+          .slice(0, 200);
+        description = line
+          .slice(urlM.index + urlM[0].length)
+          .replace(/^[\s\u2014\u2013:.-]+/u, "")
+          .trim()
+          .slice(0, 2000);
+      } else {
+        const dom = /\b((?:[a-z0-9-]+\.)+[a-z]{2,})(\/[^\s\])'",]*)?\b/i.exec(line);
+        if (dom) {
+          const host = (dom[1] + (dom[2] || "")).replace(/[,;]+$/, "");
+          if (host.length >= 5) {
+            endpointUrl = `https://${host}`.slice(0, 2000);
+            name = stripAccessListLinePrefix(line.slice(0, dom.index))
+              .replace(/\s*[\u2014\u2013]\s*$/u, "")
+              .trim()
+              .slice(0, 200);
+            if (!name) name = dom[1].slice(0, 200);
+            description = line
+              .slice(dom.index + dom[0].length)
+              .replace(/^[\s\u2014\u2013:.-]+/u, "")
+              .trim()
+              .slice(0, 2000);
+          }
+        }
+      }
+    }
+
+    if (!endpointUrl || !/^https?:\/\//i.test(endpointUrl)) continue;
+    let dedupeKey = "";
+    try {
+      const u = new URL(endpointUrl);
+      dedupeKey = `${u.hostname}${u.pathname}`.replace(/\/+$/, "").toLowerCase();
+    } catch {
+      continue;
+    }
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+
+    if (!name) {
+      try {
+        name = new URL(endpointUrl).hostname.slice(0, 200);
+      } catch {
+        name = "API";
+      }
+    }
+    if (!description) description = line.slice(0, 600).trim().slice(0, 2000);
+
+    out.push({
+      name,
+      description,
+      endpointUrl,
+      accessKey: "",
+      notes: line.slice(0, Math.min(line.length, ACCESS_KEEPER_NOTES_MAX)),
+    });
+    if (out.length >= 48) break;
+  }
+  return out;
+}
+
+/**
+ * @param {string} text
+ * @returns {{ entries: Array<{ name: string, description: string, endpointUrl: string, accessKey: string }> }}
+ */
+function parseAccessKeeperJsonFromModelText(text) {
+  try {
+    let s = String(text ?? "").trim();
+    const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fence) s = fence[1].trim();
+    const j = JSON.parse(s);
+    return { entries: normalizeAccessKeeperEntriesFromRaw(j) };
+  } catch (e) {
+    console.warn(
+      "[Access Keeper 2] JSON parse failed:",
+      e instanceof Error ? e.message : String(e),
+      String(text ?? "").slice(0, 240),
+    );
+    return { entries: [] };
+  }
+}
+
+/**
+ * Keeper 2: structured external-service rows from the Access thread transcript.
+ * @param {string} providerId
+ * @param {string} apiKey
+ * @param {string} transcript
+ * @param {string} existingSummaryJson
+ */
+export async function extractAccessKeeper2EntriesFromTranscript(
+  providerId,
+  apiKey,
+  transcript,
+  existingSummaryJson,
+) {
+  const key = String(apiKey ?? "").trim();
+  const t = String(transcript ?? "").trim().slice(0, 72000);
+  if (!key || !t) {
+    return { entries: [] };
+  }
+  const ex = String(existingSummaryJson ?? "").trim().slice(0, 12000);
+  const userBlock =
+    `EXISTING_STORE_SUMMARY_JSON:\n${ex || "[]"}\n\n` + `CONVERSATION:\n${t}`;
+
+  try {
+    if (providerId === "openai") {
+      const res = await fetch("/llm/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${key}`,
+        },
+        body: JSON.stringify({
+          model: OPENAI_MODEL,
+          temperature: 0.1,
+          max_tokens: 12000,
+          response_format: { type: "json_object" },
+          messages: [
+            { role: "system", content: ACCESS_KEEPER2_EXTRACT_SYSTEM },
+            { role: "user", content: userBlock },
+          ],
+        }),
+      });
+      if (!res.ok) throw new Error(await readErrorBody(res));
+      const data = await res.json();
+      const content = data.choices?.[0]?.message?.content;
+      if (content == null) throw new Error("Empty API response");
+      const rawText = typeof content === "string" ? content : String(content);
+      return parseAccessKeeperJsonFromModelText(rawText);
+    }
+
+    const { text } = await completeChatMessage(providerId, userBlock, key, {
+      systemInstruction: `${ACCESS_KEEPER2_EXTRACT_SYSTEM}\nRespond with a single JSON object only, no markdown fences.`,
+    });
+    return parseAccessKeeperJsonFromModelText(text);
+  } catch (e) {
+    console.warn("[Access Keeper 2] extract request failed:", e instanceof Error ? e.message : String(e));
+    return { entries: [] };
+  }
+}
+
 export async function extractChatInterestSketchForIngest(providerId, apiKey, userText) {
   const key = String(apiKey ?? "").trim();
   const u = String(userText ?? "").trim().slice(0, 8000);
@@ -1029,7 +1271,7 @@ export async function extractIntroMemoryGraphForIngest(providerId, apiKey, userT
 
 /**
  * Streaming reply: `onDelta` is called for each text chunk as it arrives.
- * @param {{ webSearch?: boolean, deepResearch?: boolean, systemInstruction?: string, llmMessages?: Array<{ role: string, content: string }>, chatAttachments?: { images?: Array<{ mimeType: string, base64: string }> } }} [options]
+ * @param {{ webSearch?: boolean, deepResearch?: boolean, systemInstruction?: string, llmMessages?: Array<{ role: string, content: string }>, chatAttachments?: { images?: Array<{ mimeType: string, base64: string }> }, accessDataDumpMode?: boolean }} [options]
  * @returns {Promise<string>} full accumulated text
  */
 export async function completeChatMessageStreaming(providerId, text, apiKey, onDelta, options = {}) {
@@ -1043,8 +1285,9 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
   if (!hasLlm && !trimmed && !hasAttImg) {
     throw new Error("Empty message");
   }
-  const webSearch = Boolean(options.webSearch);
-  const deepResearch = Boolean(options.deepResearch);
+  const lockdown = Boolean(options.accessDataDumpMode);
+  const webSearch = Boolean(options.webSearch) && !lockdown;
+  const deepResearch = Boolean(options.deepResearch) && !lockdown;
   const useWebGrounding = webSearch || deepResearch;
   const oaMsgs = applyChatAttachmentsToOpenAiMessages(
     openAiCompatMessages(trimmed, options),
@@ -1084,6 +1327,8 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
           search_context_size: "high",
           search_type: "pro",
         };
+      } else if (lockdown) {
+        pBody.disable_search = true;
       }
       const res = await fetch("/llm/perplexity/chat/completions", {
         method: "POST",

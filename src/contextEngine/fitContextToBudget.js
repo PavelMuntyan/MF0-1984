@@ -38,6 +38,8 @@ export function fitContextToBudget(built, maxInputTokens) {
   let retrievedTok = estimateTokens(retrievedMsg?.content ?? "");
   let memoryText = String(built.relevantMemoryBlock ?? "");
   let memTok = estimateTokens(memoryText);
+  let accessText = String(built.accessCatalogBlock ?? "").trim();
+  let accessTok = estimateTokens(accessText);
 
   const coreTok = estimateTokens(built.systemCore);
   const rulesTok = estimateTokens(built.activeRulesDigest);
@@ -45,7 +47,7 @@ export function fitContextToBudget(built, maxInputTokens) {
   const finalTok = estimateTokens(final.content);
 
   const fixed = coreTok + rulesTok + recentTok + finalTok + 200;
-  let remaining = budget - fixed - memTok - retrievedTok;
+  let remaining = budget - fixed - memTok - retrievedTok - accessTok;
 
   const dropped = [];
 
@@ -67,11 +69,20 @@ export function fitContextToBudget(built, maxInputTokens) {
     dropped.push("memory_shrink");
   }
 
+  while (remaining < 0 && accessTok > 40) {
+    accessText = accessText.slice(0, Math.max(0, Math.floor(accessText.length * 0.55)));
+    const newTok = estimateTokens(accessText);
+    remaining += accessTok - newTok;
+    accessTok = newTok;
+    dropped.push("access_catalog_shrink");
+  }
+
   const systemInstruction = [
     "=== CORE ===",
     built.systemCore,
     "=== RULES DIGEST ===",
     built.activeRulesDigest || "(none)",
+    accessText.trim() ? "=== ACCESS CATALOG (metadata only; no API keys) ===\n" + accessText : "",
     memoryText.trim() ? "=== MEMORY ===\n" + memoryText.trim() : "",
   ]
     .filter(Boolean)
@@ -101,6 +112,7 @@ export function fitContextToBudget(built, maxInputTokens) {
     context: {
       ...built,
       relevantMemoryBlock: memoryText,
+      accessCatalogBlock: accessText,
       combinedSystemInstruction: systemInstruction,
     },
     messagesForApi,

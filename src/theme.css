@@ -1716,8 +1716,7 @@ button.btn {
   color: hsl(var(--primary));
 }
 
-.chat--rules .messages-viewport,
-.chat--access .messages-viewport {
+.chat--rules .messages-viewport {
   display: none !important;
 }
 
@@ -1728,6 +1727,16 @@ button.btn {
 }
 
 .chat--intro #chat-intro-view .chat-ir-body {
+  display: none !important;
+}
+
+/* Access: same layout as Intro — dedicated thread + informer strip */
+.chat--access #chat-access-view.chat-ir-view {
+  flex: 0 0 auto;
+  min-height: 0;
+}
+
+.chat--access #chat-access-view .chat-ir-body {
   display: none !important;
 }
 
@@ -1949,7 +1958,8 @@ button.btn {
 
 .msg-user-web-badge,
 .msg-user-image-badge,
-.msg-user-research-badge {
+.msg-user-research-badge,
+.msg-user-access-data-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1962,7 +1972,8 @@ button.btn {
 
 .msg-user-web-badge svg,
 .msg-user-image-badge svg,
-.msg-user-research-badge svg {
+.msg-user-research-badge svg,
+.msg-user-access-data-badge svg {
   display: block;
 }
 

@@ -77,7 +77,7 @@ export function makeFakeData() {
       "Infrastructure",
     ],
     Documents: ["Brief", "Contract", "Memo", "Spec", "Report", "Policy", "Deck", "Minutes", "Addendum", "Whitepaper"],
-    Cities: ["Berlin", "Tokyo", "Paphos", "London", "Toronto", "Dubai", "Tallinn", "Lisbon", "Seoul", "Austin"],
+    Cities: ["Berlin", "Tokyo", "Oslo", "London", "Toronto", "Dubai", "Tallinn", "Lisbon", "Seoul", "Austin"],
     Companies: ["Nova", "Quantum", "Blue", "Hyper", "Zenith", "Orbital", "Atlas", "Neon", "Polar", "Vanta", "Prism", "Velvet"],
     Projects: ["Helix", "Pulse", "Vertex", "Signal", "Drift", "Echo", "Fusion", "Core", "Orbit", "Nexus"],
     Data: ["Events", "Embeddings", "Sales", "CRM", "Logs", "Metrics", "Inventory", "Feedback", "Pipeline", "Archive"],
