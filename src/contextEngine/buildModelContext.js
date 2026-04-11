@@ -4,6 +4,7 @@
 
 import { retrieveRelevantChunksFallback } from "./retrievalFallback.js";
 import { estimateTokens } from "./tokenEstimate.js";
+import { MF0_MEMORY_TREE_SUPPLEMENT_PREFIX } from "../memoryTreeRouter.js";
 
 const PRI_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -162,7 +163,7 @@ function flattenHistoryMessages(pack) {
  * @returns {import("./types.js").BuiltModelContext}
  */
 export function buildModelContext(input) {
-  const { threadId, userPrompt, contextPack, modelFlags, accessServicesCatalog } = input;
+  const { threadId, userPrompt, contextPack, modelFlags, accessServicesCatalog, memoryTreeSupplement } = input;
   const pack = contextPack;
   const rules = pack.rules ?? [];
 
@@ -201,6 +202,7 @@ export function buildModelContext(input) {
   }
 
   const retrievedText = retrievedChunks.map((c) => `[${c.source}] ${c.text}`).join("\n\n---\n\n");
+  const memSupPlain = String(memoryTreeSupplement ?? "").trim();
 
   /** @type {import("./types.js").ModelMessage[]} */
   const historyBeforeUser = [];
@@ -209,6 +211,16 @@ export function buildModelContext(input) {
     historyBeforeUser.push({
       role: "user",
       content: "Context excerpts (older thread / memory retrieval; may overlap with recent messages):\n\n" + retrievedText,
+    });
+  }
+
+  if (memSupPlain) {
+    historyBeforeUser.push({
+      role: "user",
+      content:
+        `${MF0_MEMORY_TREE_SUPPLEMENT_PREFIX}\n\n` +
+        `${memSupPlain}\n\n` +
+        "<<< END MF0_MEMORY_TREE_SUPPLEMENT >>>",
     });
   }
 
@@ -245,6 +257,7 @@ export function buildModelContext(input) {
       accessCatalog: estimateTokens(accessCatalogBlock),
       memory: estimateTokens(relevantMemoryBlock),
       retrieved: estimateTokens(retrievedText),
+      memoryTreeSupplement: estimateTokens(memSupPlain),
       recent: recentMessages.reduce((a, m) => a + estimateTokens(m.content), 0),
       finalUser: estimateTokens(finalUserContent),
     },
@@ -252,6 +265,7 @@ export function buildModelContext(input) {
       rulesActive: rules.filter((r) => r.is_active).length,
       memoryPicked: memoryLayer.length,
       retrievedChunks: retrievedChunks.length,
+      memoryTreeSupplementChars: memSupPlain.length,
       recentMessages: recentMessages.length,
       historyTotal: flat.length,
     },

@@ -2066,16 +2066,44 @@ button.btn {
   box-sizing: border-box;
 }
 
-/* Divider: copy | chevron, like AI replies */
-.msg-bubble-actions:has(.msg-bubble-chevron) .msg-bubble-copy {
-  border-radius: 0.28rem 0 0 0.28rem;
-}
-
+/* Assistant: star … chevron | retry | copy (no retry on image) */
 .msg-bubble-actions:has(.msg-bubble-chevron) .msg-bubble-chevron {
   margin-left: 0.12rem;
   padding-left: 0.22rem;
   border-left: 1px solid hsl(var(--border) / 0.55);
   border-radius: 0 0.28rem 0.28rem 0;
+}
+
+.msg-bubble-actions:has(.msg-bubble-chevron):has(.msg-bubble-retry) .msg-bubble-chevron {
+  border-radius: 0;
+}
+
+.msg-bubble-actions:has(.msg-bubble-chevron):has(.msg-bubble-retry) .msg-bubble-retry {
+  margin-left: 0;
+  padding-left: 0.22rem;
+  border-left: 1px solid hsl(var(--border) / 0.55);
+  border-radius: 0;
+}
+
+.msg-bubble-actions:has(.msg-bubble-chevron):has(.msg-bubble-retry) .msg-bubble-copy {
+  margin-left: 0;
+  padding-left: 0.22rem;
+  border-left: 1px solid hsl(var(--border) / 0.55);
+  border-radius: 0 0.28rem 0.28rem 0;
+}
+
+.msg-bubble-actions:has(.msg-bubble-chevron):not(:has(.msg-bubble-retry)) .msg-bubble-copy {
+  border-radius: 0.28rem 0 0 0.28rem;
+}
+
+.msg-bubble-retry:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.msg-bubble-retry:disabled:hover {
+  background: transparent;
+  color: hsl(var(--muted-foreground));
 }
 
 .msg-bubble-action-btn {
@@ -2137,7 +2165,8 @@ button.btn {
 }
 
 .msg-bubble-copy-icon,
-.msg-bubble-chevron-icon {
+.msg-bubble-chevron-icon,
+.msg-bubble-retry-icon {
   display: block;
   width: 0.95rem;
   height: 0.95rem;
@@ -2516,6 +2545,29 @@ button.btn {
 
 .msg-assistant--pending .msg-assistant-text {
   color: hsl(var(--muted-foreground));
+}
+
+.msg-assistant-text--thinking {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.msg-assistant-thinking-spinner {
+  box-sizing: border-box;
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+  border: 2px solid hsl(var(--muted-foreground) / 0.28);
+  border-top-color: hsl(var(--muted-foreground));
+  border-radius: 50%;
+  animation: msg-assistant-thinking-spin 0.65s linear infinite;
+}
+
+@keyframes msg-assistant-thinking-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .msg-assistant--error .msg-assistant-text {

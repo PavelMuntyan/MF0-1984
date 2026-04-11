@@ -89,6 +89,7 @@
  * @property {ContextPack} contextPack
  * @property {Record<string, unknown>} [modelFlags]
  * @property {AccessCatalogEntry[]} [accessServicesCatalog]
+ * @property {string} [memoryTreeSupplement] — plain text from Memory tree router (markers added here)
  */
 
 /**

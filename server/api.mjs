@@ -1853,18 +1853,38 @@ const server = http.createServer(async (req, res) => {
 
       const body = await readBody(req);
       const turnId = crypto.randomUUID();
-      const userText = String(body.user_text ?? "");
-      const userAttachmentsJson =
+      const cloneFrom = String(body.clone_user_from_turn_id ?? "").trim();
+      let userText = String(body.user_text ?? "");
+      let userAttachmentsJson =
         body.user_attachments_json != null ? String(body.user_attachments_json) : "";
       const assistantText = body.assistant_text != null ? String(body.assistant_text) : null;
-      const requestedProviderId = String(body.requested_provider_id ?? "");
+      let requestedProviderId = String(body.requested_provider_id ?? "");
       const respondingProviderId =
         body.responding_provider_id != null ? String(body.responding_provider_id) : null;
-      const requestType = String(body.request_type ?? "default");
-      const userMessageAt = String(body.user_message_at ?? "");
+      let requestType = String(body.request_type ?? "default");
+      let userMessageAt = String(body.user_message_at ?? "");
       const assistantMessageAt =
         body.assistant_message_at != null ? String(body.assistant_message_at) : null;
       const assistantError = body.assistant_error === 1 || body.assistant_error === true ? 1 : 0;
+
+      if (cloneFrom) {
+        const src = db
+          .prepare(
+            `SELECT user_text, user_attachments_json, user_message_at, request_type, requested_provider_id
+             FROM conversation_turns WHERE id = ? AND dialog_id = ?`,
+          )
+          .get(cloneFrom, dialogId);
+        if (!src) {
+          return json(res, 400, { error: "clone_user_from_turn_id not found in this dialog" });
+        }
+        userText = String(src.user_text ?? "");
+        userAttachmentsJson = src.user_attachments_json != null ? String(src.user_attachments_json) : "";
+        userMessageAt = String(src.user_message_at ?? "");
+        requestType = String(src.request_type ?? "default");
+        if (!String(requestedProviderId ?? "").trim()) {
+          requestedProviderId = String(src.requested_provider_id ?? "").trim();
+        }
+      }
 
       const attachRows = parseTurnUserAttachmentsJson(userAttachmentsJson);
       const hasUserChars = String(userText).trim().length > 0;
@@ -1907,7 +1927,8 @@ const server = http.createServer(async (req, res) => {
         /** Access thread, #data in text, or Access data menu: persist turns only; no RAG / memory extraction side lane. */
         const dataDumpLockdown =
           userTextTriggersAccessDataDumpLockdown(userText) || requestType === "access_data";
-        if (String(drow.purpose ?? "") !== "access" && !dataDumpLockdown) {
+        const skipPipelineForRetryClone = Boolean(cloneFrom);
+        if (String(drow.purpose ?? "") !== "access" && !dataDumpLockdown && !skipPipelineForRetryClone) {
           runAfterTurnPipeline(
             dialogId,
             turnId,

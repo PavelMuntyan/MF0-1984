@@ -1,9 +1,10 @@
 /**
  * Fit assembled context into a token budget.
- * Shrink retrieved block first, then memory text in system; keep core/rules/recent and the final user intact.
+ * Shrink RAG retrieved block, then Memory tree supplement, then compact MEMORY in system; keep core/rules/recent and the final user intact.
  */
 
 import { estimateTokens } from "./tokenEstimate.js";
+import { MF0_MEMORY_TREE_SUPPLEMENT_PREFIX } from "../memoryTreeRouter.js";
 
 /**
  * @typedef {Object} BudgetFitResult
@@ -29,13 +30,18 @@ export function fitContextToBudget(built, maxInputTokens) {
   }
 
   const head = built.finalMessagesForModel.slice(0, -1);
-  const ctxIndex = head.findIndex(
+  const retrievedIdx = head.findIndex(
     (m) => m.role === "user" && String(m.content ?? "").startsWith("Context excerpts"),
   );
-  let retrievedMsg = ctxIndex >= 0 ? { ...head[ctxIndex] } : null;
-  const recentMsgs = head.filter((_, i) => i !== ctxIndex);
+  const memTreeIdx = head.findIndex(
+    (m) => m.role === "user" && String(m.content ?? "").startsWith(MF0_MEMORY_TREE_SUPPLEMENT_PREFIX),
+  );
+  let retrievedMsg = retrievedIdx >= 0 ? { ...head[retrievedIdx] } : null;
+  let memTreeMsg = memTreeIdx >= 0 ? { ...head[memTreeIdx] } : null;
+  const recentMsgs = head.filter((_, i) => i !== retrievedIdx && i !== memTreeIdx);
 
   let retrievedTok = estimateTokens(retrievedMsg?.content ?? "");
+  let memTreeTok = estimateTokens(memTreeMsg?.content ?? "");
   let memoryText = String(built.relevantMemoryBlock ?? "");
   let memTok = estimateTokens(memoryText);
   let accessText = String(built.accessCatalogBlock ?? "").trim();
@@ -47,11 +53,11 @@ export function fitContextToBudget(built, maxInputTokens) {
   const finalTok = estimateTokens(final.content);
 
   const fixed = coreTok + rulesTok + recentTok + finalTok + 200;
-  let remaining = budget - fixed - memTok - retrievedTok - accessTok;
+  let remaining = budget - fixed - memTok - retrievedTok - accessTok - memTreeTok;
 
   const dropped = [];
 
-  while (remaining < 0 && retrievedTok > 100) {
+  while (remaining < 0 && retrievedTok > 100 && retrievedMsg) {
     const c = retrievedMsg.content;
     const newLen = Math.max(120, Math.floor(c.length * 0.65));
     retrievedMsg = { ...retrievedMsg, content: c.slice(0, newLen) + (newLen < c.length ? "\n…" : "") };
@@ -59,6 +65,16 @@ export function fitContextToBudget(built, maxInputTokens) {
     remaining += retrievedTok - newTok;
     retrievedTok = newTok;
     dropped.push("retrieved_shrink");
+  }
+
+  while (remaining < 0 && memTreeTok > 120 && memTreeMsg) {
+    const c = memTreeMsg.content;
+    const newLen = Math.max(160, Math.floor(c.length * 0.62));
+    memTreeMsg = { ...memTreeMsg, content: c.slice(0, newLen) + (newLen < c.length ? "\n…" : "") };
+    const newTok = estimateTokens(memTreeMsg.content);
+    remaining += memTreeTok - newTok;
+    memTreeTok = newTok;
+    dropped.push("memory_tree_supplement_shrink");
   }
 
   while (remaining < 0 && memTok > 80) {
@@ -92,6 +108,9 @@ export function fitContextToBudget(built, maxInputTokens) {
   const messagesForApi = [];
   if (retrievedMsg && String(retrievedMsg.content ?? "").trim().length > 60) {
     messagesForApi.push(retrievedMsg);
+  }
+  if (memTreeMsg && String(memTreeMsg.content ?? "").trim().length > 80) {
+    messagesForApi.push(memTreeMsg);
   }
   messagesForApi.push(...recentMsgs);
   messagesForApi.push(final);

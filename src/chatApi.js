@@ -22,33 +22,56 @@ export const PROVIDER_DISPLAY = {
   anthropic: "Claude",
 };
 
-const OPENAI_MODEL = "gpt-4o-mini";
-/** Chat Completions: built-in web search (see platform.openai.com docs/tools-web-search). */
-const OPENAI_MODEL_WEB = "gpt-4o-mini-search-preview";
-/** GPT Image API: DALL·E 2/3 deprecated; current endpoints are gpt-image-*. */
-const OPENAI_IMAGE_MODEL = "gpt-image-1.5";
-const ANTHROPIC_MODEL = "claude-haiku-4-5-20251001";
-const GEMINI_MODEL_FLASH = "gemini-2.5-flash";
-/** Native image generation model (Gemini API). */
-const GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image";
+const OPENAI_MODEL = "gpt-5.4";
+/**
+ * Chat Completions built-in web search: only dedicated search models are supported here
+ * (see OpenAI “Web search” guide — e.g. gpt-5-search-api, gpt-4o-search-preview).
+ */
+const OPENAI_MODEL_WEB = "gpt-5-search-api";
+/**
+ * ChatGPT / 4o-class image generation (alias tracks what ChatGPT ships); Image API generations + edits.
+ * @see https://developers.openai.com/api/docs/models/chatgpt-image-latest
+ */
+const OPENAI_IMAGE_MODEL = "chatgpt-image-latest";
+const ANTHROPIC_MODEL = "claude-sonnet-4-6";
+/** Chat + web search for the “Gemini” provider (Google AI API model id). */
+const GEMINI_MODEL_FLASH = "gemini-3.1-pro-preview";
+/**
+ * Nano Banana Pro (Gemini 3 Pro Image): studio-grade native image generation.
+ * There is no separate `gemini-3.1-pro-image` id — this is Google’s Pro-tier image model for the Gemini 3 line.
+ * @see https://ai.google.dev/gemini-api/docs/models/gemini-3-pro-image-preview
+ */
+const GEMINI_IMAGE_MODEL = "gemini-3-pro-image-preview";
 const PERPLEXITY_MODEL = "sonar";
 /** Sonar Pro: stronger web grounding; used for Web search mode. */
 const PERPLEXITY_MODEL_SEARCH = "sonar-pro";
 
 /**
- * Gemini 2.5 Flash: dynamic thinking is on by default — streamed visible text often
- * arrives in large chunks. thinkingBudget: 0 disables thinking
- * (ai.google.dev/gemini-api/docs/thinking).
+ * Gemini 3+ expects `thinkingLevel` in `thinkingConfig` (cannot use budget 0 to “turn off”).
+ * Gemini 2.5 uses `thinkingBudget`; 0 disables internal thinking for lower latency.
+ * @see https://ai.google.dev/gemini-api/docs/thinking
+ * @param {string} modelId
+ * @returns {Record<string, unknown>}
  */
-const GEMINI_GENERATION_CONFIG = {
-  thinkingConfig: {
-    thinkingBudget: 0,
-  },
-};
+function getGeminiGenerationConfigForModel(modelId) {
+  const id = String(modelId ?? "").toLowerCase();
+  if (id.includes("gemini-3")) {
+    return {
+      thinkingConfig: {
+        thinkingLevel: "low",
+      },
+    };
+  }
+  return {
+    thinkingConfig: {
+      thinkingBudget: 0,
+    },
+  };
+}
 
 /**
  * @param {string} text
- * @param {{ googleSearch?: boolean }} [opts]
+ * @param {{ googleSearch?: boolean, modelId?: string }} [opts]
  */
 function geminiJsonBody(text, opts = {}) {
   return geminiRequestBodyFromParts([{ text }], opts);
@@ -56,12 +79,13 @@ function geminiJsonBody(text, opts = {}) {
 
 /**
  * @param {Array<{ text?: string, inlineData?: { mimeType: string, data: string } }>} parts
- * @param {{ googleSearch?: boolean }} [opts]
+ * @param {{ googleSearch?: boolean, modelId?: string }} [opts]
  */
 function geminiRequestBodyFromParts(parts, opts = {}) {
+  const modelId = String(opts.modelId ?? GEMINI_MODEL_FLASH);
   const body = {
     contents: [{ parts }],
-    generationConfig: GEMINI_GENERATION_CONFIG,
+    generationConfig: getGeminiGenerationConfigForModel(modelId),
   };
   if (opts.googleSearch) {
     body.tools = [{ google_search: {} }];
@@ -184,7 +208,7 @@ async function geminiGenerateContent(modelId, trimmed, key, googleSearch = false
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(geminiRequestBodyFromParts(parts, { googleSearch })),
+    body: JSON.stringify(geminiRequestBodyFromParts(parts, { googleSearch, modelId })),
   });
   if (!res.ok) throw new Error(await readErrorBody(res));
   const data = await res.json();
@@ -1401,7 +1425,10 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
           Accept: "text/event-stream",
         },
         body: JSON.stringify(
-          geminiRequestBodyFromParts(gParts, { googleSearch: useWebGrounding }),
+          geminiRequestBodyFromParts(gParts, {
+            googleSearch: useWebGrounding,
+            modelId: GEMINI_MODEL_FLASH,
+          }),
         ),
       });
       const gStream = await streamGeminiGenerateContent(res, onDelta);

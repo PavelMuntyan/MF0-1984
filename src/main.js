@@ -59,6 +59,7 @@ import {
 } from "./chatPersistence.js";
 import { buildModelContext } from "./contextEngine/buildModelContext.js";
 import { fitContextToBudget } from "./contextEngine/fitContextToBudget.js";
+import { fetchMemoryTreeSupplementForPrompt } from "./memoryTreeRouter.js";
 import { renderThemeCards } from "./themesSidebar.js";
 import {
   getFavoriteThemeIdSet,
@@ -108,9 +109,7 @@ async function loadIntroChatThreadIntoUi() {
     const list = document.getElementById("messages-list");
     list?.replaceChildren();
     const turns = await fetchTurns(introSessionDialogId);
-    for (const t of turns) {
-      replayTurnInChat(t);
-    }
+    replayDialogTurnsGrouped(turns);
     scrollMessagesToEnd();
     await loadMemoryGraphIntoUi();
   } catch (e) {
@@ -125,9 +124,7 @@ async function loadAccessChatThreadIntoUi() {
     const list = document.getElementById("messages-list");
     list?.replaceChildren();
     const turns = await fetchTurns(accessSessionDialogId);
-    for (const t of turns) {
-      replayTurnInChat(t);
-    }
+    replayDialogTurnsGrouped(turns);
     scrollMessagesToEnd();
   } catch (e) {
     appendActivityLog(`Access: ${e instanceof Error ? e.message : String(e)}`);
@@ -1890,6 +1887,28 @@ function createBubbleChevronIcon() {
   return svg;
 }
 
+/** Circular arrow — try another model reply */
+function createBubbleRetryIcon() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "msg-bubble-retry-icon");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "16");
+  svg.setAttribute("height", "16");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  p.setAttribute(
+    "d",
+    "M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8M3 3v5h5M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16M21 21v-5h-5",
+  );
+  svg.appendChild(p);
+  return svg;
+}
+
 function createCopyIcon(iconClass = "msg-bubble-copy-icon") {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("class", iconClass);
@@ -1977,6 +1996,290 @@ function makeAssistantFavoriteStarButton(assistantWrap) {
     }
   });
   return btn;
+}
+
+/**
+ * @param {HTMLElement | null} assistantWrap
+ */
+function syncAssistantRetryButton(assistantWrap) {
+  const btn = assistantWrap?.querySelector?.(".msg-bubble-retry");
+  if (!btn || !assistantWrap) return;
+  const saved = Boolean(String(assistantWrap.dataset.turnId ?? "").trim());
+  const allow = saved && !chatComposerSending;
+  btn.disabled = !allow;
+}
+
+function syncAllAssistantRetryButtons() {
+  document.querySelectorAll(".msg-assistant .msg-bubble-retry").forEach((b) => {
+    const wrap = b.closest(".msg-assistant");
+    if (wrap instanceof HTMLElement) syncAssistantRetryButton(wrap);
+  });
+}
+
+/**
+ * @param {HTMLElement} assistantWrap
+ */
+function findPrecedingUserMessageEl(assistantWrap) {
+  let el = assistantWrap?.previousElementSibling ?? null;
+  while (el instanceof HTMLElement) {
+    if (el.classList.contains("msg-user")) return el;
+    el = el.previousElementSibling;
+  }
+  return null;
+}
+
+/**
+ * @param {HTMLElement} userEl
+ */
+function inferComposerAttachModeFromUserEl(userEl) {
+  if (!userEl) return "";
+  if (userEl.querySelector(".msg-user-access-data-badge")) return "accessData";
+  if (userEl.querySelector(".msg-user-image-badge")) return "image";
+  if (userEl.querySelector(".msg-user-research-badge")) return "research";
+  if (userEl.querySelector(".msg-user-web-badge")) return "web";
+  return "";
+}
+
+/**
+ * Сколько ответов ассистента уже есть под этим сообщением пользователя (до следующего user).
+ * @param {HTMLElement} userEl
+ */
+function countAssistantsInUserExchangeBlock(userEl) {
+  let n = 0;
+  let el = userEl.nextElementSibling;
+  while (el instanceof HTMLElement) {
+    if (el.classList.contains("msg-user")) break;
+    if (el.classList.contains("msg-assistant")) n += 1;
+    el = el.nextElementSibling;
+  }
+  return n;
+}
+
+/**
+ * Последний пузырь ассистента в этом обмене (низ блока под user), или null.
+ * @param {HTMLElement} userEl
+ */
+function findLastAssistantInUserExchangeBlock(userEl) {
+  /** @type {HTMLElement | null} */
+  let last = null;
+  let el = userEl.nextElementSibling;
+  while (el instanceof HTMLElement) {
+    if (el.classList.contains("msg-user")) break;
+    if (el.classList.contains("msg-assistant")) last = el;
+    el = el.nextElementSibling;
+  }
+  return last;
+}
+
+/**
+ * @param {HTMLElement} assistantWrap
+ */
+function makeAssistantRetryButton(assistantWrap) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "msg-bubble-action-btn msg-bubble-retry";
+  btn.setAttribute("aria-label", "Try another reply");
+  btn.title = "Try another reply";
+  btn.appendChild(createBubbleRetryIcon());
+  syncAssistantRetryButton(assistantWrap);
+  btn.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    void retryAssistantReply(assistantWrap);
+  });
+  return btn;
+}
+
+/**
+ * Request another assistant reply for the same user message (new bubble below).
+ * @param {HTMLElement} clickedAssistantWrap
+ */
+async function retryAssistantReply(clickedAssistantWrap) {
+  if (!(clickedAssistantWrap instanceof HTMLElement) || chatComposerSending) return;
+  const rootClone = String(
+    clickedAssistantWrap.dataset.exchangeRootTurnId || clickedAssistantWrap.dataset.turnId || "",
+  ).trim();
+  if (!rootClone) {
+    appendActivityLog("Reply: save the message first, then you can try another reply.");
+    return;
+  }
+  const persistDialogId = String(activeDialogId ?? "").trim();
+  if (!persistDialogId) {
+    appendActivityLog("Reply: open a saved conversation to try another reply.");
+    return;
+  }
+  const userEl = findPrecedingUserMessageEl(clickedAssistantWrap);
+  if (!userEl) {
+    appendActivityLog("Reply: could not find the user message for this answer.");
+    return;
+  }
+  const persistUserText = String(userEl.dataset.userMessageRaw ?? "").trim();
+  const modeForSend = inferComposerAttachModeFromUserEl(userEl);
+  if (modeForSend === "image") {
+    appendActivityLog("Reply: generated images cannot be retried from here.");
+    return;
+  }
+
+  const mainChatEl = document.getElementById("main-chat");
+  const introChatOpen = Boolean(mainChatEl?.classList.contains("chat--intro"));
+  const rulesChatOpen = Boolean(mainChatEl?.classList.contains("chat--rules"));
+  const accessChatOpen = Boolean(mainChatEl?.classList.contains("chat--access"));
+  if (introChatOpen && getIrPanelLockedSync("intro")) {
+    appendActivityLog("Intro is locked — unlock it to retry.");
+    return;
+  }
+  if (rulesChatOpen && getIrPanelLockedSync("rules")) {
+    appendActivityLog("Rules is locked — unlock it to retry.");
+    return;
+  }
+  if (accessChatOpen && getIrPanelLockedSync("access")) {
+    appendActivityLog("Access is locked — unlock it to retry.");
+    return;
+  }
+  if (
+    mainChatEl &&
+    irChatPanelIsOpen(mainChatEl) &&
+    !introChatOpen &&
+    !accessChatOpen &&
+    !rulesChatOpen
+  ) {
+    closeIrChatPanel();
+  }
+
+  const providerId = getActiveProviderId();
+  if (!providerId) {
+    appendActivityLog("Chat → retry cancelled: no selected model with a key (.env)");
+    return;
+  }
+  const keys = getModelApiKeys();
+  const key = keys[providerId];
+  if (!String(key ?? "").trim()) {
+    appendActivityLog(
+      `Chat → retry cancelled: no API key for ${PROVIDER_DISPLAY[providerId] ?? providerId}`,
+    );
+    return;
+  }
+
+  const modelLabel = PROVIDER_DISPLAY[providerId] ?? providerId;
+  const accessDataDumpMode =
+    modeForSend !== "image" &&
+    (userMessageTriggersAccessDataDump(persistUserText) || modeForSend === "accessData");
+  const promptForApi = buildChatPromptForApi(persistUserText, modeForSend);
+  const newOrdinal = countAssistantsInUserExchangeBlock(userEl) + 1;
+
+  const pending = appendAssistantPending();
+  if (!pending) return;
+  const anchorAfter = findLastAssistantInUserExchangeBlock(userEl);
+  if (anchorAfter) {
+    anchorAfter.insertAdjacentElement("afterend", pending);
+  } else {
+    userEl.insertAdjacentElement("afterend", pending);
+  }
+  pending.dataset.assistantWebSearch = modeForSend === "web" ? "1" : "";
+  pending.dataset.assistantDeepResearch = modeForSend === "research" ? "1" : "";
+  pending.dataset.exchangeRootTurnId = rootClone;
+  pending.dataset.replyOrdinal = String(newOrdinal);
+
+  const ta = document.getElementById("chat-input");
+  const sendBtn = document.getElementById("btn-chat-send");
+
+  chatComposerSending = true;
+  syncAllAssistantRetryButtons();
+  if (sendBtn) sendBtn.disabled = true;
+
+  let fullText = "";
+  try {
+    appendActivityLog(`Chat → retry (reply #${newOrdinal}): ${attachModeLogLabel(modeForSend)}, model ${modelLabel}`);
+    scrollMessagesToEnd();
+    const chatOpts = await buildChatOptsForModelRequest({
+      persistDialogId,
+      promptForApi,
+      providerId,
+      key,
+      modeForSend,
+      accessDataDumpMode,
+      chatAttachments: undefined,
+      introChatOpen,
+      accessChatOpen,
+    });
+    let buf = "";
+    try {
+      fullText = await completeChatMessageStreaming(
+        providerId,
+        promptForApi,
+        key,
+        (piece) => {
+          buf += piece;
+          pending.dataset.assistantMarkdown = buf;
+          const te = pending.querySelector(".msg-assistant-text");
+          if (te) setAssistantMessageMarkdown(te, buf);
+          if (pending) syncAssistantCopyButtonDuringStream(pending);
+          scrollMessagesToEnd();
+        },
+        chatOpts,
+      );
+    } catch {
+      appendActivityLog(`Chat: streaming unavailable on retry, full response (${modelLabel})`);
+      const { text } = await completeChatMessage(providerId, promptForApi, key, chatOpts);
+      fullText = text;
+      const te = pending.querySelector(".msg-assistant-text");
+      if (te) setAssistantMessageMarkdown(te, fullText);
+      scrollMessagesToEnd();
+    }
+    finalizeAssistantBubble(
+      pending,
+      fullText,
+      providerId,
+      accessDataDumpMode ? "Access data" : undefined,
+      newOrdinal,
+    );
+    appendActivityLog(
+      `Chat ← retry #${newOrdinal}: text, model ${modelLabel}, reply chars: ${String(fullText).length}`,
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    fullText = msg;
+    renderAssistantError(pending, msg);
+    appendActivityLog(
+      `Chat ← retry error, model ${modelLabel}: ${msg.length > 280 ? `${msg.slice(0, 280)}…` : msg}`,
+    );
+  } finally {
+    chatComposerSending = false;
+    if (sendBtn) sendBtn.disabled = false;
+    syncComposerSendButtonState();
+    syncAllAssistantRetryButtons();
+    scrollMessagesToEnd();
+    const assistantMessageAt = new Date().toISOString();
+    const hadAssistantError = Boolean(pending?.classList.contains("msg-assistant--error"));
+    const assistantOut =
+      pending?.classList.contains("msg-assistant--error") && pending?.dataset?.assistantMarkdown
+        ? String(pending.dataset.assistantMarkdown)
+        : fullText;
+    try {
+      /** @type {Record<string, unknown>} */
+      const turnPayload = {
+        clone_user_from_turn_id: rootClone,
+        assistant_text: assistantOut || null,
+        requested_provider_id: providerId,
+        responding_provider_id: providerId,
+        assistant_message_at: assistantMessageAt,
+        assistant_error: hadAssistantError ? 1 : 0,
+      };
+      const saveRes = await saveConversationTurn(persistDialogId, turnPayload);
+      const tid =
+        saveRes && typeof saveRes === "object" && saveRes.id != null ? String(saveRes.id) : "";
+      if (pending && tid) {
+        pending.dataset.turnId = tid;
+        syncAssistantFavoriteStarButton(pending);
+        syncAssistantRetryButton(pending);
+      }
+      await renderThemesSidebar();
+    } catch (saveErr) {
+      appendActivityLog(
+        `Chat DB save (retry): ${saveErr instanceof Error ? saveErr.message : String(saveErr)}`,
+      );
+    }
+  }
 }
 
 async function copyTextToClipboard(text) {
@@ -2209,6 +2512,7 @@ function appendUserMessage(rawText, modelLabel, options) {
 
   const msg = document.createElement("div");
   msg.className = "msg msg-user";
+  msg.dataset.userMessageRaw = String(rawText ?? "");
   if (attachmentStrip.length) {
     msg.dataset.userAttachmentNames = attachmentStrip.map((x) => x.name).filter(Boolean).join(" ");
   }
@@ -2356,6 +2660,7 @@ function scrollMessagesToEnd() {
 
 function setAssistantMessageMarkdown(el, markdownSource) {
   if (!el) return;
+  el.classList.remove("msg-assistant-text--thinking");
   el.classList.add("msg-assistant-text--md");
   el.innerHTML = renderAssistantMarkdown(markdownSource);
   enhanceAssistantMarkdownCodeBlocks(el);
@@ -2363,7 +2668,7 @@ function setAssistantMessageMarkdown(el, markdownSource) {
 
 function setAssistantMessagePlain(el, text) {
   if (!el) return;
-  el.classList.remove("msg-assistant-text--md");
+  el.classList.remove("msg-assistant-text--md", "msg-assistant-text--thinking");
   el.textContent = text;
 }
 
@@ -2376,8 +2681,15 @@ function appendAssistantPending() {
   const body = document.createElement("div");
   body.className = "msg-assistant-body";
   const textEl = document.createElement("div");
-  textEl.className = "msg-assistant-text";
-  textEl.textContent = "Reply…";
+  textEl.className = "msg-assistant-text msg-assistant-text--thinking";
+  const spin = document.createElement("span");
+  spin.className = "msg-assistant-thinking-spinner";
+  spin.setAttribute("aria-hidden", "true");
+  const lab = document.createElement("span");
+  lab.className = "msg-assistant-thinking-label";
+  lab.textContent = "Thinking…";
+  textEl.appendChild(spin);
+  textEl.appendChild(lab);
   body.appendChild(textEl);
   wrap.appendChild(body);
   list.appendChild(wrap);
@@ -2439,8 +2751,9 @@ function renderAssistantError(el, message) {
 /**
  * After stream or full reply: copy; collapse chevron when more than 4 lines
  * @param {string} [modelHintOverride] — e.g. image generation model id
+ * @param {number} [replyOrdinal] — 1 = first reply; 2+ shows "Reply #N" in footer
  */
-function finalizeAssistantBubble(el, fullText, providerId, modelHintOverride) {
+function finalizeAssistantBubble(el, fullText, providerId, modelHintOverride, replyOrdinal = 1) {
   if (!el) return;
   el.classList.remove("msg-assistant--pending", "msg-assistant--error");
   el.querySelector(".msg-assistant-model")?.remove();
@@ -2466,11 +2779,16 @@ function finalizeAssistantBubble(el, fullText, providerId, modelHintOverride) {
 
   const hasChars = String(fullText ?? "").length > 0;
   const copyAsImage = el.dataset.assistantResponseKind === "image";
+  const ord = Number(replyOrdinal) >= 2 ? Math.floor(Number(replyOrdinal)) : 0;
+  const replySuffix = ord >= 2 ? ` · Reply #${ord}` : "";
   let actions = null;
   if (hasChars) {
     actions = document.createElement("div");
     actions.className = "msg-bubble-actions";
     actions.appendChild(makeAssistantFavoriteStarButton(el));
+    if (!copyAsImage && !el.classList.contains("msg-assistant--error")) {
+      actions.appendChild(makeAssistantRetryButton(el));
+    }
     actions.appendChild(
       makeCopyButton(() => el.dataset.assistantMarkdown ?? "", {
         tryCopyImageFromMarkdown: copyAsImage,
@@ -2480,6 +2798,7 @@ function finalizeAssistantBubble(el, fullText, providerId, modelHintOverride) {
     );
     body.appendChild(actions);
     syncAssistantFavoriteStarButton(el);
+    syncAssistantRetryButton(el);
   }
 
   const meta = document.createElement("div");
@@ -2492,7 +2811,9 @@ function finalizeAssistantBubble(el, fullText, providerId, modelHintOverride) {
           webSearch: el.dataset.assistantWebSearch === "1",
           deepResearch: el.dataset.assistantDeepResearch === "1",
         });
-  meta.textContent = hint ? `Replied: ${label} · ${hint}` : `Replied: ${label}`;
+  meta.textContent = hint
+    ? `Replied: ${label} · ${hint}${replySuffix}`
+    : `Replied: ${label}${replySuffix}`;
   el.appendChild(meta);
 
   function assistantAnswerNeedsToggle(te) {
@@ -2519,7 +2840,15 @@ function finalizeAssistantBubble(el, fullText, providerId, modelHintOverride) {
       btn.setAttribute("aria-label", "Collapse reply");
       btn.title = "Collapse / expand";
       btn.appendChild(createBubbleChevronIcon());
-      actions.appendChild(btn);
+      const retryBtn = actions.querySelector(".msg-bubble-retry");
+      const copyBtn = actions.querySelector(".msg-bubble-copy");
+      if (retryBtn) {
+        actions.insertBefore(btn, retryBtn);
+      } else if (copyBtn) {
+        actions.insertBefore(btn, copyBtn);
+      } else {
+        actions.appendChild(btn);
+      }
       btn.addEventListener("click", (e) => {
         e.preventDefault();
         const collapsed = el.classList.toggle("msg-assistant--collapsed");
@@ -2587,49 +2916,9 @@ async function handleThemeDeleted(themeId, themeTitle) {
 }
 
 function replayTurnInChat(turn) {
-  const reqProvider = turn.requested_provider_id;
-  const respProvider = turn.responding_provider_id || reqProvider;
-  const modelLabel = PROVIDER_DISPLAY[reqProvider] ?? reqProvider;
-  const rt = turn.request_type || "default";
-  /** @type {Array<{ name: string; kind: string }>} */
-  let attachmentStrip = [];
-  try {
-    const j = JSON.parse(String(turn.user_attachments_json ?? "null"));
-    if (Array.isArray(j)) {
-      attachmentStrip = j
-        .filter((x) => x && typeof x === "object")
-        .map((x) => ({
-          name: String(x.name ?? "file").slice(0, 512),
-          kind: normalizeStoredUserAttachmentKind(x.kind),
-        }));
-    }
-  } catch {
-    attachmentStrip = [];
-  }
-  appendUserMessage(turn.user_text, modelLabel, {
-    webSearch: rt === "web",
-    imageCreation: rt === "image",
-    deepResearch: rt === "research",
-    accessData: rt === "access_data",
-    attachmentStrip: attachmentStrip.length > 0 ? attachmentStrip : undefined,
-  });
-  const pending = appendAssistantPending();
-  if (!pending) return;
-  pending.dataset.turnId = String(turn.id ?? "");
-  pending.dataset.assistantFavorite = Number(turn.assistant_favorite) === 1 ? "1" : "0";
-  const text = turn.assistant_text;
-  if (text != null && String(text).length > 0) {
-    pending.dataset.assistantWebSearch = rt === "web" ? "1" : "";
-    pending.dataset.assistantDeepResearch = rt === "research" ? "1" : "";
-    if (rt === "image") pending.dataset.assistantResponseKind = "image";
-    const te = pending.querySelector(".msg-assistant-text");
-    setAssistantMessageMarkdown(te, text);
-    const imgHint =
-      rt === "image" ? apiImageGenerationModelHint(respProvider) : undefined;
-    finalizeAssistantBubble(pending, text, respProvider, imgHint || undefined);
-  } else {
-    renderAssistantError(pending, "No reply stored for this turn.");
-  }
+  appendUserBubbleFromTurn(turn);
+  const root = String(turn?.id ?? "").trim();
+  appendAssistantBubbleFromTurn(turn, 1, root);
 }
 
 /** Theme selected: empty chat; first message creates a new dialog in that theme. */
@@ -2684,9 +2973,7 @@ async function openDialogById(dialogId, themeId, scrollToTurnId) {
   if (sendDlg) sendDlg.disabled = false;
   try {
     const turns = await fetchTurns(did);
-    for (const t of turns) {
-      replayTurnInChat(t);
-    }
+    replayDialogTurnsGrouped(turns);
   } catch (e) {
     appendActivityLog(`Chat DB: could not load thread (${e instanceof Error ? e.message : String(e)})`);
   }
@@ -2700,6 +2987,263 @@ async function openDialogById(dialogId, themeId, scrollToTurnId) {
     scrollMessagesToEnd();
   }
   refreshThemeHighlightsFromChat();
+}
+
+/**
+ * @param {unknown} turn
+ */
+function userTurnGroupKey(turn) {
+  const t = turn && typeof turn === "object" ? turn : {};
+  return `${String(t.user_message_at ?? "")}\0${String(t.user_text ?? "")}`;
+}
+
+/**
+ * @param {unknown} turn
+ */
+function appendUserBubbleFromTurn(turn) {
+  const t = turn && typeof turn === "object" ? turn : {};
+  const reqProvider = t.requested_provider_id;
+  const modelLabel = PROVIDER_DISPLAY[reqProvider] ?? reqProvider;
+  const rt = t.request_type || "default";
+  /** @type {Array<{ name: string; kind: string }>} */
+  let attachmentStrip = [];
+  try {
+    const j = JSON.parse(String(t.user_attachments_json ?? "null"));
+    if (Array.isArray(j)) {
+      attachmentStrip = j
+        .filter((x) => x && typeof x === "object")
+        .map((x) => ({
+          name: String(x.name ?? "file").slice(0, 512),
+          kind: normalizeStoredUserAttachmentKind(x.kind),
+        }));
+    }
+  } catch {
+    attachmentStrip = [];
+  }
+  appendUserMessage(t.user_text, modelLabel, {
+    webSearch: rt === "web",
+    imageCreation: rt === "image",
+    deepResearch: rt === "research",
+    accessData: rt === "access_data",
+    attachmentStrip: attachmentStrip.length > 0 ? attachmentStrip : undefined,
+  });
+}
+
+/**
+ * @param {unknown} turn
+ * @param {number} replyOrdinal
+ * @param {string} exchangeRootTurnId
+ */
+function appendAssistantBubbleFromTurn(turn, replyOrdinal, exchangeRootTurnId) {
+  const t = turn && typeof turn === "object" ? turn : {};
+  const reqProvider = t.requested_provider_id;
+  const respProvider = t.responding_provider_id || reqProvider;
+  const modelLabel = PROVIDER_DISPLAY[reqProvider] ?? reqProvider;
+  const rt = t.request_type || "default";
+  const pending = appendAssistantPending();
+  if (!pending) return;
+  pending.dataset.turnId = String(t.id ?? "");
+  pending.dataset.exchangeRootTurnId = String(exchangeRootTurnId || t.id || "").trim();
+  pending.dataset.replyOrdinal = String(replyOrdinal);
+  pending.dataset.assistantFavorite = Number(t.assistant_favorite) === 1 ? "1" : "0";
+  const text = t.assistant_text;
+  if (text != null && String(text).length > 0) {
+    pending.dataset.assistantWebSearch = rt === "web" ? "1" : "";
+    pending.dataset.assistantDeepResearch = rt === "research" ? "1" : "";
+    if (rt === "image") pending.dataset.assistantResponseKind = "image";
+    const te = pending.querySelector(".msg-assistant-text");
+    setAssistantMessageMarkdown(te, text);
+    const imgHint =
+      rt === "image" ? apiImageGenerationModelHint(respProvider) : undefined;
+    finalizeAssistantBubble(
+      pending,
+      text,
+      respProvider,
+      imgHint || undefined,
+      replyOrdinal,
+    );
+  } else {
+    renderAssistantError(pending, "No reply stored for this turn.");
+  }
+}
+
+/** @param {unknown[]} turns */
+function replayDialogTurnsGrouped(turns) {
+  const arr = Array.isArray(turns) ? turns : [];
+  let i = 0;
+  while (i < arr.length) {
+    const first = arr[i];
+    if (!first || typeof first !== "object") {
+      i += 1;
+      continue;
+    }
+    const key = userTurnGroupKey(first);
+    /** @type {unknown[]} */
+    const group = [];
+    while (i < arr.length && arr[i] && typeof arr[i] === "object" && userTurnGroupKey(arr[i]) === key) {
+      group.push(arr[i]);
+      i += 1;
+    }
+    const rootId = String((group[0] && group[0].id) ?? "").trim();
+    appendUserBubbleFromTurn(group[0]);
+    for (let k = 0; k < group.length; k += 1) {
+      appendAssistantBubbleFromTurn(group[k], k + 1, rootId);
+    }
+  }
+}
+
+/**
+ * Builds LLM options for a text chat turn (same path as submitChat).
+ * @param {{
+ *   persistDialogId: string | null,
+ *   promptForApi: string,
+ *   providerId: string,
+ *   key: string,
+ *   modeForSend: string,
+ *   accessDataDumpMode: boolean,
+ *   chatAttachments: { images: Array<{ mimeType: string, base64: string }> } | undefined,
+ *   introChatOpen: boolean,
+ *   accessChatOpen: boolean,
+ * }} p
+ */
+async function buildChatOptsForModelRequest(p) {
+  const {
+    persistDialogId,
+    promptForApi,
+    providerId,
+    key,
+    modeForSend,
+    accessDataDumpMode,
+    chatAttachments,
+    introChatOpen,
+    accessChatOpen,
+  } = p;
+  const chatOpts = {
+    webSearch: accessDataDumpMode ? false : modeForSend === "web",
+    deepResearch: accessDataDumpMode ? false : modeForSend === "research",
+  };
+  if (chatAttachments && !accessDataDumpMode) {
+    chatOpts.chatAttachments = chatAttachments;
+  }
+  if (persistDialogId && modeForSend !== "image") {
+    try {
+      if (accessDataDumpMode) {
+        if (!(await apiHealth())) {
+          chatOpts.systemInstruction = `${ACCESS_DATA_HASH_SYSTEM_HEADER}{"entries":[],"note":"MF0 local API offline — Access external-services store was not loaded."}`;
+          chatOpts.llmMessages = [{ role: "user", content: promptForApi }];
+          chatOpts.accessDataDumpMode = true;
+          appendActivityLog("Chat: #data — API offline; locked prompt with empty-store notice only.");
+        } else {
+          const enriched = await fetchAccessDataDumpEnrichment().catch(() => ({
+            entries: [],
+            snapshots: [],
+            meta: {
+              globalHostSuffixRuleCount: 0,
+              rowSelfHostnameFetch: true,
+              maxLiveFetches: 48,
+              entryRowCount: 0,
+            },
+          }));
+          const entries = Array.isArray(enriched.entries) ? enriched.entries : [];
+          const snapshots = Array.isArray(enriched.snapshots) ? enriched.snapshots : [];
+          const meta =
+            enriched.meta && typeof enriched.meta === "object"
+              ? enriched.meta
+              : {
+                  globalHostSuffixRuleCount: 0,
+                  rowSelfHostnameFetch: true,
+                  maxLiveFetches: 48,
+                  entryRowCount: entries.length,
+                };
+          const doc = { entries, snapshots, meta };
+          let jsonBody = JSON.stringify(doc, null, 2);
+          const maxJson = 88000;
+          if (jsonBody.length > maxJson) {
+            jsonBody = `${jsonBody.slice(0, maxJson)}\n…(truncated for request size)`;
+          }
+          chatOpts.systemInstruction = `${ACCESS_DATA_HASH_SYSTEM_HEADER}${jsonBody}`;
+          chatOpts.llmMessages = [{ role: "user", content: promptForApi }];
+          chatOpts.accessDataDumpMode = true;
+          appendActivityLog(
+            `Chat: #data — store + live JSON GET (max ${meta?.maxLiveFetches ?? "?"} / ${meta?.entryRowCount ?? "?"} rows; ${snapshots.filter((s) => s && s.ok).length}/${snapshots.length} OK); no thread/RAG/web.`,
+          );
+          if (import.meta.env.DEV) {
+            globalThis.__MF0_LAST_CONTEXT_DEBUG__ = {
+              accessDataDumpMode: true,
+              entries: entries.length,
+              snapshots: snapshots.length,
+            };
+          }
+        }
+      } else if (await apiHealth()) {
+        const catalogPromise = accessChatOpen
+          ? Promise.resolve({ entries: [] })
+          : fetchAccessExternalServicesCatalog().catch(() => ({ entries: [] }));
+        const [pack, catalogRes, graphPayload] = await Promise.all([
+          fetchContextPack(persistDialogId, promptForApi),
+          catalogPromise,
+          fetchMemoryGraphFromApi().catch(() => ({ nodes: [], links: [] })),
+        ]);
+        let memoryTreeSupplement = "";
+        const graphNodes = Array.isArray(graphPayload?.nodes) ? graphPayload.nodes : [];
+        if (graphNodes.length > 0 && String(promptForApi ?? "").trim()) {
+          try {
+            memoryTreeSupplement = await fetchMemoryTreeSupplementForPrompt({
+              userQuery: promptForApi,
+              graph: graphPayload,
+              allKeys: getModelApiKeys(),
+              activeProviderId: providerId,
+              activeApiKey: key,
+            });
+          } catch (rErr) {
+            appendActivityLog(
+              `Memory tree router: ${rErr instanceof Error ? rErr.message : String(rErr)}`,
+            );
+          }
+        }
+        const built = buildModelContext({
+          threadId: persistDialogId,
+          userPrompt: promptForApi,
+          contextPack: pack,
+          modelFlags: { recentMessageCount: 10 },
+          accessServicesCatalog: catalogRes.entries ?? [],
+          memoryTreeSupplement: memoryTreeSupplement || undefined,
+        });
+        const fitted = fitContextToBudget(built, MF0_MAX_CONTEXT_INPUT_TOKENS);
+        let sysOut = fitted.systemInstruction;
+        if (introChatOpen) {
+          sysOut = [sysOut, INTRO_COACH_SYSTEM_APPEND].filter(Boolean).join("\n\n");
+        } else if (accessChatOpen) {
+          sysOut = [sysOut, ACCESS_SECTION_SYSTEM_APPEND].filter(Boolean).join("\n\n");
+        }
+        chatOpts.systemInstruction = sysOut;
+        chatOpts.llmMessages = fitted.messagesForApi;
+        if (import.meta.env.DEV) {
+          globalThis.__MF0_LAST_CONTEXT_DEBUG__ = fitted.debug;
+        }
+      }
+    } catch (ctxErr) {
+      appendActivityLog(
+        `LLM context: single-turn fallback (${ctxErr instanceof Error ? ctxErr.message : String(ctxErr)})`,
+      );
+    }
+  }
+  if (!accessDataDumpMode && introChatOpen && modeForSend !== "image") {
+    const cur = String(chatOpts.systemInstruction ?? "").trim();
+    if (!cur) {
+      chatOpts.systemInstruction = INTRO_COACH_SYSTEM_APPEND;
+    } else if (!cur.includes("Intro section")) {
+      chatOpts.systemInstruction = `${cur}\n\n${INTRO_COACH_SYSTEM_APPEND}`;
+    }
+  } else if (!accessDataDumpMode && accessChatOpen && modeForSend !== "image") {
+    const curA = String(chatOpts.systemInstruction ?? "").trim();
+    if (!curA) {
+      chatOpts.systemInstruction = ACCESS_SECTION_SYSTEM_APPEND;
+    } else if (!curA.includes("Access section")) {
+      chatOpts.systemInstruction = `${curA}\n\n${ACCESS_SECTION_SYSTEM_APPEND}`;
+    }
+  }
+  return chatOpts;
 }
 
 function initChatComposer() {
@@ -2806,6 +3350,7 @@ function initChatComposer() {
     let didAppendUserToUi = false;
 
     chatComposerSending = true;
+    syncAllAssistantRetryButtons();
     try {
       if (!persistDialogId) {
         try {
@@ -2872,7 +3417,6 @@ function initChatComposer() {
       const chatAttachments = attApi.images.length > 0 ? { images: attApi.images } : undefined;
 
       sendBtn.disabled = true;
-      ta.disabled = true;
 
       appendActivityLog(
         `Chat → request: ${attachModeLogLabel(modeForSend)}, model ${modelLabel}, input chars: ${trimmed.length}, attachments: ${filesSnapshot.length}`,
@@ -2906,6 +3450,13 @@ function initChatComposer() {
       refreshThemeHighlightsFromChat();
       ta.value = "";
       syncChatInputHeight(ta);
+      ta.focus();
+      try {
+        const end = ta.value.length;
+        ta.setSelectionRange(end, end);
+      } catch {
+        /* ignore */
+      }
       scrollMessagesToEnd();
 
       pending = appendAssistantPending();
@@ -2914,7 +3465,7 @@ function initChatComposer() {
         pending.dataset.assistantDeepResearch = modeForSend === "research" ? "1" : "";
         const te0 = pending.querySelector(".msg-assistant-text");
         if (te0 && modeForSend === "image") {
-          te0.textContent = "Generating image…";
+          setAssistantMessagePlain(te0, "Generating image…");
         }
       }
       scrollMessagesToEnd();
@@ -2935,115 +3486,20 @@ function initChatComposer() {
           if (pending) {
             pending.dataset.assistantResponseKind = "image";
           }
-          finalizeAssistantBubble(pending, fullText, providerId, imgHint || undefined);
+          finalizeAssistantBubble(pending, fullText, providerId, imgHint || undefined, 1);
           appendActivityLog(`Chat ← reply: image, model ${modelLabel}, OK`);
         } else {
-          const chatOpts = {
-            webSearch: accessDataDumpMode ? false : modeForSend === "web",
-            deepResearch: accessDataDumpMode ? false : modeForSend === "research",
-          };
-          if (chatAttachments && !accessDataDumpMode) {
-            chatOpts.chatAttachments = chatAttachments;
-          }
-          if (persistDialogId && modeForSend !== "image") {
-            try {
-              if (accessDataDumpMode) {
-                if (!(await apiHealth())) {
-                  chatOpts.systemInstruction = `${ACCESS_DATA_HASH_SYSTEM_HEADER}{"entries":[],"note":"MF0 local API offline — Access external-services store was not loaded."}`;
-                  chatOpts.llmMessages = [{ role: "user", content: promptForApi }];
-                  chatOpts.accessDataDumpMode = true;
-                  appendActivityLog("Chat: #data — API offline; locked prompt with empty-store notice only.");
-                } else {
-                  const enriched = await fetchAccessDataDumpEnrichment().catch(() => ({
-                    entries: [],
-                    snapshots: [],
-                    meta: {
-                      globalHostSuffixRuleCount: 0,
-                      rowSelfHostnameFetch: true,
-                      maxLiveFetches: 48,
-                      entryRowCount: 0,
-                    },
-                  }));
-                  const entries = Array.isArray(enriched.entries) ? enriched.entries : [];
-                  const snapshots = Array.isArray(enriched.snapshots) ? enriched.snapshots : [];
-                  const meta =
-                    enriched.meta && typeof enriched.meta === "object"
-                      ? enriched.meta
-                      : {
-                          globalHostSuffixRuleCount: 0,
-                          rowSelfHostnameFetch: true,
-                          maxLiveFetches: 48,
-                          entryRowCount: entries.length,
-                        };
-                  const doc = { entries, snapshots, meta };
-                  let jsonBody = JSON.stringify(doc, null, 2);
-                  const maxJson = 88000;
-                  if (jsonBody.length > maxJson) {
-                    jsonBody = `${jsonBody.slice(0, maxJson)}\n…(truncated for request size)`;
-                  }
-                  chatOpts.systemInstruction = `${ACCESS_DATA_HASH_SYSTEM_HEADER}${jsonBody}`;
-                  chatOpts.llmMessages = [{ role: "user", content: promptForApi }];
-                  chatOpts.accessDataDumpMode = true;
-                  appendActivityLog(
-                    `Chat: #data — store + live JSON GET (max ${meta?.maxLiveFetches ?? "?"} / ${meta?.entryRowCount ?? "?"} rows; ${snapshots.filter((s) => s && s.ok).length}/${snapshots.length} OK); no thread/RAG/web.`,
-                  );
-                  if (import.meta.env.DEV) {
-                    globalThis.__MF0_LAST_CONTEXT_DEBUG__ = {
-                      accessDataDumpMode: true,
-                      entries: entries.length,
-                      snapshots: snapshots.length,
-                    };
-                  }
-                }
-              } else if (await apiHealth()) {
-                const catalogPromise = accessChatOpen
-                  ? Promise.resolve({ entries: [] })
-                  : fetchAccessExternalServicesCatalog().catch(() => ({ entries: [] }));
-                const [pack, catalogRes] = await Promise.all([
-                  fetchContextPack(persistDialogId, promptForApi),
-                  catalogPromise,
-                ]);
-                const built = buildModelContext({
-                  threadId: persistDialogId,
-                  userPrompt: promptForApi,
-                  contextPack: pack,
-                  modelFlags: { recentMessageCount: 10 },
-                  accessServicesCatalog: catalogRes.entries ?? [],
-                });
-                const fitted = fitContextToBudget(built, MF0_MAX_CONTEXT_INPUT_TOKENS);
-                let sysOut = fitted.systemInstruction;
-                if (introChatOpen) {
-                  sysOut = [sysOut, INTRO_COACH_SYSTEM_APPEND].filter(Boolean).join("\n\n");
-                } else if (accessChatOpen) {
-                  sysOut = [sysOut, ACCESS_SECTION_SYSTEM_APPEND].filter(Boolean).join("\n\n");
-                }
-                chatOpts.systemInstruction = sysOut;
-                chatOpts.llmMessages = fitted.messagesForApi;
-                if (import.meta.env.DEV) {
-                  globalThis.__MF0_LAST_CONTEXT_DEBUG__ = fitted.debug;
-                }
-              }
-            } catch (ctxErr) {
-              appendActivityLog(
-                `LLM context: single-turn fallback (${ctxErr instanceof Error ? ctxErr.message : String(ctxErr)})`,
-              );
-            }
-          }
-          if (!accessDataDumpMode && introChatOpen && modeForSend !== "image") {
-            const cur = String(chatOpts.systemInstruction ?? "").trim();
-            if (!cur) {
-              chatOpts.systemInstruction = INTRO_COACH_SYSTEM_APPEND;
-            } else if (!cur.includes("Intro section")) {
-              chatOpts.systemInstruction = `${cur}\n\n${INTRO_COACH_SYSTEM_APPEND}`;
-            }
-          } else if (!accessDataDumpMode && accessChatOpen && modeForSend !== "image") {
-            const curA = String(chatOpts.systemInstruction ?? "").trim();
-            if (!curA) {
-              chatOpts.systemInstruction = ACCESS_SECTION_SYSTEM_APPEND;
-            } else if (!curA.includes("Access section")) {
-              chatOpts.systemInstruction = `${curA}\n\n${ACCESS_SECTION_SYSTEM_APPEND}`;
-            }
-          }
+          const chatOpts = await buildChatOptsForModelRequest({
+            persistDialogId,
+            promptForApi,
+            providerId,
+            key,
+            modeForSend,
+            accessDataDumpMode,
+            chatAttachments,
+            introChatOpen,
+            accessChatOpen,
+          });
           let buf = "";
           try {
             fullText = await completeChatMessageStreaming(
@@ -3091,6 +3547,7 @@ function initChatComposer() {
       sendBtn.disabled = false;
       ta.disabled = false;
       syncComposerSendButtonState();
+      syncAllAssistantRetryButtons();
       scrollMessagesToEnd();
       if (persistDialogId && didAppendUserToUi) {
         const assistantMessageAt = new Date().toISOString();
@@ -3297,7 +3754,14 @@ function initChatComposer() {
           }
           if (pending && tid) {
             pending.dataset.turnId = tid;
+            if (!String(pending.dataset.exchangeRootTurnId ?? "").trim()) {
+              pending.dataset.exchangeRootTurnId = tid;
+            }
+            if (!String(pending.dataset.replyOrdinal ?? "").trim()) {
+              pending.dataset.replyOrdinal = "1";
+            }
             syncAssistantFavoriteStarButton(pending);
+            syncAssistantRetryButton(pending);
           }
           await renderThemesSidebar();
         } catch (saveErr) {
