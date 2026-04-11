@@ -3,6 +3,14 @@ import { apiHealth } from "./chatPersistence.js";
 
 const PROVIDER_IDS = ["openai", "perplexity", "gemini-flash", "anthropic"];
 
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 /** `YYYY-MM-DD` → `MM.DD` for chart axis */
 function chartDayLabelMmDd(isoDate) {
   const d = String(isoDate ?? "").trim();
@@ -147,7 +155,7 @@ export function initAnalyticsDashboard(deps) {
       renderAnalytics(root, data);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      root.innerHTML = `<p class="analytics-error">Could not load analytics: ${msg}</p>`;
+      root.innerHTML = `<p class="analytics-error">Could not load analytics: ${escapeHtml(msg)}</p>`;
       appendActivityLog(`Analytics: ${msg}`);
     }
   }

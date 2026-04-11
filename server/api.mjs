@@ -8,6 +8,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
+import { resolveApiPort } from "./resolveApiPort.mjs";
 import {
   mergeRollingSummary,
   appendDecisionLogLine,
@@ -28,7 +29,7 @@ const migration006 = path.join(root, "db", "migrations", "006_intro_pin_lock.sql
 const migration007 = path.join(root, "db", "migrations", "007_ir_panel_pin_lock.sql");
 const migration008 = path.join(root, "db", "migrations", "008_access_external_services.sql");
 const migration009 = path.join(root, "db", "migrations", "009_analytics_usage_archive.sql");
-const PORT = Number(process.env.API_PORT || 35184, 10);
+const PORT = resolveApiPort(process.env.API_PORT);
 
 /** Max length for Access `notes` field (DB + JSON import). */
 const ACCESS_ENTRY_NOTES_MAX = 12000;
@@ -1114,6 +1115,11 @@ function deleteThemeFromDb(themeId) {
   return { ok: true, deletedThemeId: id };
 }
 
+/** @param {"POST" | "DELETE"} via */
+function logThemeDeleted(via, themeId) {
+  console.log(`[mf-lab-api] theme deleted (${via}): ${themeId}`);
+}
+
 const MEMORY_GRAPH_CATEGORIES = new Set([
   "People",
   "Dates",
@@ -2103,7 +2109,7 @@ const server = http.createServer(async (req, res) => {
       const themeId = String(body.themeId ?? body.theme_id ?? "").trim();
       const out = deleteThemeFromDb(themeId);
       if (out.error) return json(res, out.status, { error: out.error });
-      console.log(`[mf-lab-api] theme deleted: ${out.deletedThemeId}`);
+      logThemeDeleted("POST", out.deletedThemeId);
       return json(res, 200, out);
     }
 
@@ -2112,7 +2118,7 @@ const server = http.createServer(async (req, res) => {
       const themeId = decodeURIComponent(themeDeleteMatch[1]).trim();
       const out = deleteThemeFromDb(themeId);
       if (out.error) return json(res, out.status, { error: out.error });
-      console.log(`[mf-lab-api] theme deleted (DELETE): ${out.deletedThemeId}`);
+      logThemeDeleted("DELETE", out.deletedThemeId);
       return json(res, 200, out);
     }
 

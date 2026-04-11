@@ -1,4 +1,5 @@
 import { defineConfig } from "vite";
+import { resolveApiPort } from "./server/resolveApiPort.mjs";
 
 /** `.env` variables with these prefixes are exposed as import.meta.env.* */
 const MODEL_ENV_PREFIXES = [
@@ -69,7 +70,7 @@ export default defineConfig({
     strictPort: false,
     proxy: {
       "/api": {
-        target: `http://127.0.0.1:${process.env.API_PORT || 35184}`,
+        target: `http://127.0.0.1:${resolveApiPort(process.env.API_PORT)}`,
         changeOrigin: true,
       },
       ...llmProxy,
@@ -80,7 +81,7 @@ export default defineConfig({
     strictPort: false,
     proxy: {
       "/api": {
-        target: `http://127.0.0.1:${process.env.API_PORT || 35184}`,
+        target: `http://127.0.0.1:${resolveApiPort(process.env.API_PORT)}`,
         changeOrigin: true,
       },
       ...llmProxy,
