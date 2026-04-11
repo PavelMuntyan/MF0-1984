@@ -24,6 +24,7 @@ const schemaPath = path.join(root, "db", "schema.sql");
 const migration003 = path.join(root, "db", "migrations", "003_context_engine.sql");
 const migration004 = path.join(root, "db", "migrations", "004_memory_graph.sql");
 const migration005 = path.join(root, "db", "migrations", "005_assistant_error.sql");
+const migration006 = path.join(root, "db", "migrations", "006_intro_pin_lock.sql");
 const PORT = Number(process.env.API_PORT || 35184, 10);
 
 const ANALYTICS_PROVIDER_IDS = ["openai", "perplexity", "gemini-flash", "anthropic"];
@@ -89,6 +90,16 @@ function applyAssistantErrorColumn(database) {
   }
 }
 
+function applyIntroPinLockMigration(database) {
+  const row = database
+    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='intro_pin_lock'`)
+    .get();
+  if (row) return;
+  if (fs.existsSync(migration006)) {
+    database.exec(fs.readFileSync(migration006, "utf8"));
+  }
+}
+
 function parseTurnUserAttachmentsJson(raw) {
   if (raw == null || String(raw).trim() === "") return [];
   try {
@@ -136,6 +147,7 @@ function ensureDatabase() {
   applyDialogsPurposeColumn(database);
   applyMemoryGraphMigration(database);
   applyAssistantErrorColumn(database);
+  applyIntroPinLockMigration(database);
   return database;
 }
 
@@ -507,6 +519,20 @@ function appendGraphBlob(blob, notes) {
   b = b ? `${b}\n${line}` : line;
   if (b.length > 32000) b = `${b.slice(0, 31997)}…`;
   return b;
+}
+
+/** SHA256(hex of MD5(6-digit PIN)) — verify by recomputing; PIN is not stored. */
+function doubleHashIntroPin6(pin) {
+  const raw = String(pin ?? "").replace(/\D/g, "");
+  if (!/^[0-9]{6}$/.test(raw)) return null;
+  const md5hex = crypto.createHash("md5").update(raw, "utf8").digest("hex");
+  return crypto.createHash("sha256").update(md5hex, "utf8").digest("hex");
+}
+
+function getIntroLockPayload() {
+  applyIntroPinLockMigration(db);
+  const row = db.prepare(`SELECT 1 AS x FROM intro_pin_lock WHERE singleton = 1 LIMIT 1`).get();
+  return { locked: Boolean(row) };
 }
 
 function getOrCreateIntroSession() {
@@ -1005,6 +1031,41 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && p === "/api/intro/session") {
       const s = getOrCreateIntroSession();
       return json(res, 200, { ok: true, themeId: s.themeId, dialogId: s.dialogId });
+    }
+
+    if (req.method === "GET" && p === "/api/intro/lock") {
+      return json(res, 200, { ok: true, ...getIntroLockPayload() });
+    }
+
+    if (req.method === "POST" && p === "/api/intro/lock/set") {
+      const body = await readBody(req);
+      const h = doubleHashIntroPin6(body.pin ?? body.PIN);
+      if (!h) {
+        return json(res, 400, { ok: false, error: "PIN must be exactly 6 digits." });
+      }
+      applyIntroPinLockMigration(db);
+      db.prepare(
+        `INSERT INTO intro_pin_lock (singleton, pin_double_hash) VALUES (1, ?) ON CONFLICT(singleton) DO UPDATE SET pin_double_hash = excluded.pin_double_hash`,
+      ).run(h);
+      return json(res, 200, { ok: true, locked: true });
+    }
+
+    if (req.method === "POST" && p === "/api/intro/lock/unlock") {
+      const body = await readBody(req);
+      const h = doubleHashIntroPin6(body.pin ?? body.PIN);
+      if (!h) {
+        return json(res, 400, { ok: false, error: "PIN must be exactly 6 digits." });
+      }
+      applyIntroPinLockMigration(db);
+      const row = db.prepare(`SELECT pin_double_hash FROM intro_pin_lock WHERE singleton = 1`).get();
+      if (!row?.pin_double_hash) {
+        return json(res, 400, { ok: false, error: "Intro is not locked." });
+      }
+      if (row.pin_double_hash !== h) {
+        return json(res, 403, { ok: false, error: "Incorrect PIN." });
+      }
+      db.prepare(`DELETE FROM intro_pin_lock WHERE singleton = 1`).run();
+      return json(res, 200, { ok: true, locked: false });
     }
 
     if (req.method === "GET" && p === "/api/memory-graph") {

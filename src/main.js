@@ -23,6 +23,13 @@ import {
   setMemoryGraphData,
 } from "./memoryTree.js";
 import { detectIntroMemoryTreeCommands } from "./introMemoryTreeCommands.js";
+import {
+  getIntroLockedSync,
+  initIntroPinLock,
+  openSetPinModal,
+  openUnlockModal,
+  refreshIntroLockFromApi,
+} from "./introPinLock.js";
 import { closeAnalyticsView, initAnalyticsDashboard } from "./analyticsDashboard.js";
 import {
   apiHealth,
@@ -75,6 +82,55 @@ async function ensureIntroSessionClient() {
   const s = await fetchIntroSession();
   introSessionDialogId = s.dialogId;
   return introSessionDialogId;
+}
+
+async function loadIntroChatThreadIntoUi() {
+  try {
+    const s = await fetchIntroSession();
+    introSessionDialogId = s.dialogId;
+    const list = document.getElementById("messages-list");
+    list?.replaceChildren();
+    const turns = await fetchTurns(introSessionDialogId);
+    for (const t of turns) {
+      replayTurnInChat(t);
+    }
+    scrollMessagesToEnd();
+    await loadMemoryGraphIntoUi();
+  } catch (e) {
+    appendActivityLog(`Intro: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+function syncIntroVaultDom() {
+  const chat = document.getElementById("main-chat");
+  const gate = document.getElementById("intro-vault-gate");
+  if (!chat || !gate) return;
+  const vault = getIntroLockedSync() && chat.classList.contains("chat--intro");
+  chat.classList.toggle("main-chat--intro-vault", vault);
+  if (vault) {
+    gate.removeAttribute("hidden");
+    gate.setAttribute("aria-hidden", "false");
+  } else {
+    gate.setAttribute("hidden", "");
+    gate.setAttribute("aria-hidden", "true");
+  }
+}
+
+function handleIntroBubbleClick(e) {
+  const lockHit = e.target.closest("#btn-ir-intro .sidebar-ir-lock-icon");
+  if (lockHit) {
+    e.preventDefault();
+    if (getIntroLockedSync()) openUnlockModal();
+    else openSetPinModal();
+    return;
+  }
+  if (getIntroLockedSync()) {
+    const chat = document.getElementById("main-chat");
+    if (chat?.classList.contains("chat--intro")) closeIrChatPanel();
+    else openIrChatPanel("intro");
+  } else {
+    toggleIrChatPanel("intro");
+  }
 }
 
 async function loadMemoryGraphIntoUi() {
@@ -894,6 +950,7 @@ function closeIrChatPanel(options = {}) {
     document.getElementById(p.btnId)?.setAttribute("aria-expanded", "false");
   }
   if (focusBtnId) document.getElementById(focusBtnId)?.focus();
+  syncIntroVaultDom();
 }
 
 function openIrChatPanel(mode) {
@@ -911,6 +968,8 @@ function openIrChatPanel(mode) {
   const view = document.getElementById(cfg.viewId);
   if (!chat || !view) return;
 
+  chat.classList.remove("main-chat--intro-vault");
+
   for (const p of IR_CHAT_PANELS) {
     chat.classList.remove(p.className);
     document.getElementById(p.viewId)?.setAttribute("hidden", "");
@@ -926,23 +985,11 @@ function openIrChatPanel(mode) {
   refreshThemeHighlightsFromChat();
 
   if (cfg.mode === "intro") {
-    void (async () => {
-      try {
-        const s = await fetchIntroSession();
-        introSessionDialogId = s.dialogId;
-        const list = document.getElementById("messages-list");
-        list?.replaceChildren();
-        const turns = await fetchTurns(introSessionDialogId);
-        for (const t of turns) {
-          replayTurnInChat(t);
-        }
-        scrollMessagesToEnd();
-        await loadMemoryGraphIntoUi();
-      } catch (e) {
-        appendActivityLog(`Intro: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    })();
+    if (!getIntroLockedSync()) {
+      void loadIntroChatThreadIntoUi();
+    }
   }
+  syncIntroVaultDom();
 }
 
 function toggleIrChatPanel(mode) {
@@ -954,7 +1001,7 @@ function toggleIrChatPanel(mode) {
 }
 
 function initIntroRulesAccessPanels() {
-  document.getElementById("btn-ir-intro")?.addEventListener("click", () => toggleIrChatPanel("intro"));
+  document.getElementById("btn-ir-intro")?.addEventListener("click", handleIntroBubbleClick);
   document.getElementById("btn-ir-rules")?.addEventListener("click", () => toggleIrChatPanel("rules"));
   document.getElementById("btn-ir-access")?.addEventListener("click", () => toggleIrChatPanel("access"));
 }
@@ -2504,6 +2551,10 @@ function initChatComposer() {
 
     const mainChatEl = document.getElementById("main-chat");
     const introChatOpen = Boolean(mainChatEl?.classList.contains("chat--intro"));
+    if (introChatOpen && getIntroLockedSync()) {
+      appendActivityLog("Intro is locked — unlock it to send messages.");
+      return;
+    }
     if (mainChatEl && irChatPanelIsOpen(mainChatEl) && !introChatOpen) {
       closeIrChatPanel();
     }
@@ -3100,6 +3151,11 @@ function bootApp() {
   initDialoguesMenu();
   initThemeFolderMenus();
   initMemoryTree(appendActivityLog);
+  initIntroPinLock({
+    appendActivityLog,
+    loadIntroThreadIntoUi: loadIntroChatThreadIntoUi,
+    syncIntroVaultDom,
+  });
   initAnalyticsDashboard({
     fetchAnalytics,
     appendActivityLog,
@@ -3120,6 +3176,7 @@ function bootApp() {
   void (async () => {
     try {
       if (await apiHealth()) {
+        await refreshIntroLockFromApi();
         await renderThemesSidebar();
         await loadMemoryGraphIntoUi();
         appendActivityLog("Chat database connected.");

@@ -356,9 +356,9 @@
                     aria-label="Intro: about you for the project"
                   >
                     <span class="sidebar-ir-bubble-label">Intro</span>
-                    <span class="sidebar-ir-lock-icon" aria-hidden="true">
+                    <span class="sidebar-ir-lock-icon" aria-hidden="true" title="PIN lock">
                       <svg
-                        class="sidebar-ir-lock-svg"
+                        class="sidebar-ir-lock-svg sidebar-ir-lock-svg--open"
                         xmlns="http://www.w3.org/2000/svg"
                         viewBox="0 0 24 24"
                         fill="none"
@@ -369,6 +369,20 @@
                       >
                         <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
                         <path d="M7 11V7a5 5 0 0 1 9.9-1" />
+                      </svg>
+                      <svg
+                        class="sidebar-ir-lock-svg sidebar-ir-lock-svg--closed"
+                        hidden
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      >
+                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                       </svg>
                     </span>
                   </button>
@@ -605,6 +619,30 @@
                 <div class="messages-inner" id="messages-list"></div>
               </div>
 
+              <div id="intro-vault-gate" class="intro-vault-gate" hidden aria-hidden="true">
+                <div class="intro-vault-gate-inner">
+                  <div class="intro-vault-lock-figure" aria-hidden="true">
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.35"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <rect x="5" y="11" width="14" height="10" rx="2" ry="2" />
+                      <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+                    </svg>
+                  </div>
+                  <p class="intro-vault-title">Intro is locked</p>
+                  <p class="intro-vault-hint">Use the lock on the Intro button to enter your PIN.</p>
+                  <button type="button" class="btn btn-secondary intro-vault-btn" id="intro-vault-open-unlock">
+                    Enter PIN
+                  </button>
+                </div>
+              </div>
+
               <div class="chat-footer">
               <div class="model-badges" id="model-badges" aria-label="Model providers">
                 <button type="button" class="badge" data-provider="openai">ChatGPT</button>
@@ -732,6 +770,77 @@
           ×
         </button>
         <img class="chat-image-lightbox-img" alt="" decoding="async" />
+      </div>
+    </div>
+
+    <div id="modal-intro-set-pin" class="intro-pin-modal" hidden aria-hidden="true">
+      <div class="intro-pin-modal-backdrop" data-intro-pin-backdrop aria-hidden="true"></div>
+      <div
+        class="intro-pin-modal-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="intro-set-pin-title"
+      >
+        <h2 id="intro-set-pin-title" class="intro-pin-modal-title">Lock Intro</h2>
+        <p class="intro-pin-modal-desc">Set a 6-digit PIN. You will need it each time you open Intro until you unlock.</p>
+        <div class="intro-pin-modal-field">
+          <span class="intro-pin-modal-label">PIN</span>
+          <div class="intro-pin-group" id="intro-set-pin-row-a">
+            <input class="intro-pin-digit" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="PIN digit 1" />
+            <input class="intro-pin-digit" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="PIN digit 2" />
+            <input class="intro-pin-digit" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="PIN digit 3" />
+            <span class="intro-pin-sep" aria-hidden="true">-</span>
+            <input class="intro-pin-digit" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="PIN digit 4" />
+            <input class="intro-pin-digit" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="PIN digit 5" />
+            <input class="intro-pin-digit" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="PIN digit 6" />
+          </div>
+        </div>
+        <div class="intro-pin-modal-field">
+          <span class="intro-pin-modal-label">Repeat PIN</span>
+          <div class="intro-pin-group" id="intro-set-pin-row-b">
+            <input class="intro-pin-digit" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="Repeat digit 1" />
+            <input class="intro-pin-digit" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="Repeat digit 2" />
+            <input class="intro-pin-digit" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="Repeat digit 3" />
+            <span class="intro-pin-sep" aria-hidden="true">-</span>
+            <input class="intro-pin-digit" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="Repeat digit 4" />
+            <input class="intro-pin-digit" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="Repeat digit 5" />
+            <input class="intro-pin-digit" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="Repeat digit 6" />
+          </div>
+        </div>
+        <p id="intro-set-pin-error" class="intro-pin-error" hidden role="alert"></p>
+        <div class="intro-pin-modal-actions">
+          <button type="button" class="btn btn-secondary" id="intro-set-pin-cancel">Cancel</button>
+          <button type="button" class="btn" id="intro-set-pin-save">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="modal-intro-unlock-pin" class="intro-pin-modal" hidden aria-hidden="true">
+      <div class="intro-pin-modal-backdrop" data-intro-pin-backdrop aria-hidden="true"></div>
+      <div
+        class="intro-pin-modal-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="intro-unlock-pin-title"
+      >
+        <h2 id="intro-unlock-pin-title" class="intro-pin-modal-title">Unlock Intro</h2>
+        <p class="intro-pin-modal-desc">Enter your 6-digit PIN.</p>
+        <div class="intro-pin-modal-field">
+          <div class="intro-pin-group" id="intro-unlock-pin-row">
+            <input class="intro-pin-digit" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="PIN digit 1" />
+            <input class="intro-pin-digit" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="PIN digit 2" />
+            <input class="intro-pin-digit" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="PIN digit 3" />
+            <span class="intro-pin-sep" aria-hidden="true">-</span>
+            <input class="intro-pin-digit" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="PIN digit 4" />
+            <input class="intro-pin-digit" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="PIN digit 5" />
+            <input class="intro-pin-digit" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="off" aria-label="PIN digit 6" />
+          </div>
+        </div>
+        <p id="intro-unlock-pin-error" class="intro-pin-error" hidden role="alert"></p>
+        <div class="intro-pin-modal-actions">
+          <button type="button" class="btn btn-secondary" id="intro-unlock-pin-cancel">Cancel</button>
+          <button type="button" class="btn" id="intro-unlock-pin-open">Open</button>
+        </div>
       </div>
     </div>
 

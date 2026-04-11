@@ -1,6 +1,7 @@
 import ForceGraph3D from "3d-force-graph";
 import SpriteText from "three-spritetext";
 import { closeAnalyticsView } from "./analyticsDashboard.js";
+import { notifyIntroLayoutSync } from "./introPinLock.js";
 import "./memoryTree.css";
 let closeMemoryTreeImpl = () => {};
 let openMemoryTreeImpl = () => {};
@@ -925,6 +926,7 @@ export function initMemoryTree(appendActivityLog) {
           document.getElementById(st.viewId)?.setAttribute("aria-hidden", "false");
           document.getElementById(st.btnId)?.setAttribute("aria-expanded", "true");
         }
+        notifyIntroLayoutSync();
       }
     }
   }

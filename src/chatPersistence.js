@@ -254,6 +254,43 @@ export async function fetchIntroSession() {
   return { themeId: String(data?.themeId ?? "").trim(), dialogId };
 }
 
+/** Whether a 6-digit Intro PIN is set on the server (Intro stays gated until unlock). */
+export async function fetchIntroLockState() {
+  const res = await fetch(apiUrl("api/intro/lock"));
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Intro lock ${res.status}`);
+  }
+  const data = await res.json();
+  return { locked: data.locked === true };
+}
+
+export async function postIntroLockSet(pin) {
+  const res = await fetch(apiUrl("api/intro/lock/set"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pin: String(pin ?? "") }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok !== true) {
+    throw new Error(data.error || `Set Intro PIN ${res.status}`);
+  }
+  return data;
+}
+
+export async function postIntroLockUnlock(pin) {
+  const res = await fetch(apiUrl("api/intro/lock/unlock"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pin: String(pin ?? "") }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok !== true) {
+    throw new Error(data.error || `Unlock Intro ${res.status}`);
+  }
+  return data;
+}
+
 /** Raw memory graph from the DB (category, short label, fact blob, edges). */
 export async function fetchMemoryGraphFromApi() {
   const res = await fetch(apiUrl("api/memory-graph"));
