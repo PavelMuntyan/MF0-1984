@@ -268,6 +268,38 @@ export async function fetchAccessSession() {
   return { themeId: String(data?.themeId ?? "").trim(), dialogId };
 }
 
+/** Ensures Rules theme and dialog exist for the Rules section. */
+export async function fetchRulesSession() {
+  const res = await fetch(apiUrl("api/rules/session"));
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Rules session ${res.status}`);
+  }
+  const data = await res.json();
+  const dialogId = String(data?.dialogId ?? "").trim();
+  if (!dialogId) throw new Error("Rules session: empty dialog id");
+  return { themeId: String(data?.themeId ?? "").trim(), dialogId };
+}
+
+/**
+ * Intro / Rules / Access: archive usage then delete all turns (and thread mirror rows) for this dialog.
+ * @param {string} dialogId
+ */
+export async function clearDialogTurnsArchive(dialogId) {
+  const did = String(dialogId ?? "").trim();
+  if (!did) throw new Error("dialog id required");
+  const res = await fetch(apiUrl(`api/dialogs/${encodeURIComponent(did)}/clear-turns`), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok !== true) {
+    throw new Error(data.error || `Clear thread ${res.status}`);
+  }
+  return data;
+}
+
 /** Keeper 2 store: third-party APIs / endpoints (not model keys). */
 export async function fetchAccessExternalServices() {
   const res = await fetch(apiUrl("api/access/external-services"));
@@ -375,7 +407,7 @@ export async function fetchMemoryGraphFromApi() {
   return res.json();
 }
 
-/** Aggregated usage stats (excludes Intro / Rules / Access dialogs). */
+/** Aggregated usage stats: live regular chats plus archived rows from cleared IR threads and deleted themes. */
 export async function fetchAnalytics() {
   const res = await fetch(apiUrl("api/analytics"));
   if (!res.ok) {

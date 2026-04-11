@@ -43,6 +43,8 @@ import {
   fetchContextPack,
   fetchIntroSession,
   fetchAccessSession,
+  fetchRulesSession,
+  clearDialogTurnsArchive,
   fetchAccessExternalServices,
   fetchAccessDataDumpEnrichment,
   fetchAccessExternalServicesCatalog,
@@ -88,6 +90,9 @@ let introSessionDialogId = null;
 /** Access section dialog (created by API `/api/access/session`). */
 let accessSessionDialogId = null;
 
+/** Rules section dialog (created by API `/api/rules/session`). */
+let rulesSessionDialogId = null;
+
 async function ensureIntroSessionClient() {
   if (introSessionDialogId) return introSessionDialogId;
   const s = await fetchIntroSession();
@@ -100,6 +105,13 @@ async function ensureAccessSessionClient() {
   const s = await fetchAccessSession();
   accessSessionDialogId = s.dialogId;
   return accessSessionDialogId;
+}
+
+async function ensureRulesSessionClient() {
+  if (rulesSessionDialogId) return rulesSessionDialogId;
+  const s = await fetchRulesSession();
+  rulesSessionDialogId = s.dialogId;
+  return rulesSessionDialogId;
 }
 
 async function loadIntroChatThreadIntoUi() {
@@ -128,6 +140,20 @@ async function loadAccessChatThreadIntoUi() {
     scrollMessagesToEnd();
   } catch (e) {
     appendActivityLog(`Access: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+async function loadRulesChatThreadIntoUi() {
+  try {
+    const s = await fetchRulesSession();
+    rulesSessionDialogId = s.dialogId;
+    const list = document.getElementById("messages-list");
+    list?.replaceChildren();
+    const turns = await fetchTurns(rulesSessionDialogId);
+    replayDialogTurnsGrouped(turns);
+    scrollMessagesToEnd();
+  } catch (e) {
+    appendActivityLog(`Rules: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -919,6 +945,117 @@ function openThemeDeleteModal(themeTitle, onClose) {
   });
 }
 
+const IR_CLEAR_THREAD_TITLE = "Clearing a thread";
+const IR_CLEAR_THREAD_BODY =
+  "All messages in this thread will be permanently deleted. All extracted data, decisions, and settings are already saved and will continue to be used by the system. If you want to change anything later, simply describe your changes in a new conversation — the system will update them accordingly. Confirm clearing?";
+
+let irClearThreadModalCallback = null;
+
+function closeIrClearThreadModal(confirmed) {
+  const el = document.getElementById("ir-clear-thread-modal");
+  if (!el || el.hidden) return;
+  el.hidden = true;
+  document.documentElement.classList.remove("theme-delete-modal-open");
+  const cb = irClearThreadModalCallback;
+  irClearThreadModalCallback = null;
+  if (cb) cb(Boolean(confirmed));
+}
+
+function ensureIrClearThreadModal() {
+  let el = document.getElementById("ir-clear-thread-modal");
+  if (el) return el;
+
+  el = document.createElement("div");
+  el.id = "ir-clear-thread-modal";
+  el.className = "theme-delete-modal ir-clear-thread-modal";
+  el.setAttribute("role", "dialog");
+  el.setAttribute("aria-modal", "true");
+  el.setAttribute("aria-labelledby", "ir-clear-thread-modal-title");
+  el.hidden = true;
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "theme-delete-modal-backdrop";
+
+  const panel = document.createElement("div");
+  panel.className = "theme-delete-modal-panel";
+
+  const title = document.createElement("h2");
+  title.id = "ir-clear-thread-modal-title";
+  title.className = "theme-delete-modal-title";
+  title.textContent = IR_CLEAR_THREAD_TITLE;
+
+  const body = document.createElement("p");
+  body.className = "theme-delete-modal-text";
+  body.textContent = IR_CLEAR_THREAD_BODY;
+
+  const actions = document.createElement("div");
+  actions.className = "theme-delete-modal-actions";
+
+  const btnCancel = document.createElement("button");
+  btnCancel.type = "button";
+  btnCancel.className = "btn-ghost theme-delete-modal-btn-cancel";
+  btnCancel.textContent = "Cancel";
+
+  const btnClear = document.createElement("button");
+  btnClear.type = "button";
+  btnClear.className = "theme-delete-modal-btn-delete";
+  btnClear.textContent = "Clear";
+
+  actions.append(btnCancel, btnClear);
+  panel.append(title, body, actions);
+  el.append(backdrop, panel);
+
+  backdrop.addEventListener("click", () => closeIrClearThreadModal(false));
+  btnCancel.addEventListener("click", () => closeIrClearThreadModal(false));
+  btnClear.addEventListener("click", () => closeIrClearThreadModal(true));
+
+  document.body.appendChild(el);
+  return el;
+}
+
+function openIrClearThreadModal(onClose) {
+  const el = ensureIrClearThreadModal();
+  irClearThreadModalCallback = onClose;
+  el.hidden = false;
+  document.documentElement.classList.add("theme-delete-modal-open");
+  requestAnimationFrame(() => {
+    el.querySelector(".theme-delete-modal-btn-delete")?.focus();
+  });
+}
+
+function initIrClearArchiveButton() {
+  const btn = document.getElementById("btn-ir-panel-archive");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    const chat = document.getElementById("main-chat");
+    /** @type {"intro"|"rules"|"access"|null} */
+    let panel = null;
+    if (chat?.classList.contains("chat--intro")) panel = "intro";
+    else if (chat?.classList.contains("chat--rules")) panel = "rules";
+    else if (chat?.classList.contains("chat--access")) panel = "access";
+    if (!panel) return;
+
+    openIrClearThreadModal(async (confirmed) => {
+      if (!confirmed) return;
+      try {
+        let dialogId = "";
+        if (panel === "intro") dialogId = await ensureIntroSessionClient();
+        else if (panel === "access") dialogId = await ensureAccessSessionClient();
+        else dialogId = await ensureRulesSessionClient();
+        await clearDialogTurnsArchive(dialogId);
+        if (panel === "intro") await loadIntroChatThreadIntoUi();
+        else if (panel === "access") await loadAccessChatThreadIntoUi();
+        else await loadRulesChatThreadIntoUi();
+        appendActivityLog(
+          `${panel === "intro" ? "Intro" : panel === "rules" ? "Rules" : "Access"}: thread cleared.`,
+        );
+      } catch (err) {
+        appendActivityLog(`Clear thread: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    });
+  });
+}
+
 let themeRenameModalCallback = null;
 
 function closeThemeRenameModal(result) {
@@ -1105,6 +1242,11 @@ function openIrChatPanel(mode) {
       void loadIntroChatThreadIntoUi();
     }
   }
+  if (cfg.mode === "rules") {
+    if (!getIrPanelLockedSync("rules")) {
+      void loadRulesChatThreadIntoUi();
+    }
+  }
   if (cfg.mode === "access") {
     if (!getIrPanelLockedSync("access")) {
       void loadAccessChatThreadIntoUi();
@@ -1223,6 +1365,12 @@ function initThemeCardActions() {
     if (renameModal && !renameModal.hidden) {
       e.preventDefault();
       closeThemeRenameModal(null);
+      return;
+    }
+    const irClearModal = document.getElementById("ir-clear-thread-modal");
+    if (irClearModal && !irClearModal.hidden) {
+      e.preventDefault();
+      closeIrClearThreadModal(false);
       return;
     }
     const irChat = document.getElementById("main-chat");
@@ -2111,7 +2259,30 @@ async function retryAssistantReply(clickedAssistantWrap) {
     appendActivityLog("Reply: save the message first, then you can try another reply.");
     return;
   }
-  const persistDialogId = String(activeDialogId ?? "").trim();
+  const mainChatEl = document.getElementById("main-chat");
+  const introChatOpen = Boolean(mainChatEl?.classList.contains("chat--intro"));
+  const rulesChatOpen = Boolean(mainChatEl?.classList.contains("chat--rules"));
+  const accessChatOpen = Boolean(mainChatEl?.classList.contains("chat--access"));
+  let persistDialogId = String(activeDialogId ?? "").trim();
+  if (introChatOpen) {
+    try {
+      persistDialogId = await ensureIntroSessionClient();
+    } catch {
+      persistDialogId = "";
+    }
+  } else if (accessChatOpen) {
+    try {
+      persistDialogId = await ensureAccessSessionClient();
+    } catch {
+      persistDialogId = "";
+    }
+  } else if (rulesChatOpen) {
+    try {
+      persistDialogId = await ensureRulesSessionClient();
+    } catch {
+      persistDialogId = "";
+    }
+  }
   if (!persistDialogId) {
     appendActivityLog("Reply: open a saved conversation to try another reply.");
     return;
@@ -2127,11 +2298,6 @@ async function retryAssistantReply(clickedAssistantWrap) {
     appendActivityLog("Reply: generated images cannot be retried from here.");
     return;
   }
-
-  const mainChatEl = document.getElementById("main-chat");
-  const introChatOpen = Boolean(mainChatEl?.classList.contains("chat--intro"));
-  const rulesChatOpen = Boolean(mainChatEl?.classList.contains("chat--rules"));
-  const accessChatOpen = Boolean(mainChatEl?.classList.contains("chat--access"));
   if (introChatOpen && getIrPanelLockedSync("intro")) {
     appendActivityLog("Intro is locked — unlock it to retry.");
     return;
@@ -3352,6 +3518,14 @@ function initChatComposer() {
         return;
       }
     }
+    if (rulesChatOpen) {
+      try {
+        persistDialogId = await ensureRulesSessionClient();
+      } catch (e) {
+        appendActivityLog(`Rules session: ${e instanceof Error ? e.message : String(e)}`);
+        return;
+      }
+    }
 
     let pending = null;
     let fullText = "";
@@ -3705,6 +3879,7 @@ function initChatComposer() {
             !accessDataDumpMode &&
             !introChatOpen &&
             !accessChatOpen &&
+            !rulesChatOpen &&
             modeForSend !== "image" &&
             !hadAssistantError
           ) {
@@ -3984,6 +4159,7 @@ function bootApp() {
   initChatFileDropZone();
   initChatImageLightbox();
   initIntroRulesAccessPanels();
+  initIrClearArchiveButton();
 
   appendActivityLog("MF0-1984 ready.");
 

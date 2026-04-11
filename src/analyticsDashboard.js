@@ -83,7 +83,7 @@ function renderAnalytics(root, raw) {
     <div class="analytics-inner">
       <header class="analytics-header">
         <h2 class="analytics-page-title">Analytics</h2>
-        <p class="analytics-sub">Usage from regular chats only (Intro, Rules, and Access dialogs are excluded).</p>
+        <p class="analytics-sub">Usage includes regular chats and archived counts from cleared Intro / Rules / Access threads and from deleted themes (live DB + archive).</p>
       </header>
       <div class="analytics-model-grid">${cardsHtml}</div>
       <section class="analytics-chart-block">

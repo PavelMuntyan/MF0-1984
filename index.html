@@ -597,13 +597,12 @@
                       Use this thread to note <strong>third-party</strong> data you want the project to
                       remember: public APIs, REST endpoints, and simple services (weather, market quotes,
                       reservoir levels, and the like). This is <strong>not</strong> for LLM provider keys or
-                      <code>.env</code> secrets — only external services you name here.
-                    </p>
-                    <p>
-                      After each exchange, <strong>Keeper 2</strong> may save structured rows (name,
-                      description, URL, service-specific key) into a local store from the conversation. Example
-                      example endpoint (replace with your own HTTPS URL):
-                      <code>https://api.example.org/v1/resource?…</code>
+                      <code>.env</code> secrets — only external services you name here. After each exchange,
+                      <strong>Keeper 2</strong> may save structured rows (name, description, URL,
+                      service-specific key) into a local store from the conversation. Example endpoint
+                      (replace with your own HTTPS URL): <code>https://api.example.org/v1/resource?…</code> To
+                      check your connected APIs against what is stored, include the hashtag
+                      <code>#data</code> in your message.
                     </p>
                   </div>
                 </header>
@@ -823,6 +822,30 @@
                   ></textarea>
                 </div>
                 <button type="button" class="send-btn" id="btn-chat-send" aria-label="Send message">↑</button>
+                <button
+                  type="button"
+                  class="ir-panel-archive-btn"
+                  id="btn-ir-panel-archive"
+                  aria-label="Archive"
+                  title="Archive"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 24 24"
+                    width="20"
+                    height="20"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <rect width="20" height="5" x="2" y="3" rx="1" />
+                    <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
+                    <path d="M10 12h4" />
+                  </svg>
+                </button>
                 </div>
               </div>
               </div>

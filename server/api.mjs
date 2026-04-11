@@ -27,6 +27,7 @@ const migration005 = path.join(root, "db", "migrations", "005_assistant_error.sq
 const migration006 = path.join(root, "db", "migrations", "006_intro_pin_lock.sql");
 const migration007 = path.join(root, "db", "migrations", "007_ir_panel_pin_lock.sql");
 const migration008 = path.join(root, "db", "migrations", "008_access_external_services.sql");
+const migration009 = path.join(root, "db", "migrations", "009_analytics_usage_archive.sql");
 const PORT = Number(process.env.API_PORT || 35184, 10);
 
 /** Max length for Access `notes` field (DB + JSON import). */
@@ -254,7 +255,18 @@ function ensureDatabase() {
   applyIrPanelPinLockMigration(database);
   applyAccessExternalServicesMigration(database);
   migrateAccessExternalServicesFromJsonIfNeeded(database);
+  applyAnalyticsUsageArchiveMigration(database);
   return database;
+}
+
+function applyAnalyticsUsageArchiveMigration(database) {
+  const row = database
+    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='analytics_usage_archive'`)
+    .get();
+  if (row) return;
+  if (fs.existsSync(migration009)) {
+    database.exec(fs.readFileSync(migration009, "utf8"));
+  }
 }
 
 const db = ensureDatabase();
@@ -651,7 +663,7 @@ function listThemesWithDialogs() {
   const themes = db
     .prepare(
       `SELECT id, title, created_at, updated_at FROM themes
-       WHERE id NOT IN (SELECT theme_id FROM dialogs WHERE IFNULL(purpose, '') IN ('intro', 'access'))
+       WHERE id NOT IN (SELECT theme_id FROM dialogs WHERE IFNULL(purpose, '') IN ('intro', 'access', 'rules'))
        ORDER BY datetime(updated_at) DESC, datetime(created_at) DESC`,
     )
     .all();
@@ -878,6 +890,11 @@ function deleteThemeFromDb(themeId) {
   if (!id) return { error: "themeId required", status: 400 };
   const row = db.prepare(`SELECT id FROM themes WHERE id = ?`).get(id);
   if (!row) return { error: "Theme not found", status: 404 };
+  applyAnalyticsUsageArchiveMigration(db);
+  const dialogs = db.prepare(`SELECT id FROM dialogs WHERE theme_id = ?`).all(id);
+  for (const d of dialogs) {
+    archiveConversationTurnAggregatesForDialog(String(d.id), "theme_dialog", id);
+  }
   db.prepare(`DELETE FROM themes WHERE id = ?`).run(id);
   return { ok: true, deletedThemeId: id };
 }
@@ -1057,6 +1074,106 @@ function getOrCreateAccessSession() {
   });
   tx();
   return { themeId, dialogId };
+}
+
+function getOrCreateRulesSession() {
+  applyDialogsPurposeColumn(db);
+  applyMemoryGraphMigration(db);
+  const row = db
+    .prepare(`SELECT d.id AS dialog_id, d.theme_id AS theme_id FROM dialogs d WHERE d.purpose = 'rules' LIMIT 1`)
+    .get();
+  if (row) {
+    return { themeId: row.theme_id, dialogId: row.dialog_id };
+  }
+  const themeId = crypto.randomUUID();
+  const dialogId = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const tx = db.transaction(() => {
+    db.prepare(`INSERT INTO themes (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)`).run(
+      themeId,
+      "Rules",
+      now,
+      now,
+    );
+    db.prepare(
+      `INSERT INTO dialogs (id, theme_id, title, created_at, updated_at, purpose) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(dialogId, themeId, "Project rules", now, now, "rules");
+  });
+  tx();
+  return { themeId, dialogId };
+}
+
+/** RAG / summaries / memory_items mirror for this dialog thread (not conversation_turns). */
+function clearThreadDerivedData(dialogId) {
+  const did = String(dialogId ?? "").trim();
+  if (!did) return;
+  const tm = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='thread_messages'`).get();
+  if (tm) {
+    db.prepare(`DELETE FROM thread_messages WHERE thread_id = ?`).run(did);
+  }
+  const ts = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='thread_summaries'`).get();
+  if (ts) {
+    db.prepare(`DELETE FROM thread_summaries WHERE thread_id = ?`).run(did);
+  }
+  const mi = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='memory_items'`).get();
+  if (mi) {
+    db.prepare(`DELETE FROM memory_items WHERE thread_id = ?`).run(did);
+  }
+}
+
+/**
+ * Inserts normalized analytics_usage_archive rows (one per provider × request_type) for current turns.
+ * @param {string} dialogId
+ * @param {'ir_thread_cleared' | 'theme_dialog'} sourceKind
+ * @param {string | null} [themeIdOverride] — for theme delete, pass theme id so it survives dialog cascade
+ */
+function archiveConversationTurnAggregatesForDialog(dialogId, sourceKind, themeIdOverride = null) {
+  const did = String(dialogId ?? "").trim();
+  if (!did) return;
+  applyAnalyticsUsageArchiveMigration(db);
+  const drow = db.prepare(`SELECT id, theme_id, IFNULL(purpose, '') AS purpose FROM dialogs WHERE id = ?`).get(did);
+  if (!drow) return;
+  const themeId =
+    themeIdOverride != null && String(themeIdOverride).trim()
+      ? String(themeIdOverride).trim()
+      : String(drow.theme_id ?? "").trim();
+  const purpose = String(drow.purpose ?? "").trim();
+  const now = new Date().toISOString();
+  const groups = db
+    .prepare(
+      `SELECT
+         COALESCE(NULLIF(TRIM(responding_provider_id), ''), requested_provider_id) AS pid,
+         request_type,
+         COUNT(*) AS turn_count,
+         SUM(CASE WHEN assistant_message_at IS NOT NULL AND IFNULL(assistant_error, 0) = 0 THEN 1 ELSE 0 END) AS responses_ok
+       FROM conversation_turns
+       WHERE dialog_id = ?
+       GROUP BY pid, request_type`,
+    )
+    .all(did);
+  const ins = db.prepare(
+    `INSERT INTO analytics_usage_archive (id, archived_at, source_kind, theme_id, dialog_id, dialog_purpose, provider_id, request_type, turn_count, responses_ok)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  for (const g of groups) {
+    const pid = String(g.pid ?? "").trim();
+    const rt = String(g.request_type ?? "default").trim() || "default";
+    const tc = Number(g.turn_count) || 0;
+    const rok = Number(g.responses_ok) || 0;
+    if (!pid || tc <= 0) continue;
+    ins.run(
+      crypto.randomUUID(),
+      now,
+      String(sourceKind),
+      themeId || null,
+      did,
+      purpose,
+      pid,
+      rt,
+      tc,
+      rok,
+    );
+  }
 }
 
 function memoryGraphIsProtectedHubNode(category, label) {
@@ -1275,6 +1392,7 @@ function analyticsDialogWhereSql(alias = "d") {
  * }}
  */
 function getAnalyticsPayload() {
+  applyAnalyticsUsageArchiveMigration(db);
   /** @type {Record<string, { requestsSent: number, responsesOk: number, imageRequests: number, researchRequests: number, webRequests: number, accessRequests: number }>} */
   const providers = {};
   for (const id of ANALYTICS_PROVIDER_IDS) {
@@ -1315,6 +1433,34 @@ function getAnalyticsPayload() {
     providers[pid].accessRequests = Number(row.access_requests) || 0;
   }
 
+  const archTbl = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='analytics_usage_archive'`).get();
+  if (archTbl) {
+    const archAgg = db
+      .prepare(
+        `SELECT
+           provider_id AS pid,
+           SUM(turn_count) AS requests_sent,
+           SUM(responses_ok) AS responses_ok,
+           SUM(CASE WHEN request_type = 'image' THEN turn_count ELSE 0 END) AS image_requests,
+           SUM(CASE WHEN request_type = 'research' THEN turn_count ELSE 0 END) AS research_requests,
+           SUM(CASE WHEN request_type = 'web' THEN turn_count ELSE 0 END) AS web_requests,
+           SUM(CASE WHEN request_type = 'access_data' THEN turn_count ELSE 0 END) AS access_requests
+         FROM analytics_usage_archive
+         GROUP BY pid`,
+      )
+      .all();
+    for (const row of archAgg) {
+      const pid = String(row.pid ?? "").trim();
+      if (!providers[pid]) continue;
+      providers[pid].requestsSent += Number(row.requests_sent) || 0;
+      providers[pid].responsesOk += Number(row.responses_ok) || 0;
+      providers[pid].imageRequests += Number(row.image_requests) || 0;
+      providers[pid].researchRequests += Number(row.research_requests) || 0;
+      providers[pid].webRequests += Number(row.web_requests) || 0;
+      providers[pid].accessRequests += Number(row.access_requests) || 0;
+    }
+  }
+
   const dayRows = db
     .prepare(
       `SELECT
@@ -1344,6 +1490,32 @@ function getAnalyticsPayload() {
     dayMap.get(day)[pid] = Number(r.cnt) || 0;
   }
 
+  if (archTbl) {
+    const archDays = db
+      .prepare(
+        `SELECT
+           DATE(archived_at) AS day,
+           provider_id AS pid,
+           SUM(turn_count) AS cnt
+         FROM analytics_usage_archive
+         WHERE datetime(archived_at) >= datetime('now', '-30 days')
+         GROUP BY day, pid`,
+      )
+      .all();
+    for (const r of archDays) {
+      const day = String(r.day ?? "").trim();
+      const pid = String(r.pid ?? "").trim();
+      if (!day || !ANALYTICS_PROVIDER_IDS.includes(pid)) continue;
+      if (!dayMap.has(day)) {
+        const o = {};
+        for (const id of ANALYTICS_PROVIDER_IDS) o[id] = 0;
+        dayMap.set(day, o);
+      }
+      const cur = dayMap.get(day)[pid] || 0;
+      dayMap.get(day)[pid] = cur + (Number(r.cnt) || 0);
+    }
+  }
+
   const dailyUsage = [];
   for (let i = 29; i >= 0; i -= 1) {
     const row = db.prepare(`SELECT DATE(DATETIME('now', ?)) AS d`).get(`-${i} days`);
@@ -1355,7 +1527,7 @@ function getAnalyticsPayload() {
   const themesRow = db
     .prepare(
       `SELECT COUNT(*) AS n FROM themes WHERE id NOT IN (
-         SELECT DISTINCT theme_id FROM dialogs WHERE IFNULL(purpose, '') IN ('intro', 'access')
+         SELECT DISTINCT theme_id FROM dialogs WHERE IFNULL(purpose, '') IN ('intro', 'access', 'rules')
        )`,
     )
     .get();
@@ -1535,6 +1707,11 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && p === "/api/access/session") {
       const s = getOrCreateAccessSession();
+      return json(res, 200, { ok: true, themeId: s.themeId, dialogId: s.dialogId });
+    }
+
+    if (req.method === "GET" && p === "/api/rules/session") {
+      const s = getOrCreateRulesSession();
       return json(res, 200, { ok: true, themeId: s.themeId, dialogId: s.dialogId });
     }
 
@@ -1841,6 +2018,30 @@ const server = http.createServer(async (req, res) => {
           lastActionDate: rawDbTimestamp(dialog.updated_at),
         },
       });
+    }
+
+    const clearTurnsMatch = p.match(/^\/api\/dialogs\/([^/]+)\/clear-turns$/);
+    if (req.method === "POST" && clearTurnsMatch) {
+      const dialogId = decodeURIComponent(clearTurnsMatch[1]).trim();
+      if (!dialogId) return json(res, 400, { error: "Missing dialog id" });
+      const drow = db.prepare(`SELECT id, IFNULL(purpose, '') AS purpose FROM dialogs WHERE id = ?`).get(dialogId);
+      if (!drow) return json(res, 404, { error: "Dialog not found" });
+      const pur = String(drow.purpose ?? "");
+      if (!["intro", "rules", "access"].includes(pur)) {
+        return json(res, 403, { error: "Clear is only allowed for Intro, Rules, or Access threads." });
+      }
+      try {
+        const tx = db.transaction(() => {
+          archiveConversationTurnAggregatesForDialog(dialogId, "ir_thread_cleared", null);
+          clearThreadDerivedData(dialogId);
+          db.prepare(`DELETE FROM conversation_turns WHERE dialog_id = ?`).run(dialogId);
+        });
+        tx();
+      } catch (e) {
+        console.error("[mf-lab-api] clear-turns:", e);
+        return json(res, 500, { error: e instanceof Error ? e.message : String(e) });
+      }
+      return json(res, 200, { ok: true, dialogId });
     }
 
     if (req.method === "POST" && p.startsWith("/api/dialogs/") && p.endsWith("/turns")) {
