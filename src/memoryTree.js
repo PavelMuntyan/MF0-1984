@@ -641,6 +641,22 @@ export function initMemoryTree(appendActivityLog) {
 
   function setOpen(open) {
     if (open) {
+      const irChat = document.getElementById("main-chat");
+      if (irChat) {
+        const irPanels = [
+          { className: "chat--intro", viewId: "chat-intro-view", btnId: "btn-ir-intro" },
+          { className: "chat--rules", viewId: "chat-rules-view", btnId: "btn-ir-rules" },
+          { className: "chat--access", viewId: "chat-access-view", btnId: "btn-ir-access" },
+        ];
+        if (irPanels.some((p) => irChat.classList.contains(p.className))) {
+          for (const p of irPanels) {
+            irChat.classList.remove(p.className);
+            document.getElementById(p.viewId)?.setAttribute("hidden", "");
+            document.getElementById(p.viewId)?.setAttribute("aria-hidden", "true");
+            document.getElementById(p.btnId)?.setAttribute("aria-expanded", "false");
+          }
+        }
+      }
       dom.chat.classList.add("chat--memory-tree");
       dom.sidebar?.classList.add("sidebar--memory-tree-active");
       dom.dialoguesPanel?.classList.add("dialogues-panel--mt-collapsed");

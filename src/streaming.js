@@ -5,7 +5,17 @@
  * OpenAI / Perplexity: события `data: {...}`; разбор построчно, т.к. часть прокси не вставляет пустую строку между событиями (`\n\n`).
  */
 
-/** OpenAI-совместимый SSE (OpenAI, Perplexity): каждая строка `data: {JSON}` */
+import {
+  collectGeminiGroundingEntries,
+  collectOpenAiLikeAnnotationUrls,
+  pickPerplexityCitationPayload,
+} from "./footnoteCitations.js";
+
+/**
+ * OpenAI-совместимый SSE (OpenAI, Perplexity): каждая строка `data: {JSON}`.
+ * Perplexity: `citations` в корне. OpenAI (web search): URL в `delta.annotations` / `message.annotations`.
+ * @returns {Promise<{ text: string, citations: string[] }>}
+ */
 export async function streamOpenAICompatJson(res, onDelta) {
   if (!res.ok) {
     const err = await res.text();
@@ -23,7 +33,38 @@ export async function streamOpenAICompatJson(res, onDelta) {
   const dec = new TextDecoder();
   let buffer = "";
   let full = "";
+  /** @type {string[]} */
+  let citations = [];
   let sawDone = false;
+
+  function mergeCitationsFromJson(j) {
+    const raw = pickPerplexityCitationPayload(j);
+    if (raw && raw.length > 0) {
+      const next = [];
+      for (const item of raw) {
+        if (typeof item === "string" && item.trim()) {
+          next.push(item.trim());
+        } else if (item && typeof item === "object" && typeof item.url === "string" && item.url.trim()) {
+          next.push(item.url.trim());
+        }
+      }
+      if (next.length > 0) {
+        citations = next;
+      }
+      return;
+    }
+    const ch0 = j.choices?.[0];
+    for (const u of collectOpenAiLikeAnnotationUrls(ch0?.delta)) {
+      if (typeof u === "string" && u.trim() && !citations.includes(u)) {
+        citations.push(u);
+      }
+    }
+    for (const u of collectOpenAiLikeAnnotationUrls(ch0?.message)) {
+      if (typeof u === "string" && u.trim() && !citations.includes(u)) {
+        citations.push(u);
+      }
+    }
+  }
 
   function handleDataPayload(data) {
     if (data === "[DONE]") {
@@ -32,6 +73,7 @@ export async function streamOpenAICompatJson(res, onDelta) {
     }
     try {
       const j = JSON.parse(data);
+      mergeCitationsFromJson(j);
       const piece = j.choices?.[0]?.delta?.content;
       if (typeof piece === "string" && piece.length) {
         full += piece;
@@ -54,7 +96,7 @@ export async function streamOpenAICompatJson(res, onDelta) {
       if (!line.startsWith("data:")) continue;
       const data = line.slice(5).trim();
       handleDataPayload(data);
-      if (sawDone) return full;
+      if (sawDone) return { text: full, citations };
     }
     if (done) break;
   }
@@ -63,7 +105,7 @@ export async function streamOpenAICompatJson(res, onDelta) {
   if (tail.startsWith("data:")) {
     handleDataPayload(tail.slice(5).trim());
   }
-  return full;
+  return { text: full, citations };
 }
 
 /** Anthropic messages stream (SSE, строки data: …) */
@@ -117,7 +159,8 @@ export async function streamAnthropicMessages(res, onDelta) {
 /**
  * Google Gemini streamGenerateContent при `alt=sse`: строки `data: {…}`.
  * Части с thought: true — внутренние рассуждения, в чат не показываем.
- * Текст в чанках с generationConfig.thinkingBudget: 0 приходит инкрементальными фрагментами.
+ * Собирает URL из `groundingMetadata` для сносок [1], [2] в тексте.
+ * @returns {Promise<{ text: string, citations: string[], citationLabels: string[] }>}
  */
 export async function streamGeminiGenerateContent(res, onDelta) {
   if (!res.ok) {
@@ -136,6 +179,19 @@ export async function streamGeminiGenerateContent(res, onDelta) {
   const dec = new TextDecoder();
   let buffer = "";
   let full = "";
+  /** @type {string[]} */
+  let citations = [];
+  /** @type {string[]} */
+  let citationLabels = [];
+
+  function mergeGeminiGroundingFromJson(j) {
+    const cand = j.candidates?.[0];
+    if (!cand) return;
+    const ent = collectGeminiGroundingEntries(cand);
+    if (ent.urls.length === 0) return;
+    citations = ent.urls;
+    citationLabels = ent.labels;
+  }
 
   function emitGeminiParts(parts) {
     if (!Array.isArray(parts)) return;
@@ -162,6 +218,7 @@ export async function streamGeminiGenerateContent(res, onDelta) {
       if (!data || data === "[DONE]") continue;
       try {
         const j = JSON.parse(data);
+        mergeGeminiGroundingFromJson(j);
         emitGeminiParts(j.candidates?.[0]?.content?.parts);
       } catch {
         /* ignore */
@@ -176,11 +233,12 @@ export async function streamGeminiGenerateContent(res, onDelta) {
     if (data && data !== "[DONE]") {
       try {
         const j = JSON.parse(data);
+        mergeGeminiGroundingFromJson(j);
         emitGeminiParts(j.candidates?.[0]?.content?.parts);
       } catch {
         /* ignore */
       }
     }
   }
-  return full;
+  return { text: full, citations, citationLabels };
 }

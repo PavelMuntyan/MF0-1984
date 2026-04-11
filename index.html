@@ -91,6 +91,46 @@
         </div>
       </div>
 
+      <div
+        id="favorites-panel"
+        class="favorites-panel"
+        role="region"
+        aria-label="Favorites"
+        hidden
+      >
+        <div class="favorites-head activity-log-head">
+          <span class="activity-log-title">Favorites</span>
+          <div class="activity-log-actions">
+            <button
+              type="button"
+              class="btn-ghost btn-ghost-icon"
+              id="favorites-panel-close"
+              aria-label="Close favorites"
+            >
+              <svg
+                class="btn-icon-svg"
+                xmlns="http://www.w3.org/2000/svg"
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M18 6 6 18" />
+                <path d="m6 6 12 12" />
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="favorites-body activity-log-body">
+          <ul class="favorites-list" id="favorites-list"></ul>
+        </div>
+      </div>
+
       <div class="app-frame">
         <div class="app-window">
           <header class="header">
@@ -107,6 +147,30 @@
             </div>
 
             <div class="header-icons">
+              <button
+                type="button"
+                class="btn-icon"
+                id="btn-favorites"
+                aria-label="Show favorites"
+                aria-pressed="false"
+                title="Favorites"
+              >
+                <svg
+                  class="btn-icon-svg header-favorites-star-svg"
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    class="header-favorites-star-path"
+                    d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"
+                  />
+                </svg>
+              </button>
               <button
                 type="button"
                 class="btn-icon"
@@ -254,15 +318,16 @@
 
               <div class="sidebar-panel sidebar-ir-panel" id="sidebar-intro-rules-access">
                 <div class="sidebar-panel-body sidebar-ir-panel-body">
-                  <div class="sidebar-ir-bubble">
+                  <button
+                    type="button"
+                    class="sidebar-ir-bubble"
+                    id="btn-ir-intro"
+                    aria-controls="chat-intro-view"
+                    aria-expanded="false"
+                    aria-label="Intro: about you for the project"
+                  >
                     <span class="sidebar-ir-bubble-label">Intro</span>
-                    <button
-                      type="button"
-                      class="sidebar-ir-lock sidebar-ir-lock--open"
-                      id="btn-lock-intro"
-                      aria-label="Intro: unlocked"
-                      title="Unlocked"
-                    >
+                    <span class="sidebar-ir-lock-icon" aria-hidden="true">
                       <svg
                         class="sidebar-ir-lock-svg"
                         xmlns="http://www.w3.org/2000/svg"
@@ -272,22 +337,22 @@
                         stroke-width="2"
                         stroke-linecap="round"
                         stroke-linejoin="round"
-                        aria-hidden="true"
                       >
-                        <path d="M8 11V7.5C8 5.01 9.79 3 12 3s4 2.01 4 4.5V8" />
-                        <rect x="4" y="11" width="16" height="10" rx="2" />
+                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                        <path d="M7 11V7a5 5 0 0 1 9.9-1" />
                       </svg>
-                    </button>
-                  </div>
-                  <div class="sidebar-ir-bubble">
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    class="sidebar-ir-bubble"
+                    id="btn-ir-rules"
+                    aria-controls="chat-rules-view"
+                    aria-expanded="false"
+                    aria-label="Rules: how the project should behave"
+                  >
                     <span class="sidebar-ir-bubble-label">Rules</span>
-                    <button
-                      type="button"
-                      class="sidebar-ir-lock sidebar-ir-lock--open"
-                      id="btn-lock-rules"
-                      aria-label="Rules: unlocked"
-                      title="Unlocked"
-                    >
+                    <span class="sidebar-ir-lock-icon" aria-hidden="true">
                       <svg
                         class="sidebar-ir-lock-svg"
                         xmlns="http://www.w3.org/2000/svg"
@@ -297,22 +362,22 @@
                         stroke-width="2"
                         stroke-linecap="round"
                         stroke-linejoin="round"
-                        aria-hidden="true"
                       >
-                        <path d="M8 11V7.5C8 5.01 9.79 3 12 3s4 2.01 4 4.5V8" />
-                        <rect x="4" y="11" width="16" height="10" rx="2" />
+                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                        <path d="M7 11V7a5 5 0 0 1 9.9-1" />
                       </svg>
-                    </button>
-                  </div>
-                  <div class="sidebar-ir-bubble">
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    class="sidebar-ir-bubble"
+                    id="btn-ir-access"
+                    aria-controls="chat-access-view"
+                    aria-expanded="false"
+                    aria-label="Access: data sources for models"
+                  >
                     <span class="sidebar-ir-bubble-label">Access</span>
-                    <button
-                      type="button"
-                      class="sidebar-ir-lock sidebar-ir-lock--open"
-                      id="btn-lock-access"
-                      aria-label="Access: unlocked"
-                      title="Unlocked"
-                    >
+                    <span class="sidebar-ir-lock-icon" aria-hidden="true">
                       <svg
                         class="sidebar-ir-lock-svg"
                         xmlns="http://www.w3.org/2000/svg"
@@ -322,13 +387,12 @@
                         stroke-width="2"
                         stroke-linecap="round"
                         stroke-linejoin="round"
-                        aria-hidden="true"
                       >
-                        <path d="M8 11V7.5C8 5.01 9.79 3 12 3s4 2.01 4 4.5V8" />
-                        <rect x="4" y="11" width="16" height="10" rx="2" />
+                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                        <path d="M7 11V7a5 5 0 0 1 9.9-1" />
                       </svg>
-                    </button>
-                  </div>
+                    </span>
+                  </button>
                 </div>
               </div>
 
@@ -391,6 +455,80 @@
             </aside>
 
             <div class="chat" id="main-chat">
+              <div
+                class="chat-ir-view"
+                id="chat-intro-view"
+                role="region"
+                aria-labelledby="chat-intro-heading"
+                aria-hidden="true"
+                hidden
+              >
+                <header class="chat-ir-head">
+                  <h2 id="chat-intro-heading" class="chat-ir-title">Intro</h2>
+                  <div class="chat-ir-informer">
+                    <p>
+                      This section is designed to help the Project better understand you. Here you can share
+                      any information about yourself that you consider important. The data you provide will be
+                      structured and compiled into the core of the memory tree, as the Project prioritizes
+                      your personality above all else. Everything else will merely reinforce this knowledge. The
+                      more the Project knows, the more accurate the interaction will be.
+                    </p>
+                  </div>
+                </header>
+                <div class="chat-ir-body" aria-label="Intro configuration"></div>
+              </div>
+              <div
+                class="chat-ir-view"
+                id="chat-rules-view"
+                role="region"
+                aria-labelledby="chat-rules-heading"
+                aria-hidden="true"
+                hidden
+              >
+                <header class="chat-ir-head">
+                  <h2 id="chat-rules-heading" class="chat-ir-title">Rules</h2>
+                  <div class="chat-ir-informer">
+                    <p>
+                      In this section, you establish Project rules of conduct. For example, &ldquo;never make
+                      anything up,&rdquo; or &ldquo;address me only as Mr. Freeman,&rdquo; or &ldquo;answer as
+                      briefly as possible, without unnecessary information,&rdquo; or &ldquo;always answer in
+                      verse&rdquo;&mdash;in other words, you can specify any rules of conduct the Project must
+                      follow. You don&rsquo;t have to limit yourself to one or two rules; describe everything
+                      necessary to shape the Project&rsquo;s behavior. Remember, rules should not contradict
+                      each other and should be achievable.
+                    </p>
+                  </div>
+                </header>
+                <div class="chat-ir-body" aria-label="Rules configuration"></div>
+              </div>
+              <div
+                class="chat-ir-view"
+                id="chat-access-view"
+                role="region"
+                aria-labelledby="chat-access-heading"
+                aria-hidden="true"
+                hidden
+              >
+                <header class="chat-ir-head">
+                  <h2 id="chat-access-heading" class="chat-ir-title">Access</h2>
+                  <div class="chat-ir-informer">
+                    <p>
+                      This section is for specifying how AI models should reach external data sources when a
+                      request requires that kind of access.
+                    </p>
+                    <p>
+                      For example, if you want answers to use weather data, you can indicate that models
+                      should use a service such as the following:
+                      <code>https://api.open-meteo.com/v1/forecast?latitude=34.77&amp;longitude=32.42&amp;current_weather=true</code>
+                    </p>
+                    <p>
+                      When set up accordingly, all configured models will call that endpoint when the user’s
+                      request calls for that data.
+                    </p>
+                  </div>
+                </header>
+                <div class="chat-ir-body" aria-label="Access configuration"></div>
+              </div>
               <div
                 class="memory-tree-graph-host"
                 id="memory-tree-graph-host"

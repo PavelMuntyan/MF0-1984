@@ -19,11 +19,13 @@ import {
   createDialogInTheme,
   deleteTheme,
   renameTheme,
+  fetchAssistantFavorites,
   fetchContextPack,
   fetchThemesPayload,
   fetchTurns,
   requestTypeFromAttachMode,
   saveConversationTurn,
+  setAssistantTurnFavorite,
   titleFromUserMessage,
 } from "./chatPersistence.js";
 import { buildModelContext } from "./contextEngine/buildModelContext.js";
@@ -214,6 +216,160 @@ function initActivityPanel() {
     appendActivityLog("Activity log: closed");
     setOpen(false);
   });
+}
+
+/** @param {{ log?: boolean }} [options] — log=false: не писать в журнал (напр. при переходе из записи). */
+function closeFavoritesPanel(options = {}) {
+  const panel = document.getElementById("favorites-panel");
+  const toggleBtn = document.getElementById("btn-favorites");
+  if (!panel || panel.hidden) return;
+  panel.hidden = true;
+  if (toggleBtn) {
+    toggleBtn.setAttribute("aria-pressed", "false");
+    toggleBtn.setAttribute("aria-label", "Show favorites");
+  }
+  if (options.log !== false) {
+    appendActivityLog("Favorites: closed");
+  }
+}
+
+/**
+ * Прокрутка области чата к ответу ассистента с данным id хода (`data-turn-id` на `.msg-assistant`).
+ * @param {string} turnId
+ */
+function scrollChatToAssistantTurn(turnId) {
+  const tid = String(turnId ?? "").trim();
+  const list = document.getElementById("messages-list");
+  if (!tid || !list) return;
+  const esc = typeof CSS !== "undefined" && typeof CSS.escape === "function" ? CSS.escape(tid) : tid;
+  const el = list.querySelector(`.msg-assistant[data-turn-id="${esc}"]`);
+  if (!el || !(el instanceof HTMLElement)) {
+    scrollMessagesToEnd();
+    return;
+  }
+  el.classList.add("msg-assistant--jump-highlight");
+  window.setTimeout(() => {
+    el.classList.remove("msg-assistant--jump-highlight");
+  }, 2000);
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+async function renderFavoritesPanel() {
+  const list = document.getElementById("favorites-list");
+  if (!list) return;
+  list.replaceChildren();
+  /** @type {Array<{ turnId: string; dialogId: string; themeId: string; themeTitle: string; dialogTitle: string; userPreview?: string; markdown: string; assistantMessageAt: string }>} */
+  let rows = [];
+  try {
+    rows = await fetchAssistantFavorites();
+  } catch (e) {
+    const li = document.createElement("li");
+    li.className = "favorites-empty";
+    li.textContent = e instanceof Error ? e.message : String(e);
+    list.appendChild(li);
+    return;
+  }
+  if (rows.length === 0) {
+    const li = document.createElement("li");
+    li.className = "favorites-empty";
+    li.textContent =
+      "No saved replies yet — use the star on a model reply after the message is saved to the chat.";
+    list.appendChild(li);
+    return;
+  }
+  for (const row of rows) {
+    const li = document.createElement("li");
+    li.className = "favorites-item";
+    const meta = document.createElement("div");
+    meta.className = "favorites-item-meta";
+    meta.textContent = [row.themeTitle, row.dialogTitle].filter(Boolean).join(" · ");
+    const prev = document.createElement("div");
+    prev.className = "favorites-item-preview";
+    prev.textContent = row.userPreview || "(no preview)";
+    const act = document.createElement("div");
+    act.className = "favorites-item-actions";
+    const openBtn = document.createElement("button");
+    openBtn.type = "button";
+    openBtn.className = "favorites-item-btn";
+    openBtn.textContent = "Open thread";
+    openBtn.addEventListener("click", async () => {
+      await openDialogById(row.dialogId, row.themeId, row.turnId);
+      closeFavoritesPanel({ log: false });
+    });
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "favorites-item-btn";
+    copyBtn.textContent = "Copy markdown";
+    copyBtn.addEventListener("click", async () => {
+      const md = String(row.markdown ?? "");
+      const imgSrc = extractMarkdownImageSrc(md);
+      if (imgSrc) {
+        if (await copyRasterImageToClipboard(imgSrc)) {
+          appendActivityLog("Favorites: image copied to clipboard");
+          return;
+        }
+        appendActivityLog(
+          "Favorites: could not copy image (network or browser limits); copied markdown text instead",
+        );
+      }
+      await copyTextToClipboard(md);
+    });
+    act.appendChild(openBtn);
+    act.appendChild(copyBtn);
+    li.appendChild(meta);
+    li.appendChild(prev);
+    li.appendChild(act);
+    list.appendChild(li);
+  }
+}
+
+function initFavoritesPanel() {
+  const panel = document.getElementById("favorites-panel");
+  const toggleBtn = document.getElementById("btn-favorites");
+  const closeBtn = document.getElementById("favorites-panel-close");
+
+  function setOpen(open) {
+    if (!panel || !toggleBtn) return;
+    panel.hidden = !open;
+    toggleBtn.setAttribute("aria-pressed", open ? "true" : "false");
+    toggleBtn.setAttribute("aria-label", open ? "Hide favorites" : "Show favorites");
+  }
+
+  toggleBtn?.addEventListener("click", async () => {
+    const show = Boolean(panel?.hidden);
+    if (show) {
+      setOpen(true);
+      await renderFavoritesPanel();
+      appendActivityLog("Favorites: opened");
+    } else {
+      closeFavoritesPanel();
+    }
+  });
+
+  closeBtn?.addEventListener("click", () => {
+    closeFavoritesPanel();
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (!panel || panel.hidden) return;
+    e.preventDefault();
+    e.stopPropagation();
+    closeFavoritesPanel();
+  });
+
+  document.addEventListener(
+    "pointerdown",
+    (e) => {
+      if (!panel || panel.hidden) return;
+      const t = e.target;
+      if (!(t instanceof Node)) return;
+      if (panel.contains(t)) return;
+      if (toggleBtn && (toggleBtn === t || toggleBtn.contains(t))) return;
+      closeFavoritesPanel();
+    },
+    true,
+  );
 }
 
 const versionEl = document.getElementById("app-version");
@@ -587,6 +743,84 @@ function openThemeRenameModal(initialTitle, onClose) {
   });
 }
 
+const IR_CHAT_PANELS = /** @type {const} */ ([
+  { mode: "intro", className: "chat--intro", viewId: "chat-intro-view", btnId: "btn-ir-intro" },
+  { mode: "rules", className: "chat--rules", viewId: "chat-rules-view", btnId: "btn-ir-rules" },
+  { mode: "access", className: "chat--access", viewId: "chat-access-view", btnId: "btn-ir-access" },
+]);
+
+function irChatPanelIsOpen(chat) {
+  return IR_CHAT_PANELS.some((p) => chat?.classList.contains(p.className));
+}
+
+/** @param {{ focusAfterClose?: boolean; focusButtonId?: string | null }} [options] */
+function closeIrChatPanel(options = {}) {
+  const chat = document.getElementById("main-chat");
+  if (!chat || !irChatPanelIsOpen(chat)) return;
+  let focusBtnId = null;
+  if (options.focusAfterClose) {
+    focusBtnId = options.focusButtonId;
+    if (focusBtnId == null) {
+      for (const p of IR_CHAT_PANELS) {
+        if (chat.classList.contains(p.className)) {
+          focusBtnId = p.btnId;
+          break;
+        }
+      }
+    }
+  }
+  for (const p of IR_CHAT_PANELS) {
+    chat.classList.remove(p.className);
+    document.getElementById(p.viewId)?.setAttribute("hidden", "");
+    document.getElementById(p.viewId)?.setAttribute("aria-hidden", "true");
+    document.getElementById(p.btnId)?.setAttribute("aria-expanded", "false");
+  }
+  if (focusBtnId) document.getElementById(focusBtnId)?.focus();
+}
+
+function openIrChatPanel(mode) {
+  const cfg = IR_CHAT_PANELS.find((p) => p.mode === mode);
+  if (!cfg) return;
+  closeMemoryTree();
+  closeMobileThemesDropdown();
+  activeThemeId = null;
+  activeDialogId = null;
+  expandedThemeDialogListThemeId = null;
+  chatComposerSending = false;
+
+  const chat = document.getElementById("main-chat");
+  const view = document.getElementById(cfg.viewId);
+  if (!chat || !view) return;
+
+  for (const p of IR_CHAT_PANELS) {
+    chat.classList.remove(p.className);
+    document.getElementById(p.viewId)?.setAttribute("hidden", "");
+    document.getElementById(p.viewId)?.setAttribute("aria-hidden", "true");
+    document.getElementById(p.btnId)?.setAttribute("aria-expanded", "false");
+  }
+
+  chat.classList.add(cfg.className);
+  view.removeAttribute("hidden");
+  view.setAttribute("aria-hidden", "false");
+  document.getElementById(cfg.btnId)?.setAttribute("aria-expanded", "true");
+  void renderThemesSidebar();
+  refreshThemeHighlightsFromChat();
+}
+
+function toggleIrChatPanel(mode) {
+  const cfg = IR_CHAT_PANELS.find((p) => p.mode === mode);
+  const chat = document.getElementById("main-chat");
+  if (!cfg || !chat) return;
+  if (chat.classList.contains(cfg.className)) closeIrChatPanel();
+  else openIrChatPanel(mode);
+}
+
+function initIntroRulesAccessPanels() {
+  document.getElementById("btn-ir-intro")?.addEventListener("click", () => toggleIrChatPanel("intro"));
+  document.getElementById("btn-ir-rules")?.addEventListener("click", () => toggleIrChatPanel("rules"));
+  document.getElementById("btn-ir-access")?.addEventListener("click", () => toggleIrChatPanel("access"));
+}
+
 async function handleThemeRenamed(themeId, oldTitle, newTitle) {
   const tid = String(themeId ?? "").trim();
   if (!tid) return;
@@ -683,6 +917,19 @@ function initThemeCardActions() {
     if (renameModal && !renameModal.hidden) {
       e.preventDefault();
       closeThemeRenameModal(null);
+      return;
+    }
+    const irChat = document.getElementById("main-chat");
+    if (irChat && irChatPanelIsOpen(irChat)) {
+      e.preventDefault();
+      let fid = null;
+      for (const p of IR_CHAT_PANELS) {
+        if (irChat.classList.contains(p.className)) {
+          fid = p.btnId;
+          break;
+        }
+      }
+      closeIrChatPanel({ focusAfterClose: true, focusButtonId: fid });
       return;
     }
     const delModal = document.getElementById("theme-delete-modal");
@@ -863,6 +1110,7 @@ function initNewDialogueButton() {
     chatComposerSending = false;
     closeMobileThemesDropdown();
     closeMemoryTree();
+    closeIrChatPanel();
     activeThemeId = null;
     activeDialogId = null;
     expandedThemeDialogListThemeId = null;
@@ -885,6 +1133,7 @@ function initNewDialogueButton() {
       attachBtn.setAttribute("aria-expanded", "false");
       attachBtn.title = ATTACH_TITLES[""];
       attachBtn.setAttribute("aria-label", ATTACH_TITLES[""]);
+      attachBtn.classList.remove("btn-attach-trigger--mode-active");
     }
     const visual = document.getElementById("btn-attach-visual");
     if (visual) {
@@ -957,6 +1206,10 @@ function initAttachMenu() {
     }
     btn.title = ATTACH_TITLES[composerAttachMode] ?? ATTACH_TITLES[""];
     btn.setAttribute("aria-label", ATTACH_TITLES[composerAttachMode] ?? ATTACH_TITLES[""]);
+    btn.classList.toggle(
+      "btn-attach-trigger--mode-active",
+      composerAttachMode === "web" || composerAttachMode === "image" || composerAttachMode === "research",
+    );
     syncResetRow();
   }
 
@@ -1059,6 +1312,16 @@ function buildChatPromptForApi(userText, mode) {
       t
     );
   }
+  if (mode === "research") {
+    return (
+      "Perform a deep research response to the following request. " +
+      "Use current, verifiable information where relevant (search and cite sources when you use them). " +
+      "Structure the answer clearly (brief overview, then sections as needed). " +
+      "Compare alternatives or trade-offs when applicable, note uncertainties, and end with concise takeaways.\n\n" +
+      "Research request:\n" +
+      t
+    );
+  }
   return t;
 }
 
@@ -1122,6 +1385,69 @@ function createCopyIcon(iconClass = "msg-bubble-copy-icon") {
   svg.appendChild(r);
   svg.appendChild(p);
   return svg;
+}
+
+function createBubbleStarIcon() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "msg-bubble-favorite-icon");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "14");
+  svg.setAttribute("height", "14");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("class", "msg-bubble-favorite-path");
+  path.setAttribute("d", "M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z");
+  svg.appendChild(path);
+  return svg;
+}
+
+/**
+ * @param {HTMLElement} assistantWrap — `.msg.msg-assistant`
+ */
+function syncAssistantFavoriteStarButton(assistantWrap) {
+  const btn = assistantWrap?.querySelector?.(".msg-bubble-favorite");
+  if (!btn || !assistantWrap) return;
+  const on = assistantWrap.dataset.assistantFavorite === "1";
+  btn.classList.toggle("msg-bubble-favorite--on", on);
+  btn.setAttribute("aria-label", on ? "Remove from Favorites" : "Add to Favorites");
+  btn.title = on ? "Remove from Favorites" : "Add to Favorites";
+  btn.disabled = !String(assistantWrap.dataset.turnId ?? "").trim();
+}
+
+/**
+ * @param {HTMLElement} assistantWrap — `.msg.msg-assistant`
+ */
+function makeAssistantFavoriteStarButton(assistantWrap) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "msg-bubble-action-btn msg-bubble-favorite";
+  btn.appendChild(createBubbleStarIcon());
+  syncAssistantFavoriteStarButton(assistantWrap);
+  btn.addEventListener("click", async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const tid = String(assistantWrap.dataset.turnId ?? "").trim();
+    if (!tid) return;
+    const currentlyOn = assistantWrap.dataset.assistantFavorite === "1";
+    const nextOn = !currentlyOn;
+    try {
+      btn.disabled = true;
+      const markdown = String(assistantWrap.dataset.assistantMarkdown ?? "");
+      await setAssistantTurnFavorite(tid, { favorite: nextOn, markdown: nextOn ? markdown : "" });
+      assistantWrap.dataset.assistantFavorite = nextOn ? "1" : "0";
+      syncAssistantFavoriteStarButton(assistantWrap);
+      appendActivityLog(nextOn ? "Reply: added to Favorites" : "Reply: removed from Favorites");
+      const fp = document.getElementById("favorites-panel");
+      if (fp && !fp.hidden) {
+        void renderFavoritesPanel();
+      }
+    } catch (err) {
+      appendActivityLog(`Favorites: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      syncAssistantFavoriteStarButton(assistantWrap);
+    }
+  });
+  return btn;
 }
 
 async function copyTextToClipboard(text) {
@@ -1278,10 +1604,37 @@ function createImageCreationBadgeIcon() {
   return svg;
 }
 
+/** Иконка «Deep research» (как в меню вложений) */
+function createDeepResearchBadgeIcon() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "14");
+  svg.setAttribute("height", "14");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  for (const d of [
+    "M9 2h6v5H9z",
+    "M9 7v2a4 4 0 0 0 8 0V7",
+    "M6 18h12",
+    "M10 18v4",
+    "M14 18v4",
+    "M8 13h8",
+  ]) {
+    const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    p.setAttribute("d", d);
+    svg.appendChild(p);
+  }
+  return svg;
+}
+
 /**
  * @param {string} rawText
  * @param {string} modelLabel
- * @param {{ webSearch?: boolean; imageCreation?: boolean }} [options]
+ * @param {{ webSearch?: boolean; imageCreation?: boolean; deepResearch?: boolean }} [options]
  */
 function appendUserMessage(rawText, modelLabel, options) {
   const list = document.getElementById("messages-list");
@@ -1289,6 +1642,7 @@ function appendUserMessage(rawText, modelLabel, options) {
 
   const webSearch = Boolean(options?.webSearch);
   const imageCreation = Boolean(options?.imageCreation);
+  const deepResearch = Boolean(options?.deepResearch);
 
   const msg = document.createElement("div");
   msg.className = "msg msg-user";
@@ -1310,6 +1664,14 @@ function appendUserMessage(rawText, modelLabel, options) {
     imageBadge.title = "Create image";
     imageBadge.appendChild(createImageCreationBadgeIcon());
     head.appendChild(imageBadge);
+  }
+  if (deepResearch) {
+    const researchBadge = document.createElement("span");
+    researchBadge.className = "msg-user-research-badge";
+    researchBadge.setAttribute("aria-label", "Deep research");
+    researchBadge.title = "Deep research";
+    researchBadge.appendChild(createDeepResearchBadgeIcon());
+    head.appendChild(researchBadge);
   }
   const badge = document.createElement("span");
   badge.className = "msg-model-badge";
@@ -1438,12 +1800,13 @@ function syncAssistantCopyButtonDuringStream(wrap) {
     actions.className = "msg-bubble-actions";
     body.appendChild(actions);
   }
-  if (!actions.querySelector(".msg-bubble-copy")) {
-    actions.insertBefore(
-      makeCopyButton(() => wrap.dataset.assistantMarkdown ?? ""),
-      actions.firstChild,
-    );
+  if (!actions.querySelector(".msg-bubble-favorite")) {
+    actions.insertBefore(makeAssistantFavoriteStarButton(wrap), actions.firstChild);
   }
+  if (!actions.querySelector(".msg-bubble-copy")) {
+    actions.appendChild(makeCopyButton(() => wrap.dataset.assistantMarkdown ?? ""));
+  }
+  syncAssistantFavoriteStarButton(wrap);
 }
 
 function renderAssistantError(el, message) {
@@ -1453,6 +1816,7 @@ function renderAssistantError(el, message) {
   el.replaceChildren();
   delete el.dataset.assistantResponseKind;
   delete el.dataset.assistantWebSearch;
+  delete el.dataset.assistantDeepResearch;
   el.dataset.assistantMarkdown = message;
   const body = document.createElement("div");
   body.className = "msg-assistant-body";
@@ -1463,8 +1827,10 @@ function renderAssistantError(el, message) {
   if (String(message ?? "").length > 0) {
     const actions = document.createElement("div");
     actions.className = "msg-bubble-actions";
+    actions.appendChild(makeAssistantFavoriteStarButton(el));
     actions.appendChild(makeCopyButton(() => el.dataset.assistantMarkdown ?? ""));
     body.appendChild(actions);
+    syncAssistantFavoriteStarButton(el);
   }
   el.appendChild(body);
 }
@@ -1503,6 +1869,7 @@ function finalizeAssistantBubble(el, fullText, providerId, modelHintOverride) {
   if (hasChars) {
     actions = document.createElement("div");
     actions.className = "msg-bubble-actions";
+    actions.appendChild(makeAssistantFavoriteStarButton(el));
     actions.appendChild(
       makeCopyButton(() => el.dataset.assistantMarkdown ?? "", {
         tryCopyImageFromMarkdown: copyAsImage,
@@ -1511,6 +1878,7 @@ function finalizeAssistantBubble(el, fullText, providerId, modelHintOverride) {
       }),
     );
     body.appendChild(actions);
+    syncAssistantFavoriteStarButton(el);
   }
 
   const meta = document.createElement("div");
@@ -1519,7 +1887,10 @@ function finalizeAssistantBubble(el, fullText, providerId, modelHintOverride) {
   const hint =
     modelHintOverride != null && String(modelHintOverride).trim()
       ? String(modelHintOverride).trim()
-      : apiModelHint(providerId, { webSearch: el.dataset.assistantWebSearch === "1" });
+      : apiModelHint(providerId, {
+          webSearch: el.dataset.assistantWebSearch === "1",
+          deepResearch: el.dataset.assistantDeepResearch === "1",
+        });
   meta.textContent = hint ? `Replied: ${label} · ${hint}` : `Replied: ${label}`;
   el.appendChild(meta);
 
@@ -1600,6 +1971,7 @@ async function handleThemeDeleted(themeId, themeTitle) {
     activeDialogId = null;
     chatComposerSending = false;
     closeMemoryTree();
+    closeIrChatPanel();
     document.getElementById("messages-list")?.replaceChildren();
     const viewport = document.getElementById("messages-viewport");
     if (viewport) viewport.scrollTop = 0;
@@ -1620,12 +1992,16 @@ function replayTurnInChat(turn) {
   appendUserMessage(turn.user_text, modelLabel, {
     webSearch: rt === "web",
     imageCreation: rt === "image",
+    deepResearch: rt === "research",
   });
   const pending = appendAssistantPending();
   if (!pending) return;
+  pending.dataset.turnId = String(turn.id ?? "");
+  pending.dataset.assistantFavorite = Number(turn.assistant_favorite) === 1 ? "1" : "0";
   const text = turn.assistant_text;
   if (text != null && String(text).length > 0) {
     pending.dataset.assistantWebSearch = rt === "web" ? "1" : "";
+    pending.dataset.assistantDeepResearch = rt === "research" ? "1" : "";
     if (rt === "image") pending.dataset.assistantResponseKind = "image";
     const te = pending.querySelector(".msg-assistant-text");
     setAssistantMessageMarkdown(te, text);
@@ -1647,6 +2023,7 @@ async function openThemeForNewDialog(themeId) {
   activeThemeId = tid;
   activeDialogId = null;
   closeMemoryTree();
+  closeIrChatPanel();
   const list = document.getElementById("messages-list");
   list?.replaceChildren();
   const viewport = document.getElementById("messages-viewport");
@@ -1660,7 +2037,12 @@ async function openThemeForNewDialog(themeId) {
   refreshThemeHighlightsFromChat();
 }
 
-async function openDialogById(dialogId, themeId) {
+/**
+ * @param {string} dialogId
+ * @param {string} [themeId]
+ * @param {string} [scrollToTurnId] — после загрузки треда прокрутить к ответу с этим id хода
+ */
+async function openDialogById(dialogId, themeId, scrollToTurnId) {
   const did = String(dialogId ?? "").trim();
   if (!did) return;
   chatComposerSending = false;
@@ -1670,6 +2052,7 @@ async function openDialogById(dialogId, themeId) {
   activeThemeId = t || activeThemeId;
   expandedThemeDialogListThemeId = String(activeThemeId ?? "").trim() || null;
   closeMemoryTree();
+  closeIrChatPanel();
   const list = document.getElementById("messages-list");
   list?.replaceChildren();
   const viewport = document.getElementById("messages-viewport");
@@ -1687,7 +2070,14 @@ async function openDialogById(dialogId, themeId) {
     appendActivityLog(`Chat DB: could not load thread (${e instanceof Error ? e.message : String(e)})`);
   }
   await renderThemesSidebar();
-  scrollMessagesToEnd();
+  const scrollId = scrollToTurnId != null ? String(scrollToTurnId).trim() : "";
+  if (scrollId) {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => scrollChatToAssistantTurn(scrollId));
+    });
+  } else {
+    scrollMessagesToEnd();
+  }
   refreshThemeHighlightsFromChat();
 }
 
@@ -1703,6 +2093,11 @@ function initChatComposer() {
     if (chatComposerSending) return;
     const trimmed = ta.value.trim();
     if (!trimmed) return;
+
+    const mainChatEl = document.getElementById("main-chat");
+    if (mainChatEl && irChatPanelIsOpen(mainChatEl)) {
+      closeIrChatPanel();
+    }
 
     const providerId = getActiveProviderId();
     if (!providerId) {
@@ -1774,6 +2169,7 @@ function initChatComposer() {
       appendUserMessage(trimmed, modelLabel, {
         webSearch: modeForSend === "web",
         imageCreation: modeForSend === "image",
+        deepResearch: modeForSend === "research",
       });
       didAppendUserToUi = true;
       refreshThemeHighlightsFromChat();
@@ -1784,6 +2180,7 @@ function initChatComposer() {
       pending = appendAssistantPending();
       if (pending) {
         pending.dataset.assistantWebSearch = modeForSend === "web" ? "1" : "";
+        pending.dataset.assistantDeepResearch = modeForSend === "research" ? "1" : "";
         const te0 = pending.querySelector(".msg-assistant-text");
         if (te0 && modeForSend === "image") {
           te0.textContent = "Generating image…";
@@ -1808,7 +2205,10 @@ function initChatComposer() {
           finalizeAssistantBubble(pending, fullText, providerId, imgHint || undefined);
           appendActivityLog(`Chat ← reply: image, model ${modelLabel}, OK`);
         } else {
-          const chatOpts = { webSearch: modeForSend === "web" };
+          const chatOpts = {
+            webSearch: modeForSend === "web",
+            deepResearch: modeForSend === "research",
+          };
           if (persistDialogId && modeForSend !== "image" && (await apiHealth())) {
             try {
               const pack = await fetchContextPack(persistDialogId, promptForApi);
@@ -1879,7 +2279,7 @@ function initChatComposer() {
             ? String(pending.dataset.assistantMarkdown)
             : fullText;
         try {
-          await saveConversationTurn(persistDialogId, {
+          const saveOut = await saveConversationTurn(persistDialogId, {
             user_text: trimmed,
             assistant_text: assistantOut || null,
             requested_provider_id: providerId,
@@ -1888,6 +2288,11 @@ function initChatComposer() {
             user_message_at: userMessageAt,
             assistant_message_at: assistantMessageAt,
           });
+          const tid = saveOut && typeof saveOut === "object" && saveOut.id != null ? String(saveOut.id) : "";
+          if (pending && tid) {
+            pending.dataset.turnId = tid;
+            syncAssistantFavoriteStarButton(pending);
+          }
           await renderThemesSidebar();
         } catch (saveErr) {
           appendActivityLog(
@@ -1911,6 +2316,7 @@ function initChatComposer() {
 function bootApp() {
   initThemeToggle();
   initActivityPanel();
+  initFavoritesPanel();
   initProviderBadges();
   initThemeCardActions();
   initDialoguesMenu();
@@ -1919,6 +2325,7 @@ function bootApp() {
   initNewDialogueButton();
   initAttachMenu();
   initChatComposer();
+  initIntroRulesAccessPanels();
 
   appendActivityLog("MF0-1984 ready.");
 

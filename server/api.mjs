@@ -32,6 +32,20 @@ function applyContextEngineMigration(database) {
   }
 }
 
+/** Избранные ответы ассистента: снимок markdown в assistant_favorite_markdown. */
+function applyAssistantFavoriteColumns(database) {
+  const cols = database.prepare(`PRAGMA table_info(conversation_turns)`).all();
+  const names = new Set(cols.map((c) => c.name));
+  if (!names.has("assistant_favorite")) {
+    database.exec(
+      `ALTER TABLE conversation_turns ADD COLUMN assistant_favorite INTEGER NOT NULL DEFAULT 0`,
+    );
+  }
+  if (!names.has("assistant_favorite_markdown")) {
+    database.exec(`ALTER TABLE conversation_turns ADD COLUMN assistant_favorite_markdown TEXT`);
+  }
+}
+
 function ensureDatabase() {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const database = new Database(dbPath);
@@ -42,6 +56,7 @@ function ensureDatabase() {
     database.exec(sql);
   }
   applyContextEngineMigration(database);
+  applyAssistantFavoriteColumns(database);
   return database;
 }
 
@@ -112,10 +127,50 @@ function listThemesWithDialogs() {
 function listTurns(dialogId) {
   return db
     .prepare(
-      `SELECT id, user_text, assistant_text, requested_provider_id, responding_provider_id, request_type, user_message_at, assistant_message_at
+      `SELECT id, user_text, assistant_text, requested_provider_id, responding_provider_id, request_type, user_message_at, assistant_message_at,
+              assistant_favorite, assistant_favorite_markdown
        FROM conversation_turns WHERE dialog_id = ? ORDER BY datetime(user_message_at) ASC, id ASC`,
     )
     .all(dialogId);
+}
+
+function listAssistantFavorites() {
+  return db
+    .prepare(
+      `SELECT
+         t.id AS turn_id,
+         t.dialog_id,
+         d.theme_id AS theme_id,
+         t.user_text,
+         t.assistant_favorite_markdown,
+         t.assistant_message_at,
+         d.title AS dialog_title,
+         th.title AS theme_title
+       FROM conversation_turns t
+       JOIN dialogs d ON d.id = t.dialog_id
+       JOIN themes th ON th.id = d.theme_id
+       WHERE t.assistant_favorite = 1
+       ORDER BY datetime(COALESCE(NULLIF(t.assistant_message_at, ''), t.user_message_at)) DESC, t.id DESC`,
+    )
+    .all();
+}
+
+/** @returns {null | { error: string, status: number }} */
+function updateAssistantTurnFavoriteInDb(turnId, favorite, markdown) {
+  const tid = String(turnId ?? "").trim();
+  if (!tid) return { error: "turn id required", status: 400 };
+  const trow = db.prepare(`SELECT id FROM conversation_turns WHERE id = ?`).get(tid);
+  if (!trow) return { error: "Turn not found", status: 404 };
+  if (favorite) {
+    db.prepare(
+      `UPDATE conversation_turns SET assistant_favorite = 1, assistant_favorite_markdown = ? WHERE id = ?`,
+    ).run(String(markdown ?? ""), tid);
+  } else {
+    db.prepare(
+      `UPDATE conversation_turns SET assistant_favorite = 0, assistant_favorite_markdown = NULL WHERE id = ?`,
+    ).run(tid);
+  }
+  return null;
 }
 
 function hasContextTables() {
@@ -292,6 +347,9 @@ function canonicalApiPath(pathname) {
   if (idx > 0) {
     p = p.slice(idx);
   }
+  while (p.includes("/api/api/")) {
+    p = p.replace("/api/api/", "/api/");
+  }
   return normalizePathname(p);
 }
 
@@ -303,6 +361,54 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === "GET" && p === "/api/health") {
       return json(res, 200, { ok: true, mfLabApi: true, port: PORT });
+    }
+
+    if (
+      req.method === "GET" &&
+      (p === "/api/assistant-favorites" || p === "/api/dialogs/assistant-favorites")
+    ) {
+      const rows = listAssistantFavorites();
+      const favorites = rows.map((r) => ({
+        turnId: r.turn_id,
+        dialogId: r.dialog_id,
+        themeId: r.theme_id,
+        themeTitle: r.theme_title,
+        dialogTitle: r.dialog_title,
+        userPreview: String(r.user_text ?? "")
+          .trim()
+          .split(/\r?\n/)
+          .find((line) => line.trim().length > 0)
+          ?.trim()
+          .slice(0, 120),
+        markdown: r.assistant_favorite_markdown ?? "",
+        assistantMessageAt: rawDbTimestamp(r.assistant_message_at),
+      }));
+      return json(res, 200, { favorites });
+    }
+
+    /** Избранное: короткий путь + вариант под /api/dialogs/ (дубли /api/api/ снимает canonicalApiPath). */
+    if (
+      req.method === "POST" &&
+      (p === "/api/assistant-favorite" || p === "/api/dialogs/assistant-favorite")
+    ) {
+      const body = await readBody(req);
+      const turnId = String(body.turnId ?? body.turn_id ?? "").trim();
+      const favorite = Boolean(body.favorite);
+      const markdown = body.markdown != null ? String(body.markdown) : "";
+      const errOut = updateAssistantTurnFavoriteInDb(turnId, favorite, markdown);
+      if (errOut) return json(res, errOut.status, { error: errOut.error });
+      return json(res, 200, { ok: true });
+    }
+
+    const turnFavoriteMatch = p.match(/^\/api\/turns\/([^/]+)\/favorite$/);
+    if (req.method === "POST" && turnFavoriteMatch) {
+      const turnId = decodeURIComponent(turnFavoriteMatch[1]).trim();
+      const body = await readBody(req);
+      const favorite = Boolean(body.favorite);
+      const markdown = body.markdown != null ? String(body.markdown) : "";
+      const errOut = updateAssistantTurnFavoriteInDb(turnId, favorite, markdown);
+      if (errOut) return json(res, errOut.status, { error: errOut.error });
+      return json(res, 200, { ok: true });
     }
 
     if (req.method === "GET" && p === "/api/themes") {

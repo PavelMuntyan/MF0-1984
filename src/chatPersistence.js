@@ -4,7 +4,12 @@
 function apiUrl(path) {
   const p = String(path ?? "").replace(/^\//, "");
   const base = new URL(import.meta.env.BASE_URL || "/", window.location.origin);
-  return new URL(p, base).href;
+  let href = new URL(p, base).href;
+  /* new URL('api/…', '…/api/') даёт …/api/api/… — API тогда отвечает 404 Not found */
+  while (href.includes("/api/api/")) {
+    href = href.replace("/api/api/", "/api/");
+  }
+  return href;
 }
 
 export function titleFromUserMessage(text) {
@@ -202,4 +207,37 @@ export async function saveConversationTurn(dialogId, payload) {
     throw new Error(err.error || `Save turn ${res.status}`);
   }
   return res.json();
+}
+
+/**
+ * Избранный ответ ассистента: снимок markdown в БД.
+ * @param {string} turnId
+ * @param {{ favorite: boolean, markdown?: string }} body
+ */
+export async function setAssistantTurnFavorite(turnId, body) {
+  const tid = String(turnId ?? "").trim();
+  if (!tid) throw new Error("turnId required");
+  const res = await fetch(apiUrl("api/assistant-favorite"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      turnId: tid,
+      favorite: Boolean(body.favorite),
+      markdown: body.markdown != null ? String(body.markdown) : "",
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok !== true) {
+    throw new Error(data.error || `Favorite ${res.status}`);
+  }
+}
+
+export async function fetchAssistantFavorites() {
+  const res = await fetch(apiUrl("api/assistant-favorites"));
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Favorites ${res.status}`);
+  }
+  const data = await res.json();
+  return data.favorites ?? [];
 }

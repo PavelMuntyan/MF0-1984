@@ -32,7 +32,9 @@ CREATE TABLE conversation_turns (
   responding_provider_id TEXT,
   request_type TEXT NOT NULL,
   user_message_at TEXT NOT NULL,
-  assistant_message_at TEXT
+  assistant_message_at TEXT,
+  assistant_favorite INTEGER NOT NULL DEFAULT 0,
+  assistant_favorite_markdown TEXT
 );
 
 CREATE INDEX idx_turns_dialog_user_at ON conversation_turns (dialog_id, user_message_at);

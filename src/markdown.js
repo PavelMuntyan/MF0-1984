@@ -1,5 +1,6 @@
 import DOMPurify from "dompurify";
 import { marked } from "marked";
+import { preprocessMarkdownNumericFootnoteLinks } from "./footnoteCitations.js";
 
 marked.setOptions({
   gfm: true,
@@ -49,7 +50,8 @@ const SANITIZE = {
 export function renderAssistantMarkdown(source) {
   const s = String(source ?? "");
   if (!s.trim()) return "";
-  const raw = marked.parse(s, { async: false });
+  const withFootnotes = preprocessMarkdownNumericFootnoteLinks(s);
+  const raw = marked.parse(withFootnotes, { async: false });
   const clean = DOMPurify.sanitize(raw, SANITIZE);
   const wrap = document.createElement("div");
   wrap.innerHTML = clean;

@@ -8,6 +8,12 @@ import {
   streamOpenAICompatJson,
 } from "./streaming.js";
 import { titleFromUserMessage } from "./chatPersistence.js";
+import {
+  collectGeminiGroundingEntries,
+  collectOpenAiLikeAnnotationUrls,
+  mergePlainBracketRefsWithCitationList,
+  pickPerplexityCitationPayload,
+} from "./footnoteCitations.js";
 
 export const PROVIDER_DISPLAY = {
   openai: "ChatGPT",
@@ -82,7 +88,44 @@ async function geminiGenerateContent(modelId, trimmed, key, googleSearch = false
     const block = data.promptFeedback?.blockReason;
     throw new Error(block ? `Request blocked: ${block}` : "Empty API response");
   }
-  return { text: out };
+  const { urls: groundingUrls, labels: groundingLabels } = collectGeminiGroundingEntries(
+    data.candidates?.[0],
+  );
+  return {
+    text: mergePlainBracketRefsWithCitationList(out, groundingUrls, {
+      citationLabels: groundingLabels,
+    }),
+  };
+}
+
+/**
+ * Chat Completions / Perplexity: после system роли `user` и `assistant` должны чередоваться.
+ * Склеивает подряд идущие одноимённые роли (кроме `system`) в одно сообщение.
+ * @param {Array<{ role: string, content: string }>} messages
+ * @returns {Array<{ role: string, content: string }>}
+ */
+function mergeAdjacentSameRoleForChatApi(messages) {
+  /** @type {Array<{ role: string, content: string }>} */
+  const out = [];
+  for (const m of messages) {
+    const role = String(m?.role ?? "user");
+    const content = String(m?.content ?? "");
+    if (role === "system") {
+      out.push({ role: "system", content });
+      continue;
+    }
+    if (role !== "user" && role !== "assistant") {
+      out.push({ role, content });
+      continue;
+    }
+    const prev = out[out.length - 1];
+    if (prev && prev.role === role) {
+      prev.content = `${String(prev.content).trim()}\n\n---\n\n${content.trim()}`;
+    } else {
+      out.push({ role, content });
+    }
+  }
+  return out;
 }
 
 /**
@@ -100,7 +143,7 @@ function openAiCompatMessages(trimmed, options) {
   } else {
     messages.push({ role: "user", content: trimmed });
   }
-  return messages;
+  return mergeAdjacentSameRoleForChatApi(messages);
 }
 
 /**
@@ -112,7 +155,8 @@ function anthropicApiMessages(trimmed, options) {
     Array.isArray(options.llmMessages) && options.llmMessages.length > 0
       ? options.llmMessages
       : [{ role: "user", content: trimmed }];
-  return raw.filter((m) => m.role === "user" || m.role === "assistant");
+  const filtered = raw.filter((m) => m.role === "user" || m.role === "assistant");
+  return mergeAdjacentSameRoleForChatApi(filtered);
 }
 
 /**
@@ -122,7 +166,8 @@ function anthropicApiMessages(trimmed, options) {
 function geminiFlattenChat(systemInstruction, msgs) {
   const parts = [];
   if (systemInstruction) parts.push(`[SYSTEM]\n${systemInstruction}`);
-  for (const m of msgs) {
+  const merged = Array.isArray(msgs) ? mergeAdjacentSameRoleForChatApi(msgs) : [];
+  for (const m of merged) {
     parts.push(`[${String(m.role).toUpperCase()}]\n${m.content}`);
   }
   return parts.join("\n\n").trim();
@@ -205,7 +250,7 @@ function humanizeOpenAiImageError(raw, status) {
  * @param {string} providerId
  * @param {string} text
  * @param {string} apiKey
- * @param {{ webSearch?: boolean, systemInstruction?: string, llmMessages?: Array<{ role: string, content: string }> }} [options] — true = реальный поиск через API провайдера; llmMessages = собранный контекст треда
+ * @param {{ webSearch?: boolean, deepResearch?: boolean, systemInstruction?: string, llmMessages?: Array<{ role: string, content: string }> }} [options] — webSearch/deepResearch = поиск и спец-модели где поддерживается; llmMessages = собранный контекст треда
  * @returns {Promise<{ text: string }>}
  */
 export async function completeChatMessage(providerId, text, apiKey, options = {}) {
@@ -219,6 +264,8 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
     throw new Error("Empty message");
   }
   const webSearch = Boolean(options.webSearch);
+  const deepResearch = Boolean(options.deepResearch);
+  const useWebGrounding = webSearch || deepResearch;
   const oaMsgs = openAiCompatMessages(trimmed, options);
 
   switch (providerId) {
@@ -230,7 +277,7 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
           Authorization: `Bearer ${key}`,
         },
         body: JSON.stringify({
-          model: webSearch ? OPENAI_MODEL_WEB : OPENAI_MODEL,
+          model: useWebGrounding ? OPENAI_MODEL_WEB : OPENAI_MODEL,
           messages: oaMsgs,
         }),
       });
@@ -238,7 +285,9 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
       const data = await res.json();
       const content = data.choices?.[0]?.message?.content;
       if (content == null) throw new Error("Empty API response");
-      return { text: typeof content === "string" ? content : String(content) };
+      const rawText = typeof content === "string" ? content : String(content);
+      const annUrls = collectOpenAiLikeAnnotationUrls(data.choices?.[0]?.message);
+      return { text: mergePlainBracketRefsWithCitationList(rawText, annUrls) };
     }
     case "anthropic": {
       const anthropicBody = {
@@ -249,7 +298,7 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
       if (options.systemInstruction) {
         anthropicBody.system = options.systemInstruction;
       }
-      if (webSearch) {
+      if (useWebGrounding) {
         anthropicBody.tools = [
           { type: "web_search_20250305", name: "web_search", max_uses: 5 },
         ];
@@ -281,14 +330,14 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
           ? options.llmMessages
           : [{ role: "user", content: trimmed }];
       const combined = geminiFlattenChat(String(options.systemInstruction ?? ""), gMsgs);
-      return geminiGenerateContent(GEMINI_MODEL_FLASH, combined, key, webSearch);
+      return geminiGenerateContent(GEMINI_MODEL_FLASH, combined, key, useWebGrounding);
     }
     case "perplexity": {
       const perplexityBody = {
-        model: webSearch ? PERPLEXITY_MODEL_SEARCH : PERPLEXITY_MODEL,
+        model: useWebGrounding ? PERPLEXITY_MODEL_SEARCH : PERPLEXITY_MODEL,
         messages: oaMsgs,
       };
-      if (webSearch) {
+      if (useWebGrounding) {
         perplexityBody.disable_search = false;
         perplexityBody.web_search_options = {
           search_context_size: "high",
@@ -307,7 +356,10 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
       const data = await res.json();
       const content = data.choices?.[0]?.message?.content;
       if (content == null) throw new Error("Empty API response");
-      return { text: typeof content === "string" ? content : String(content) };
+      const rawText = typeof content === "string" ? content : String(content);
+      const citeRaw = pickPerplexityCitationPayload(data);
+      const withCites = mergePlainBracketRefsWithCitationList(rawText, citeRaw);
+      return { text: withCites };
     }
     default:
       throw new Error("Unknown provider");
@@ -447,7 +499,7 @@ export async function generateThemeDialogTitle(providerId, userMessage, apiKey) 
 
 /**
  * Потоковый ответ: onDelta вызывается для каждой порции текста по мере прихода.
- * @param {{ webSearch?: boolean, systemInstruction?: string, llmMessages?: Array<{ role: string, content: string }> }} [options]
+ * @param {{ webSearch?: boolean, deepResearch?: boolean, systemInstruction?: string, llmMessages?: Array<{ role: string, content: string }> }} [options]
  * @returns {Promise<string>} полный накопленный текст
  */
 export async function completeChatMessageStreaming(providerId, text, apiKey, onDelta, options = {}) {
@@ -461,6 +513,8 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
     throw new Error("Empty message");
   }
   const webSearch = Boolean(options.webSearch);
+  const deepResearch = Boolean(options.deepResearch);
+  const useWebGrounding = webSearch || deepResearch;
   const oaMsgs = openAiCompatMessages(trimmed, options);
 
   let full;
@@ -475,21 +529,22 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
           Authorization: `Bearer ${key}`,
         },
         body: JSON.stringify({
-          model: webSearch ? OPENAI_MODEL_WEB : OPENAI_MODEL,
+          model: useWebGrounding ? OPENAI_MODEL_WEB : OPENAI_MODEL,
           messages: oaMsgs,
           stream: true,
         }),
       });
-      full = await streamOpenAICompatJson(res, onDelta);
+      const oaStream = await streamOpenAICompatJson(res, onDelta);
+      full = mergePlainBracketRefsWithCitationList(oaStream.text, oaStream.citations);
       break;
     }
     case "perplexity": {
       const pBody = {
-        model: webSearch ? PERPLEXITY_MODEL_SEARCH : PERPLEXITY_MODEL,
+        model: useWebGrounding ? PERPLEXITY_MODEL_SEARCH : PERPLEXITY_MODEL,
         messages: oaMsgs,
         stream: true,
       };
-      if (webSearch) {
+      if (useWebGrounding) {
         pBody.disable_search = false;
         pBody.web_search_options = {
           search_context_size: "high",
@@ -505,7 +560,8 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
         },
         body: JSON.stringify(pBody),
       });
-      full = await streamOpenAICompatJson(res, onDelta);
+      const pStream = await streamOpenAICompatJson(res, onDelta);
+      full = mergePlainBracketRefsWithCitationList(pStream.text, pStream.citations);
       break;
     }
     case "anthropic": {
@@ -518,7 +574,7 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
       if (options.systemInstruction) {
         aStreamBody.system = options.systemInstruction;
       }
-      if (webSearch) {
+      if (useWebGrounding) {
         aStreamBody.tools = [
           { type: "web_search_20250305", name: "web_search", max_uses: 5 },
         ];
@@ -551,9 +607,12 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
           "Content-Type": "application/json",
           Accept: "text/event-stream",
         },
-        body: JSON.stringify(geminiJsonBody(combined, { googleSearch: webSearch })),
+        body: JSON.stringify(geminiJsonBody(combined, { googleSearch: useWebGrounding })),
       });
-      full = await streamGeminiGenerateContent(res, onDelta);
+      const gStream = await streamGeminiGenerateContent(res, onDelta);
+      full = mergePlainBracketRefsWithCitationList(gStream.text, gStream.citations, {
+        citationLabels: gStream.citationLabels,
+      });
       break;
     }
     default:
@@ -567,19 +626,25 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
 }
 
 /**
- * Подпись модели в подвале пузыря (в т.ч. режим реального поиска в сети).
- * @param {{ webSearch?: boolean }} [extras]
+ * Подпись модели в подвале пузыря (в т.ч. режим поиска / deep research).
+ * @param {{ webSearch?: boolean, deepResearch?: boolean }} [extras]
  */
 export function apiModelHint(providerId, extras = {}) {
   const ws = Boolean(extras.webSearch);
+  const dr = Boolean(extras.deepResearch);
+  const suffixDr = dr ? " · deep research" : "";
   switch (providerId) {
     case "openai":
+      if (dr) return `${OPENAI_MODEL_WEB}${suffixDr}`;
       return ws ? OPENAI_MODEL_WEB : OPENAI_MODEL;
     case "anthropic":
+      if (dr) return `${ANTHROPIC_MODEL} · deep research`;
       return ws ? `${ANTHROPIC_MODEL} · web search` : ANTHROPIC_MODEL;
     case "gemini-flash":
+      if (dr) return `${GEMINI_MODEL_FLASH} · deep research`;
       return ws ? `${GEMINI_MODEL_FLASH} · Google search` : GEMINI_MODEL_FLASH;
     case "perplexity":
+      if (dr) return `${PERPLEXITY_MODEL_SEARCH}${suffixDr}`;
       return ws ? PERPLEXITY_MODEL_SEARCH : PERPLEXITY_MODEL;
     default:
       return "";
@@ -635,31 +700,46 @@ async function geminiImageGeneration(prompt, key) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
+      /* Без явных модальностей API часто отдаёт только текст; картинка приходит во parts как inlineData. */
+      generationConfig: {
+        responseModalities: ["TEXT", "IMAGE"],
+      },
     }),
   });
   if (!res.ok) throw new Error(await readErrorBody(res));
   const data = await res.json();
-  const parts = data.candidates?.[0]?.content?.parts;
-  if (!Array.isArray(parts) || parts.length === 0) {
+  const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+  if (candidates.length === 0) {
     const block = data.promptFeedback?.blockReason;
     throw new Error(block ? `Request blocked: ${block}` : "Empty API response");
   }
+
   const textBits = [];
   let imageMd = "";
-  for (const p of parts) {
-    if (p?.thought === true) continue;
-    if (p?.text) textBits.push(String(p.text));
-    const id = p?.inlineData ?? p?.inline_data;
-    if (id?.data && id?.mimeType) {
-      const mime = String(id.mimeType);
-      const b64 = String(id.data);
-      imageMd = `![Generated image](data:${mime};base64,${b64})`;
-    } else if (id?.data && id?.mime_type) {
-      const mime = String(id.mime_type);
-      const b64 = String(id.data);
-      imageMd = `![Generated image](data:${mime};base64,${b64})`;
+
+  function collectFromParts(parts) {
+    if (!Array.isArray(parts)) return;
+    for (const p of parts) {
+      if (p?.thought === true) continue;
+      if (p?.text) textBits.push(String(p.text));
+      const id = p?.inlineData ?? p?.inline_data;
+      if (id?.data && id?.mimeType) {
+        const mime = String(id.mimeType);
+        const b64 = String(id.data);
+        imageMd = `![Generated image](data:${mime};base64,${b64})`;
+      } else if (id?.data && id?.mime_type) {
+        const mime = String(id.mime_type);
+        const b64 = String(id.data);
+        imageMd = `![Generated image](data:${mime};base64,${b64})`;
+      }
     }
   }
+
+  for (const cand of candidates) {
+    collectFromParts(cand?.content?.parts);
+    if (imageMd) break;
+  }
+
   if (!imageMd) {
     const t = textBits.join("\n").trim();
     throw new Error(t || "Model did not return an image");
