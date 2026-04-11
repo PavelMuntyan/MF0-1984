@@ -99,68 +99,106 @@ let accessSessionDialogId = null;
 /** Rules section dialog (created by API `/api/rules/session`). */
 let rulesSessionDialogId = null;
 
+/**
+ * @param {() => string | null} getDialogId
+ * @param {(id: string) => void} setDialogId
+ * @param {() => Promise<{ dialogId: string }>} fetchSession
+ */
+async function ensureIrPanelSessionDialogId(getDialogId, setDialogId, fetchSession) {
+  const cur = getDialogId();
+  if (cur) return cur;
+  const s = await fetchSession();
+  setDialogId(s.dialogId);
+  return s.dialogId;
+}
+
 async function ensureIntroSessionClient() {
-  if (introSessionDialogId) return introSessionDialogId;
-  const s = await fetchIntroSession();
-  introSessionDialogId = s.dialogId;
-  return introSessionDialogId;
+  return ensureIrPanelSessionDialogId(
+    () => introSessionDialogId,
+    (id) => {
+      introSessionDialogId = id;
+    },
+    fetchIntroSession,
+  );
 }
 
 async function ensureAccessSessionClient() {
-  if (accessSessionDialogId) return accessSessionDialogId;
-  const s = await fetchAccessSession();
-  accessSessionDialogId = s.dialogId;
-  return accessSessionDialogId;
+  return ensureIrPanelSessionDialogId(
+    () => accessSessionDialogId,
+    (id) => {
+      accessSessionDialogId = id;
+    },
+    fetchAccessSession,
+  );
 }
 
 async function ensureRulesSessionClient() {
-  if (rulesSessionDialogId) return rulesSessionDialogId;
-  const s = await fetchRulesSession();
-  rulesSessionDialogId = s.dialogId;
-  return rulesSessionDialogId;
+  return ensureIrPanelSessionDialogId(
+    () => rulesSessionDialogId,
+    (id) => {
+      rulesSessionDialogId = id;
+    },
+    fetchRulesSession,
+  );
+}
+
+/**
+ * @param {{
+ *   fetchSession: () => Promise<{ dialogId: string }>,
+ *   setDialogId: (id: string) => void,
+ *   getDialogId: () => string | null,
+ *   logLabel: string,
+ *   afterReplay?: () => Promise<void>,
+ * }} o
+ */
+async function loadIrPanelChatThreadIntoUi(o) {
+  const { fetchSession, setDialogId, getDialogId, logLabel, afterReplay } = o;
+  try {
+    const s = await fetchSession();
+    setDialogId(s.dialogId);
+    const list = document.getElementById("messages-list");
+    list?.replaceChildren();
+    const turns = await fetchTurns(getDialogId());
+    replayDialogTurnsGrouped(turns);
+    scrollMessagesToEnd();
+    if (afterReplay) await afterReplay();
+  } catch (e) {
+    appendActivityLog(`${logLabel}: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 async function loadIntroChatThreadIntoUi() {
-  try {
-    const s = await fetchIntroSession();
-    introSessionDialogId = s.dialogId;
-    const list = document.getElementById("messages-list");
-    list?.replaceChildren();
-    const turns = await fetchTurns(introSessionDialogId);
-    replayDialogTurnsGrouped(turns);
-    scrollMessagesToEnd();
-    await loadMemoryGraphIntoUi();
-  } catch (e) {
-    appendActivityLog(`Intro: ${e instanceof Error ? e.message : String(e)}`);
-  }
+  return loadIrPanelChatThreadIntoUi({
+    fetchSession: fetchIntroSession,
+    setDialogId: (id) => {
+      introSessionDialogId = id;
+    },
+    getDialogId: () => introSessionDialogId,
+    logLabel: "Intro",
+    afterReplay: loadMemoryGraphIntoUi,
+  });
 }
 
 async function loadAccessChatThreadIntoUi() {
-  try {
-    const s = await fetchAccessSession();
-    accessSessionDialogId = s.dialogId;
-    const list = document.getElementById("messages-list");
-    list?.replaceChildren();
-    const turns = await fetchTurns(accessSessionDialogId);
-    replayDialogTurnsGrouped(turns);
-    scrollMessagesToEnd();
-  } catch (e) {
-    appendActivityLog(`Access: ${e instanceof Error ? e.message : String(e)}`);
-  }
+  return loadIrPanelChatThreadIntoUi({
+    fetchSession: fetchAccessSession,
+    setDialogId: (id) => {
+      accessSessionDialogId = id;
+    },
+    getDialogId: () => accessSessionDialogId,
+    logLabel: "Access",
+  });
 }
 
 async function loadRulesChatThreadIntoUi() {
-  try {
-    const s = await fetchRulesSession();
-    rulesSessionDialogId = s.dialogId;
-    const list = document.getElementById("messages-list");
-    list?.replaceChildren();
-    const turns = await fetchTurns(rulesSessionDialogId);
-    replayDialogTurnsGrouped(turns);
-    scrollMessagesToEnd();
-  } catch (e) {
-    appendActivityLog(`Rules: ${e instanceof Error ? e.message : String(e)}`);
-  }
+  return loadIrPanelChatThreadIntoUi({
+    fetchSession: fetchRulesSession,
+    setDialogId: (id) => {
+      rulesSessionDialogId = id;
+    },
+    getDialogId: () => rulesSessionDialogId,
+    logLabel: "Rules",
+  });
 }
 
 const ACCESS_ENTRY_NOTES_MAX = 12000;

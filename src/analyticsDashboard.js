@@ -44,7 +44,7 @@ function renderAnalytics(root, raw) {
 
   const cardsHtml = PROVIDER_IDS.map((id) => {
     const p = providers[id] && typeof providers[id] === "object" ? providers[id] : {};
-    const label = PROVIDER_DISPLAY[id] ?? id;
+    const label = escapeHtml(String(PROVIDER_DISPLAY[id] ?? id));
     const rs = Number(p.requestsSent) || 0;
     const ok = Number(p.responsesOk) || 0;
     const im = Number(p.imageRequests) || 0;
@@ -69,11 +69,12 @@ function renderAnalytics(root, raw) {
     .map((day) => {
       const d = String(day?.date ?? "").trim();
       const bp = day?.byProvider && typeof day.byProvider === "object" ? day.byProvider : {};
-      const short = chartDayLabelMmDd(d);
+      const short = escapeHtml(chartDayLabelMmDd(d));
       const segs = PROVIDER_IDS.map((id) => {
         const c = Number(bp[id]) || 0;
         const pct = maxDay > 0 ? Math.round((c / maxDay) * 1000) / 10 : 0;
-        return `<div class="analytics-bar-seg analytics-bar-seg--${id}" style="height:${pct}%" title="${PROVIDER_DISPLAY[id] ?? id}: ${c}"></div>`;
+        const title = escapeHtml(`${PROVIDER_DISPLAY[id] ?? id}: ${c}`);
+        return `<div class="analytics-bar-seg analytics-bar-seg--${id}" style="height:${pct}%" title="${title}"></div>`;
       }).join("");
       const total = PROVIDER_IDS.reduce((s, id) => s + (Number(bp[id]) || 0), 0);
       return `<div class="analytics-bar-col"><div class="analytics-bar-stack">${segs}</div><span class="analytics-bar-day">${short}</span><span class="analytics-bar-total">${total}</span></div>`;
@@ -92,7 +93,7 @@ function renderAnalytics(root, raw) {
         <div class="analytics-legend">
           ${PROVIDER_IDS.map(
             (id) =>
-              `<span class="analytics-legend-item"><span class="analytics-legend-swatch analytics-bar-seg--${id}"></span>${PROVIDER_DISPLAY[id] ?? id}</span>`,
+              `<span class="analytics-legend-item"><span class="analytics-legend-swatch analytics-bar-seg--${id}"></span>${escapeHtml(String(PROVIDER_DISPLAY[id] ?? id))}</span>`,
           ).join("")}
         </div>
         <div class="analytics-bars-wrap"><div class="analytics-bars">${barsHtml}</div></div>
