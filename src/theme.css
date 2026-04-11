@@ -2620,6 +2620,12 @@ button.btn {
   align-self: flex-end;
 }
 
+/* Rules & Access threads: text only — hide “+” / attach menu */
+#main-chat.chat--rules .input-bar-attach,
+#main-chat.chat--access .input-bar-attach {
+  display: none;
+}
+
 .input-bar .btn-attach-trigger {
   width: var(--input-bar-row-height);
   min-width: var(--input-bar-row-height);

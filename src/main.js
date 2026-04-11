@@ -1094,6 +1094,9 @@ function openIrChatPanel(mode) {
   view.removeAttribute("hidden");
   view.setAttribute("aria-hidden", "false");
   document.getElementById(cfg.btnId)?.setAttribute("aria-expanded", "true");
+  if (cfg.mode === "rules" || cfg.mode === "access") {
+    resetComposerAttachUi();
+  }
   void renderThemesSidebar();
   refreshThemeHighlightsFromChat();
 
@@ -1610,6 +1613,32 @@ function syncComposerSendButtonState() {
   sendBtn.disabled = !hasText && !hasFiles && !accessDataReady;
 }
 
+/** Rules / Access: only plain text — reset attach menu and strip (same DOM as theme chat). */
+function resetComposerAttachUi() {
+  composerAttachMode = "";
+  clearComposerAttachmentRows();
+  const menu = document.getElementById("attach-menu");
+  if (menu) menu.hidden = true;
+  const attachBtn = document.getElementById("btn-attach-menu");
+  if (attachBtn) {
+    attachBtn.setAttribute("aria-expanded", "false");
+    attachBtn.title = ATTACH_TITLES[""];
+    attachBtn.setAttribute("aria-label", ATTACH_TITLES[""]);
+    attachBtn.classList.remove("btn-attach-trigger--mode-active");
+  }
+  const visual = document.getElementById("btn-attach-visual");
+  if (visual) {
+    visual.textContent = "+";
+    visual.classList.remove("btn-attach-visual--icon");
+  }
+  const resetBtn = document.getElementById("attach-menu-reset");
+  if (resetBtn) resetBtn.hidden = true;
+  const resetSep = document.querySelector(".attach-menu-reset-sep");
+  if (resetSep instanceof HTMLElement) resetSep.hidden = true;
+  refreshModelBadges();
+  syncComposerSendButtonState();
+}
+
 function initNewDialogueButton() {
   const btn = document.getElementById("btn-new-dialogue");
   if (!btn) return;
@@ -1632,28 +1661,7 @@ function initNewDialogueButton() {
     const viewport = document.getElementById("messages-viewport");
     if (viewport) viewport.scrollTop = 0;
 
-    composerAttachMode = "";
-    refreshModelBadges();
-    clearComposerAttachmentRows();
-
-    const menu = document.getElementById("attach-menu");
-    if (menu) menu.hidden = true;
-    const attachBtn = document.getElementById("btn-attach-menu");
-    if (attachBtn) {
-      attachBtn.setAttribute("aria-expanded", "false");
-      attachBtn.title = ATTACH_TITLES[""];
-      attachBtn.setAttribute("aria-label", ATTACH_TITLES[""]);
-      attachBtn.classList.remove("btn-attach-trigger--mode-active");
-    }
-    const visual = document.getElementById("btn-attach-visual");
-    if (visual) {
-      visual.textContent = "+";
-      visual.classList.remove("btn-attach-visual--icon");
-    }
-    const resetBtn = document.getElementById("attach-menu-reset");
-    if (resetBtn) resetBtn.hidden = true;
-    const resetSep = document.querySelector(".attach-menu-reset-sep");
-    if (resetSep instanceof HTMLElement) resetSep.hidden = true;
+    resetComposerAttachUi();
 
     const ta = document.getElementById("chat-input");
     const sendNew = document.getElementById("btn-chat-send");
@@ -3811,6 +3819,10 @@ function initChatFileDropZone() {
       clearDropHighlight();
       return;
     }
+    if (mainChat.classList.contains("chat--rules") || mainChat.classList.contains("chat--access")) {
+      clearDropHighlight();
+      return;
+    }
     if (!dataTransferHasFileList(e.dataTransfer)) {
       clearDropHighlight();
       return;
@@ -3831,6 +3843,9 @@ function initChatFileDropZone() {
 
   function onWindowDrop(e) {
     clearDropHighlight();
+    if (mainChat.classList.contains("chat--rules") || mainChat.classList.contains("chat--access")) {
+      return;
+    }
     if (!dataTransferHasFileList(e.dataTransfer)) return;
     const t = e.target;
     if (!(t instanceof Node) || !mainChat.contains(t)) return;
