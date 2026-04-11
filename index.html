@@ -7,48 +7,15 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://127.0.0.1:* http://localhost:* https: ws: wss:; img-src 'self' data: blob: https: http:; font-src 'self' data:; base-uri 'self'; form-action 'self'; object-src 'none'"
+    />
     <title>MF0-1984</title>
-    <script>
-      (function () {
-        try {
-          var k = "ai-biz-os-theme";
-          var v = localStorage.getItem(k);
-          var dark =
-            v === "dark"
-              ? true
-              : v === "light"
-                ? false
-                : window.matchMedia("(prefers-color-scheme: dark)").matches;
-          document.documentElement.classList.toggle("dark", dark);
-        } catch (e) {
-          document.documentElement.classList.remove("dark");
-        }
-      })();
-    </script>
+    <script src="/pre-app-boot.js"></script>
   </head>
 
   <body>
-    <script>
-      (function () {
-        function syncAppViewportHeight() {
-          var h =
-            window.visualViewport && window.visualViewport.height
-              ? window.visualViewport.height
-              : window.innerHeight;
-          document.documentElement.style.setProperty("--app-vh", h + "px");
-        }
-        syncAppViewportHeight();
-        window.addEventListener("resize", syncAppViewportHeight);
-        window.addEventListener("orientationchange", function () {
-          requestAnimationFrame(function () {
-            requestAnimationFrame(syncAppViewportHeight);
-          });
-        });
-        if (window.visualViewport) {
-          window.visualViewport.addEventListener("resize", syncAppViewportHeight);
-        }
-      })();
-    </script>
     <div class="app-root">
       <div
         id="activity-log-panel"

@@ -141,15 +141,22 @@ export function initAnalyticsDashboard(deps) {
   async function refresh() {
     try {
       if (!(await apiHealth())) {
-        root.innerHTML =
-          '<p class="analytics-error">Connect the local API to load analytics (same as chat database).</p>';
+        root.replaceChildren();
+        const p = document.createElement("p");
+        p.className = "analytics-error";
+        p.textContent = "Connect the local API to load analytics (same as chat database).";
+        root.append(p);
         return;
       }
       const data = await fetchAnalytics();
       renderAnalytics(root, data);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      root.innerHTML = `<p class="analytics-error">Could not load analytics: ${escapeHtml(msg)}</p>`;
+      root.replaceChildren();
+      const p = document.createElement("p");
+      p.className = "analytics-error";
+      p.textContent = `Could not load analytics: ${msg}`;
+      root.append(p);
       appendActivityLog(`Analytics: ${msg}`);
     }
   }
