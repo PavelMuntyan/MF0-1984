@@ -1,4 +1,5 @@
 /** Build theme list cards (one row per theme; folder lists dialogs). */
+/* innerHTML is used only for static SVG snippets defined in this file (not user text). */
 
 import { formatThemeMetaLocal } from "./themeMetaTime.js";
 
