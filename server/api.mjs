@@ -507,9 +507,11 @@ async function fetchSafeAllowlistedJsonSnapshotForEntry(entry) {
 }
 
 function getAccessDataDumpMaxLiveFetches() {
-  const n = Number(process.env.ACCESS_DATA_DUMP_MAX_LIVE_FETCHES);
-  if (Number.isFinite(n) && n >= 1 && n <= 120) return Math.floor(n);
-  return 48;
+  const raw = process.env.ACCESS_DATA_DUMP_MAX_LIVE_FETCHES;
+  if (raw === undefined || raw === null || String(raw).trim() === "") return 48;
+  const n = parseInt(String(raw).trim(), 10);
+  if (!Number.isFinite(n) || n < 1 || n > 120) return 48;
+  return n;
 }
 
 /**
@@ -1243,12 +1245,16 @@ function getIrPanelLocksPayload() {
   };
 }
 
-function getOrCreateIntroSession() {
+/**
+ * @param {"intro" | "access" | "rules"} purpose
+ * @param {{ themeTitle: string, dialogTitle: string }} spec
+ */
+function getOrCreatePurposeSession(purpose, spec) {
   applyDialogsPurposeColumn(db);
   applyMemoryGraphMigration(db);
   const row = db
-    .prepare(`SELECT d.id AS dialog_id, d.theme_id AS theme_id FROM dialogs d WHERE d.purpose = 'intro' LIMIT 1`)
-    .get();
+    .prepare(`SELECT d.id AS dialog_id, d.theme_id AS theme_id FROM dialogs d WHERE d.purpose = ? LIMIT 1`)
+    .get(purpose);
   if (row) {
     return { themeId: row.theme_id, dialogId: row.dialog_id };
   }
@@ -1258,70 +1264,28 @@ function getOrCreateIntroSession() {
   const tx = db.transaction(() => {
     db.prepare(`INSERT INTO themes (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)`).run(
       themeId,
-      "Intro",
+      spec.themeTitle,
       now,
       now,
     );
     db.prepare(
       `INSERT INTO dialogs (id, theme_id, title, created_at, updated_at, purpose) VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(dialogId, themeId, "Self profile", now, now, "intro");
+    ).run(dialogId, themeId, spec.dialogTitle, now, now, purpose);
   });
   tx();
   return { themeId, dialogId };
+}
+
+function getOrCreateIntroSession() {
+  return getOrCreatePurposeSession("intro", { themeTitle: "Intro", dialogTitle: "Self profile" });
 }
 
 function getOrCreateAccessSession() {
-  applyDialogsPurposeColumn(db);
-  applyMemoryGraphMigration(db);
-  const row = db
-    .prepare(`SELECT d.id AS dialog_id, d.theme_id AS theme_id FROM dialogs d WHERE d.purpose = 'access' LIMIT 1`)
-    .get();
-  if (row) {
-    return { themeId: row.theme_id, dialogId: row.dialog_id };
-  }
-  const themeId = crypto.randomUUID();
-  const dialogId = crypto.randomUUID();
-  const now = new Date().toISOString();
-  const tx = db.transaction(() => {
-    db.prepare(`INSERT INTO themes (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)`).run(
-      themeId,
-      "Access",
-      now,
-      now,
-    );
-    db.prepare(
-      `INSERT INTO dialogs (id, theme_id, title, created_at, updated_at, purpose) VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(dialogId, themeId, "External services", now, now, "access");
-  });
-  tx();
-  return { themeId, dialogId };
+  return getOrCreatePurposeSession("access", { themeTitle: "Access", dialogTitle: "External services" });
 }
 
 function getOrCreateRulesSession() {
-  applyDialogsPurposeColumn(db);
-  applyMemoryGraphMigration(db);
-  const row = db
-    .prepare(`SELECT d.id AS dialog_id, d.theme_id AS theme_id FROM dialogs d WHERE d.purpose = 'rules' LIMIT 1`)
-    .get();
-  if (row) {
-    return { themeId: row.theme_id, dialogId: row.dialog_id };
-  }
-  const themeId = crypto.randomUUID();
-  const dialogId = crypto.randomUUID();
-  const now = new Date().toISOString();
-  const tx = db.transaction(() => {
-    db.prepare(`INSERT INTO themes (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)`).run(
-      themeId,
-      "Rules",
-      now,
-      now,
-    );
-    db.prepare(
-      `INSERT INTO dialogs (id, theme_id, title, created_at, updated_at, purpose) VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(dialogId, themeId, "Project rules", now, now, "rules");
-  });
-  tx();
-  return { themeId, dialogId };
+  return getOrCreatePurposeSession("rules", { themeTitle: "Rules", dialogTitle: "Project rules" });
 }
 
 /** RAG / summaries / memory_items mirror for this dialog thread (not conversation_turns). */
@@ -1880,6 +1844,35 @@ function ingestMemoryGraphFromBody(body) {
   return { ok: true, upsertedEntities: upserted, insertedLinks, commandsApplied };
 }
 
+/** @param {string} themeId @param {string} dialogTitle */
+function createDialogUnderTheme(themeId, dialogTitle) {
+  const dialogId = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const tx = db.transaction(() => {
+    db.prepare(`INSERT INTO dialogs (id, theme_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`).run(
+      dialogId,
+      themeId,
+      dialogTitle,
+      now,
+      now,
+    );
+    db.prepare(`UPDATE themes SET updated_at = ? WHERE id = ?`).run(now, themeId);
+  });
+  tx();
+  return db.prepare(`SELECT * FROM dialogs WHERE id = ?`).get(dialogId);
+}
+
+/** @param {Record<string, unknown>} dialog */
+function dialogRowToClient(dialog) {
+  return {
+    id: dialog.id,
+    themeId: dialog.theme_id,
+    title: dialog.title,
+    starterDate: rawDbTimestamp(dialog.created_at),
+    lastActionDate: rawDbTimestamp(dialog.updated_at),
+  };
+}
+
 function normalizePathname(pathname) {
   const s = String(pathname || "/");
   const collapsed = s.replace(/\/{2,}/g, "/");
@@ -2202,29 +2195,8 @@ const server = http.createServer(async (req, res) => {
       const trow = db.prepare(`SELECT id FROM themes WHERE id = ?`).get(themeId);
       if (!trow) return json(res, 404, { error: "Theme not found" });
       const title = String(body.title ?? "").trim() || "New conversation";
-      const dialogId = crypto.randomUUID();
-      const now = new Date().toISOString();
-      const tx = db.transaction(() => {
-        db.prepare(`INSERT INTO dialogs (id, theme_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`).run(
-          dialogId,
-          themeId,
-          title,
-          now,
-          now,
-        );
-        db.prepare(`UPDATE themes SET updated_at = ? WHERE id = ?`).run(now, themeId);
-      });
-      tx();
-      const dialog = db.prepare(`SELECT * FROM dialogs WHERE id = ?`).get(dialogId);
-      return json(res, 201, {
-        dialog: {
-          id: dialog.id,
-          themeId: dialog.theme_id,
-          title: dialog.title,
-          starterDate: rawDbTimestamp(dialog.created_at),
-          lastActionDate: rawDbTimestamp(dialog.updated_at),
-        },
-      });
+      const dialog = createDialogUnderTheme(themeId, title);
+      return json(res, 201, { dialog: dialogRowToClient(dialog) });
     }
 
     const themeDialogsPost = p.match(/^\/api\/themes\/([^/]+)\/dialogs$/);
@@ -2235,29 +2207,8 @@ const server = http.createServer(async (req, res) => {
       if (!trow) return json(res, 404, { error: "Theme not found" });
       const body = await readBody(req);
       const title = String(body.title ?? "").trim() || "New conversation";
-      const dialogId = crypto.randomUUID();
-      const now = new Date().toISOString();
-      const tx = db.transaction(() => {
-        db.prepare(`INSERT INTO dialogs (id, theme_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`).run(
-          dialogId,
-          themeId,
-          title,
-          now,
-          now,
-        );
-        db.prepare(`UPDATE themes SET updated_at = ? WHERE id = ?`).run(now, themeId);
-      });
-      tx();
-      const dialog = db.prepare(`SELECT * FROM dialogs WHERE id = ?`).get(dialogId);
-      return json(res, 201, {
-        dialog: {
-          id: dialog.id,
-          themeId: dialog.theme_id,
-          title: dialog.title,
-          starterDate: rawDbTimestamp(dialog.created_at),
-          lastActionDate: rawDbTimestamp(dialog.updated_at),
-        },
-      });
+      const dialog = createDialogUnderTheme(themeId, title);
+      return json(res, 201, { dialog: dialogRowToClient(dialog) });
     }
 
     const clearTurnsMatch = p.match(/^\/api\/dialogs\/([^/]+)\/clear-turns$/);
