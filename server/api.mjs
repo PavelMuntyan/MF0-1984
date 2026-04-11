@@ -9,6 +9,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { resolveApiPort } from "./resolveApiPort.mjs";
+import { buildAccessDataDumpEnrichmentFromEntries } from "./accessDataDump.mjs";
 import {
   mergeRollingSummary,
   appendDecisionLogLine,
@@ -281,6 +282,11 @@ function json(res, status, body) {
   res.end(data);
 }
 
+/** Standard API error body (`error` for clients; `ok: false` when success checks use `data.ok === true`). */
+function apiErrorBody(message) {
+  return { ok: false, error: String(message ?? "") };
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -350,276 +356,9 @@ function readAccessExternalServicesPayload() {
   return { entries: sanitizeAccessExternalEntries(entries) };
 }
 
-/**
- * #data / Access data: optional live JSON GET for each row’s `endpointUrl`.
- * - **Always:** host must be the same as that row’s URL hostname **or** match optional global suffix rules (env).
- * - **Optional:** `ACCESS_DATA_DUMP_ALLOW_HOST_SUFFIXES` — comma-separated host suffixes (e.g. CDN parents) in addition to self-host.
- * No per-vendor URLs are hardcoded in code.
- */
-function getAccessDataDumpAllowHostSuffixes() {
-  const raw = String(process.env.ACCESS_DATA_DUMP_ALLOW_HOST_SUFFIXES ?? "").trim();
-  if (!raw) return [];
-  return raw
-    .split(/[,;]+/)
-    .map((s) => s.trim().toLowerCase().replace(/^\.+/, ""))
-    .filter((s) => s.length > 1 && /^[a-z0-9.-]+$/.test(s));
-}
-
-/** Hostname from this row’s stored URL (lowercase), or empty if invalid. */
-function rowEndpointHostname(entry) {
-  try {
-    return new URL(String(entry?.endpointUrl ?? "").trim()).hostname.toLowerCase();
-  } catch {
-    return "";
-  }
-}
-
-/**
- * Live GET allowed for this row if public HTTPS host matches **this row’s** endpoint hostname,
- * or matches any configured global suffix (parent/CDN domains).
- * @param {string} hostname
- * @param {{ endpointUrl?: string }} entry
- */
-function hostnameAllowedForDataDumpRow(hostname, entry) {
-  const h = String(hostname ?? "").toLowerCase();
-  const self = rowEndpointHostname(entry);
-  if (self && h === self) return true;
-  const host = h.replace(/\.$/, "");
-  for (const suf of getAccessDataDumpAllowHostSuffixes()) {
-    if (host === suf || host.endsWith("." + suf)) return true;
-  }
-  return false;
-}
-
-function isSafePublicHttpsUrlForDataDump(urlStr) {
-  try {
-    const u = new URL(String(urlStr ?? "").trim());
-    if (u.protocol !== "https:") return false;
-    const h = u.hostname.toLowerCase();
-    if (!h || h === "localhost" || h === "[::1]") return false;
-    if (h.endsWith(".local")) return false;
-    if (/^(127\.|10\.|192\.168\.|169\.254\.)/.test(h)) return false;
-    const ipv4 = h.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
-    if (ipv4) {
-      const a = Number(ipv4[1]);
-      const b = Number(ipv4[2]);
-      if (a === 0 || a === 127) return false;
-      if (a === 10) return false;
-      if (a === 172 && b >= 16 && b <= 31) return false;
-      if (a === 192 && b === 168) return false;
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Generic JSON trim for LLM context (no product-specific field lists).
- * @param {unknown} value
- * @param {number} depth
- * @param {WeakSet<object>} seen
- */
-function genericPruneJsonForDataDump(value, depth = 0, seen = new WeakSet()) {
-  const maxDepth = 7;
-  const maxStr = 1800;
-  const maxKeys = 72;
-  const maxArr = 48;
-  if (depth > maxDepth) return "[truncated-depth]";
-  if (value === null || typeof value === "boolean" || typeof value === "number") return value;
-  if (typeof value === "string") {
-    return value.length > maxStr ? `${value.slice(0, maxStr)}…` : value;
-  }
-  if (typeof value !== "object") return value;
-  if (seen.has(/** @type {object} */ (value))) return "[circular]";
-  seen.add(/** @type {object} */ (value));
-  if (Array.isArray(value)) {
-    const out = value.slice(0, maxArr).map((x) => genericPruneJsonForDataDump(x, depth + 1, seen));
-    if (value.length > maxArr) out.push(`[…+${value.length - maxArr} items]`);
-    return out;
-  }
-  const o = /** @type {Record<string, unknown>} */ ({});
-  const keys = Object.keys(value).slice(0, maxKeys);
-  for (const k of keys) {
-    o[k] = genericPruneJsonForDataDump(value[k], depth + 1, seen);
-  }
-  if (Object.keys(value).length > maxKeys) o._truncatedKeys = true;
-  return o;
-}
-
-/**
- * @param {{ id?: string, name?: string, endpointUrl?: string }} entry
- */
-async function fetchSafeAllowlistedJsonSnapshotForEntry(entry) {
-  const url = String(entry?.endpointUrl ?? "").trim();
-  if (!url) return { skipped: true, reason: "no endpointUrl" };
-  if (!isSafePublicHttpsUrlForDataDump(url)) {
-    return { skipped: true, reason: "only public HTTPS URLs (non-loopback) are allowed" };
-  }
-  let hostname = "";
-  try {
-    hostname = new URL(url).hostname.toLowerCase();
-  } catch {
-    return { skipped: true, reason: "invalid URL" };
-  }
-  if (!hostnameAllowedForDataDumpRow(hostname, entry)) {
-    return {
-      skipped: true,
-      reason:
-        "hostname does not match this row’s endpointUrl host and does not match ACCESS_DATA_DUMP_ALLOW_HOST_SUFFIXES",
-    };
-  }
-  try {
-    const ctrl = new AbortController();
-    const tid = setTimeout(() => ctrl.abort(), 9000);
-    const res = await fetch(url, {
-      method: "GET",
-      signal: ctrl.signal,
-      headers: {
-        Accept: "application/json",
-        "User-Agent": "MF0-1984-local-api/data-dump",
-      },
-    });
-    clearTimeout(tid);
-    const text = await res.text();
-    if (!res.ok) {
-      return { ok: false, httpStatus: res.status, error: text.slice(0, 500) };
-    }
-    if (text.length > 1_200_000) {
-      return { ok: false, error: "response body too large" };
-    }
-    let parsed = null;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      return { ok: false, httpStatus: res.status, error: "non-JSON body", snippet: text.slice(0, 400) };
-    }
-    const pruned = genericPruneJsonForDataDump(parsed);
-    return {
-      ok: true,
-      httpStatus: res.status,
-      fetchedAt: new Date().toISOString(),
-      body: pruned,
-    };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
-  }
-}
-
-function getAccessDataDumpMaxLiveFetches() {
-  const raw = process.env.ACCESS_DATA_DUMP_MAX_LIVE_FETCHES;
-  if (raw === undefined || raw === null || String(raw).trim() === "") return 48;
-  const n = parseInt(String(raw).trim(), 10);
-  if (!Number.isFinite(n) || n < 1 || n > 120) return 48;
-  return n;
-}
-
-/**
- * Prefer likely air-quality rows first so a small fetch budget still hits relevant JSON APIs.
- * @param {Array<{ name?: string, endpointUrl?: string }>} list
- */
-function sortEntriesForDataDumpFetchPriority(list) {
-  /** @param {{ name?: string, endpointUrl?: string }} e */
-  const score = (e) => {
-    const u = String(e?.endpointUrl ?? "").toLowerCase();
-    const n = String(e?.name ?? "").toLowerCase();
-    const h = `${u} ${n}`;
-    let p = 0;
-    if (/air-quality|airquality|aqi|pm2|pm10|pollution|smog/i.test(h)) p += 8;
-    if (/marine|wave|sea state|ocean/i.test(h)) p += 2;
-    if (/forecast|current_weather|weather/i.test(h)) p += 1;
-    return p;
-  };
-  return [...list].sort((a, b) => {
-    const d = score(b) - score(a);
-    if (d !== 0) return d;
-    return String(a?.name ?? "").localeCompare(String(b?.name ?? ""), "und", { sensitivity: "base" });
-  });
-}
-
 async function getAccessDataDumpEnrichmentPayload() {
   const { entries: entriesRaw } = readAccessExternalServicesPayload();
-  const entries = sortEntriesForDataDumpFetchPriority(entriesRaw);
-  /** @type {unknown[]} */
-  const snapshots = [];
-  let fetchCount = 0;
-  const suffixes = getAccessDataDumpAllowHostSuffixes();
-  const maxFetches = getAccessDataDumpMaxLiveFetches();
-  for (const e of entries) {
-    const url = String(e?.endpointUrl ?? "").trim();
-    if (!url) {
-      snapshots.push({
-        entryId: e.id,
-        entryName: e.name,
-        skipped: true,
-        reason: "no endpointUrl",
-      });
-      continue;
-    }
-    if (!isSafePublicHttpsUrlForDataDump(url)) {
-      snapshots.push({
-        entryId: e.id,
-        entryName: e.name,
-        endpointUrl: url,
-        skipped: true,
-        reason: "only public HTTPS URLs are considered for live fetch",
-      });
-      continue;
-    }
-    let hostname = "";
-    try {
-      hostname = new URL(url).hostname.toLowerCase();
-    } catch {
-      snapshots.push({
-        entryId: e.id,
-        entryName: e.name,
-        endpointUrl: url,
-        skipped: true,
-        reason: "invalid URL",
-      });
-      continue;
-    }
-    if (!hostnameAllowedForDataDumpRow(hostname, e)) {
-      snapshots.push({
-        entryId: e.id,
-        entryName: e.name,
-        endpointUrl: url,
-        skipped: true,
-        reason:
-          "hostname not allowed for live fetch (must match this row’s endpointUrl host, or a suffix from ACCESS_DATA_DUMP_ALLOW_HOST_SUFFIXES)",
-      });
-      continue;
-    }
-    if (fetchCount >= maxFetches) {
-      snapshots.push({
-        entryId: e.id,
-        entryName: e.name,
-        endpointUrl: url,
-        skipped: true,
-        reason: `not fetched this round — server snapshot budget (${maxFetches} GETs per request; set ACCESS_DATA_DUMP_MAX_LIVE_FETCHES up to 120 to raise)`,
-      });
-      continue;
-    }
-    fetchCount += 1;
-    const snap = await fetchSafeAllowlistedJsonSnapshotForEntry(e);
-    snapshots.push({
-      entryId: e.id,
-      entryName: e.name,
-      endpointUrl: url,
-      ...snap,
-    });
-  }
-  return {
-    ok: true,
-    entries,
-    snapshots,
-    meta: {
-      globalHostSuffixRuleCount: suffixes.length,
-      rowSelfHostnameFetch: true,
-      maxLiveFetches: maxFetches,
-      entryRowCount: entries.length,
-    },
-  };
+  return buildAccessDataDumpEnrichmentFromEntries(entriesRaw);
 }
 
 /** Prompt-safe catalog: names, descriptions, URLs only — never credentials. */
@@ -1935,7 +1674,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, { ok: true, ...bundle });
       } catch (e) {
         console.error("[mf-lab-api] rules/keeper-files:", e);
-        return json(res, 500, { ok: false, error: e instanceof Error ? e.message : String(e) });
+        return json(res, 500, apiErrorBody(e instanceof Error ? e.message : String(e)));
       }
     }
 
@@ -1943,7 +1682,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const out = mergeRulesKeeperPatchFromBody(body);
       if ("error" in out) {
-        return json(res, out.status, { ok: false, error: out.error });
+        return json(res, out.status, apiErrorBody(out.error));
       }
       return json(res, 200, { ok: true, merged_total: out.merged_total });
     }
@@ -1962,7 +1701,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, out);
       } catch (e) {
         console.error("[mf-lab-api] data-dump-enrichment:", e);
-        return json(res, 500, { ok: false, error: e instanceof Error ? e.message : String(e) });
+        return json(res, 500, apiErrorBody(e instanceof Error ? e.message : String(e)));
       }
     }
 
@@ -1982,7 +1721,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const h = doubleHashIrPanelPin6(body.pin ?? body.PIN);
       if (!h) {
-        return json(res, 400, { ok: false, error: "PIN must be exactly 6 digits." });
+        return json(res, 400, apiErrorBody("PIN must be exactly 6 digits."));
       }
       applyIrPanelPinLockMigration(db);
       db.prepare(
@@ -1997,16 +1736,16 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const h = doubleHashIrPanelPin6(body.pin ?? body.PIN);
       if (!h) {
-        return json(res, 400, { ok: false, error: "PIN must be exactly 6 digits." });
+        return json(res, 400, apiErrorBody("PIN must be exactly 6 digits."));
       }
       applyIrPanelPinLockMigration(db);
       const row = db.prepare(`SELECT pin_double_hash FROM ir_panel_pin_lock WHERE panel = ?`).get(panel);
       if (!row?.pin_double_hash) {
         const label = panel === "intro" ? "Intro" : panel === "rules" ? "Rules" : "Access";
-        return json(res, 400, { ok: false, error: `${label} is not locked.` });
+        return json(res, 400, apiErrorBody(`${label} is not locked.`));
       }
       if (row.pin_double_hash !== h) {
-        return json(res, 403, { ok: false, error: "Incorrect PIN." });
+        return json(res, 403, apiErrorBody("Incorrect PIN."));
       }
       db.prepare(`DELETE FROM ir_panel_pin_lock WHERE panel = ?`).run(panel);
       return json(res, 200, { ok: true, panel, locked: false });
@@ -2026,7 +1765,7 @@ const server = http.createServer(async (req, res) => {
         const out = ingestMemoryGraphFromBody(body);
         return json(res, 200, out);
       } catch (e) {
-        return json(res, 400, { error: e instanceof Error ? e.message : String(e) });
+        return json(res, 400, apiErrorBody(e instanceof Error ? e.message : String(e)));
       }
     }
 
@@ -2070,7 +1809,7 @@ const server = http.createServer(async (req, res) => {
       const favorite = Boolean(body.favorite);
       const markdown = body.markdown != null ? String(body.markdown) : "";
       const errOut = updateAssistantTurnFavoriteInDb(turnId, favorite, markdown);
-      if (errOut) return json(res, errOut.status, { error: errOut.error });
+      if (errOut) return json(res, errOut.status, apiErrorBody(errOut.error));
       return json(res, 200, { ok: true });
     }
 
@@ -2081,7 +1820,7 @@ const server = http.createServer(async (req, res) => {
       const favorite = Boolean(body.favorite);
       const markdown = body.markdown != null ? String(body.markdown) : "";
       const errOut = updateAssistantTurnFavoriteInDb(turnId, favorite, markdown);
-      if (errOut) return json(res, errOut.status, { error: errOut.error });
+      if (errOut) return json(res, errOut.status, apiErrorBody(errOut.error));
       return json(res, 200, { ok: true });
     }
 
@@ -2101,7 +1840,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const themeId = String(body.themeId ?? body.theme_id ?? "").trim();
       const out = deleteThemeFromDb(themeId);
-      if (out.error) return json(res, out.status, { error: out.error });
+      if (out.error) return json(res, out.status, apiErrorBody(out.error));
       logThemeDeleted("POST", out.deletedThemeId);
       return json(res, 200, out);
     }
@@ -2110,7 +1849,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "DELETE" && themeDeleteMatch) {
       const themeId = decodeURIComponent(themeDeleteMatch[1]).trim();
       const out = deleteThemeFromDb(themeId);
-      if (out.error) return json(res, out.status, { error: out.error });
+      if (out.error) return json(res, out.status, apiErrorBody(out.error));
       logThemeDeleted("DELETE", out.deletedThemeId);
       return json(res, 200, out);
     }
@@ -2119,10 +1858,10 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const themeId = String(body.themeId ?? body.theme_id ?? "").trim();
       const title = String(body.title ?? "").trim();
-      if (!themeId) return json(res, 400, { error: "themeId required" });
-      if (!title) return json(res, 400, { error: "title required" });
+      if (!themeId) return json(res, 400, apiErrorBody("themeId required"));
+      if (!title) return json(res, 400, apiErrorBody("title required"));
       const row = db.prepare(`SELECT id FROM themes WHERE id = ?`).get(themeId);
-      if (!row) return json(res, 404, { error: "Theme not found" });
+      if (!row) return json(res, 404, apiErrorBody("Theme not found"));
       const now = new Date().toISOString();
       db.prepare(`UPDATE themes SET title = ?, updated_at = ? WHERE id = ?`).run(title, now, themeId);
       return json(res, 200, { ok: true, themeId, title });
@@ -2130,19 +1869,19 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && p.startsWith("/api/dialogs/") && p.endsWith("/turns")) {
       const dialogId = decodeURIComponent(p.slice("/api/dialogs/".length, -"/turns".length));
-      if (!dialogId) return json(res, 400, { error: "Missing dialog id" });
+      if (!dialogId) return json(res, 400, apiErrorBody("Missing dialog id"));
       const row = db.prepare(`SELECT id FROM dialogs WHERE id = ?`).get(dialogId);
-      if (!row) return json(res, 404, { error: "Dialog not found" });
+      if (!row) return json(res, 404, apiErrorBody("Dialog not found"));
       return json(res, 200, { turns: listTurns(dialogId) });
     }
 
     const contextPackMatch = p.match(/^\/api\/dialogs\/([^/]+)\/context-pack$/);
     if (req.method === "GET" && contextPackMatch) {
       const dialogId = decodeURIComponent(contextPackMatch[1]);
-      if (!dialogId) return json(res, 400, { error: "Missing dialog id" });
+      if (!dialogId) return json(res, 400, apiErrorBody("Missing dialog id"));
       const q = url.searchParams.get("q") ?? url.searchParams.get("userQuery") ?? "";
       const pack = listContextPack(dialogId, String(q));
-      if (!pack) return json(res, 404, { error: "Dialog not found" });
+      if (!pack) return json(res, 404, apiErrorBody("Dialog not found"));
       return json(res, 200, pack);
     }
 
@@ -2191,9 +1930,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && p === "/api/themes/new-dialog") {
       const body = await readBody(req);
       const themeId = String(body.themeId ?? body.theme_id ?? "").trim();
-      if (!themeId) return json(res, 400, { error: "themeId required" });
+      if (!themeId) return json(res, 400, apiErrorBody("themeId required"));
       const trow = db.prepare(`SELECT id FROM themes WHERE id = ?`).get(themeId);
-      if (!trow) return json(res, 404, { error: "Theme not found" });
+      if (!trow) return json(res, 404, apiErrorBody("Theme not found"));
       const title = String(body.title ?? "").trim() || "New conversation";
       const dialog = createDialogUnderTheme(themeId, title);
       return json(res, 201, { dialog: dialogRowToClient(dialog) });
@@ -2202,9 +1941,9 @@ const server = http.createServer(async (req, res) => {
     const themeDialogsPost = p.match(/^\/api\/themes\/([^/]+)\/dialogs$/);
     if (req.method === "POST" && themeDialogsPost) {
       const themeId = decodeURIComponent(themeDialogsPost[1]);
-      if (!themeId.trim()) return json(res, 400, { error: "themeId required" });
+      if (!themeId.trim()) return json(res, 400, apiErrorBody("themeId required"));
       const trow = db.prepare(`SELECT id FROM themes WHERE id = ?`).get(themeId);
-      if (!trow) return json(res, 404, { error: "Theme not found" });
+      if (!trow) return json(res, 404, apiErrorBody("Theme not found"));
       const body = await readBody(req);
       const title = String(body.title ?? "").trim() || "New conversation";
       const dialog = createDialogUnderTheme(themeId, title);
@@ -2214,12 +1953,12 @@ const server = http.createServer(async (req, res) => {
     const clearTurnsMatch = p.match(/^\/api\/dialogs\/([^/]+)\/clear-turns$/);
     if (req.method === "POST" && clearTurnsMatch) {
       const dialogId = decodeURIComponent(clearTurnsMatch[1]).trim();
-      if (!dialogId) return json(res, 400, { error: "Missing dialog id" });
+      if (!dialogId) return json(res, 400, apiErrorBody("Missing dialog id"));
       const drow = db.prepare(`SELECT id, IFNULL(purpose, '') AS purpose FROM dialogs WHERE id = ?`).get(dialogId);
-      if (!drow) return json(res, 404, { error: "Dialog not found" });
+      if (!drow) return json(res, 404, apiErrorBody("Dialog not found"));
       const pur = String(drow.purpose ?? "");
       if (!["intro", "rules", "access"].includes(pur)) {
-        return json(res, 403, { error: "Clear is only allowed for Intro, Rules, or Access threads." });
+        return json(res, 403, apiErrorBody("Clear is only allowed for Intro, Rules, or Access threads."));
       }
       try {
         const tx = db.transaction(() => {
@@ -2230,18 +1969,18 @@ const server = http.createServer(async (req, res) => {
         tx();
       } catch (e) {
         console.error("[mf-lab-api] clear-turns:", e);
-        return json(res, 500, { error: e instanceof Error ? e.message : String(e) });
+        return json(res, 500, apiErrorBody(e instanceof Error ? e.message : String(e)));
       }
       return json(res, 200, { ok: true, dialogId });
     }
 
     if (req.method === "POST" && p.startsWith("/api/dialogs/") && p.endsWith("/turns")) {
       const dialogId = decodeURIComponent(p.slice("/api/dialogs/".length, -"/turns".length));
-      if (!dialogId) return json(res, 400, { error: "Missing dialog id" });
+      if (!dialogId) return json(res, 400, apiErrorBody("Missing dialog id"));
       const drow = db
         .prepare(`SELECT id, theme_id, IFNULL(purpose, '') AS purpose FROM dialogs WHERE id = ?`)
         .get(dialogId);
-      if (!drow) return json(res, 404, { error: "Dialog not found" });
+      if (!drow) return json(res, 404, apiErrorBody("Dialog not found"));
 
       const body = await readBody(req);
       const turnId = crypto.randomUUID();
@@ -2267,7 +2006,7 @@ const server = http.createServer(async (req, res) => {
           )
           .get(cloneFrom, dialogId);
         if (!src) {
-          return json(res, 400, { error: "clone_user_from_turn_id not found in this dialog" });
+          return json(res, 400, apiErrorBody("clone_user_from_turn_id not found in this dialog"));
         }
         userText = String(src.user_text ?? "");
         userAttachmentsJson = src.user_attachments_json != null ? String(src.user_attachments_json) : "";
@@ -2283,9 +2022,11 @@ const server = http.createServer(async (req, res) => {
       const hasAttach = attachRows.length > 0;
       const allowEmptyUserText = requestType === "access_data";
       if ((!hasUserChars && !hasAttach && !allowEmptyUserText) || !requestedProviderId || !userMessageAt) {
-        return json(res, 400, {
-          error: "user_text (or attachments), requested_provider_id, user_message_at required",
-        });
+        return json(
+          res,
+          400,
+          apiErrorBody("user_text (or attachments), requested_provider_id, user_message_at required"),
+        );
       }
 
       const attachJsonToStore = hasAttach ? JSON.stringify(attachRows) : null;
@@ -2339,10 +2080,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && rawPath.includes("theme") && rawPath.includes("delete")) {
       console.warn(`[mf-lab-api] 404 POST delete-theme: canonical=${JSON.stringify(p)} raw=${JSON.stringify(rawPath)}`);
     }
-    json(res, 404, { error: "Not found" });
+    json(res, 404, apiErrorBody("Not found"));
   } catch (e) {
     console.error(e);
-    json(res, 500, { error: e instanceof Error ? e.message : String(e) });
+    json(res, 500, apiErrorBody(e instanceof Error ? e.message : String(e)));
   }
 });
 

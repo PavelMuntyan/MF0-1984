@@ -12,6 +12,34 @@ function apiUrl(path) {
   return href;
 }
 
+async function readJsonSafe(res) {
+  return res.json().catch(() => ({}));
+}
+
+function apiErrMessage(body, fallback) {
+  if (body && typeof body === "object" && body.error != null) {
+    const t = String(body.error).trim();
+    if (t) return t;
+  }
+  return fallback;
+}
+
+/** Parse JSON, throw if HTTP not OK (uses server `error` field when present). */
+async function assertOkOrThrow(res, failLabel) {
+  const data = await readJsonSafe(res);
+  if (!res.ok) throw new Error(apiErrMessage(data, `${failLabel} ${res.status}`));
+  return data;
+}
+
+async function fetchIntroAccessRulesSession(path, label) {
+  const res = await fetch(apiUrl(path));
+  const data = await readJsonSafe(res);
+  if (!res.ok) throw new Error(apiErrMessage(data, `${label} ${res.status}`));
+  const dialogId = String(data?.dialogId ?? "").trim();
+  if (!dialogId) throw new Error(`${label}: empty dialog id`);
+  return { themeId: String(data?.themeId ?? "").trim(), dialogId };
+}
+
 export function titleFromUserMessage(text) {
   const line = String(text ?? "")
     .trim()
@@ -101,8 +129,8 @@ export async function bootstrapThemeAndDialog(title) {
     body: JSON.stringify({ title }),
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Bootstrap ${res.status}`);
+    const err = await readJsonSafe(res);
+    throw new Error(apiErrMessage(err, `Bootstrap ${res.status}`));
   }
   return res.json();
 }
@@ -119,7 +147,7 @@ export async function renameTheme(themeId, title) {
   });
   const data = await res.json().catch(() => null);
   if (!res.ok || !data || data.ok !== true) {
-    throw new Error(data?.error || `Rename theme ${res.status}`);
+    throw new Error(apiErrMessage(data ?? {}, `Rename theme ${res.status}`));
   }
   return data;
 }
@@ -187,8 +215,8 @@ export async function createDialogInTheme(themeId, title) {
     body: JSON.stringify({ themeId: t, title }),
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Create dialog ${res.status}`);
+    const err = await readJsonSafe(res);
+    throw new Error(apiErrMessage(err, `Create dialog ${res.status}`));
   }
   const d = await res.json();
   if (!d?.dialog?.id) {
@@ -204,8 +232,8 @@ export async function saveConversationTurn(dialogId, payload) {
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Save turn ${res.status}`);
+    const err = await readJsonSafe(res);
+    throw new Error(apiErrMessage(err, `Save turn ${res.status}`));
   }
   return res.json();
 }
@@ -229,15 +257,15 @@ export async function setAssistantTurnFavorite(turnId, body) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.ok !== true) {
-    throw new Error(data.error || `Favorite ${res.status}`);
+    throw new Error(apiErrMessage(data, `Favorite ${res.status}`));
   }
 }
 
 export async function fetchAssistantFavorites() {
   const res = await fetch(apiUrl("api/assistant-favorites"));
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Favorites ${res.status}`);
+    const err = await readJsonSafe(res);
+    throw new Error(apiErrMessage(err, `Favorites ${res.status}`));
   }
   const data = await res.json();
   return data.favorites ?? [];
@@ -245,51 +273,23 @@ export async function fetchAssistantFavorites() {
 
 /** Ensures Intro theme and dialog exist for the Intro section. */
 export async function fetchIntroSession() {
-  const res = await fetch(apiUrl("api/intro/session"));
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Intro session ${res.status}`);
-  }
-  const data = await res.json();
-  const dialogId = String(data?.dialogId ?? "").trim();
-  if (!dialogId) throw new Error("Intro session: empty dialog id");
-  return { themeId: String(data?.themeId ?? "").trim(), dialogId };
+  return fetchIntroAccessRulesSession("api/intro/session", "Intro session");
 }
 
 /** Ensures Access theme and dialog exist for the Access section. */
 export async function fetchAccessSession() {
-  const res = await fetch(apiUrl("api/access/session"));
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Access session ${res.status}`);
-  }
-  const data = await res.json();
-  const dialogId = String(data?.dialogId ?? "").trim();
-  if (!dialogId) throw new Error("Access session: empty dialog id");
-  return { themeId: String(data?.themeId ?? "").trim(), dialogId };
+  return fetchIntroAccessRulesSession("api/access/session", "Access session");
 }
 
 /** Ensures Rules theme and dialog exist for the Rules section. */
 export async function fetchRulesSession() {
-  const res = await fetch(apiUrl("api/rules/session"));
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Rules session ${res.status}`);
-  }
-  const data = await res.json();
-  const dialogId = String(data?.dialogId ?? "").trim();
-  if (!dialogId) throw new Error("Rules session: empty dialog id");
-  return { themeId: String(data?.themeId ?? "").trim(), dialogId };
+  return fetchIntroAccessRulesSession("api/rules/session", "Rules session");
 }
 
 /** Saved Rules buckets from `/api/rules/keeper-files` (same shape as merge body). */
 export async function fetchRulesKeeperBundle() {
   const res = await fetch(apiUrl("api/rules/keeper-files"));
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Rules keeper files ${res.status}`);
-  }
-  const data = await res.json();
+  const data = await assertOkOrThrow(res, "Rules keeper files");
   const items = (k) => (Array.isArray(data[k]) ? data[k] : []);
   return {
     core_rules: items("core_rules"),
@@ -310,7 +310,7 @@ export async function mergeRulesKeeperPatch(patch) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.ok !== true) {
-    throw new Error(data.error || `Rules keeper merge ${res.status}`);
+    throw new Error(apiErrMessage(data, `Rules keeper merge ${res.status}`));
   }
   return { merged_total: Number(data.merged_total) || 0 };
 }
@@ -329,7 +329,7 @@ export async function clearDialogTurnsArchive(dialogId) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.ok !== true) {
-    throw new Error(data.error || `Clear thread ${res.status}`);
+    throw new Error(apiErrMessage(data, `Clear thread ${res.status}`));
   }
   return data;
 }
@@ -337,11 +337,7 @@ export async function clearDialogTurnsArchive(dialogId) {
 /** Keeper 2 store: third-party APIs / endpoints (not model keys). */
 export async function fetchAccessExternalServices() {
   const res = await fetch(apiUrl("api/access/external-services"));
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Access external services ${res.status}`);
-  }
-  const data = await res.json();
+  const data = await assertOkOrThrow(res, "Access external services");
   return { entries: Array.isArray(data.entries) ? data.entries : [] };
 }
 
@@ -351,11 +347,7 @@ export async function fetchAccessExternalServices() {
  */
 export async function fetchAccessDataDumpEnrichment() {
   const res = await fetch(apiUrl("api/access/data-dump-enrichment"));
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Access data-dump enrichment ${res.status}`);
-  }
-  return res.json();
+  return assertOkOrThrow(res, "Access data-dump enrichment");
 }
 
 /**
@@ -364,11 +356,7 @@ export async function fetchAccessDataDumpEnrichment() {
  */
 export async function fetchAccessExternalServicesCatalog() {
   const res = await fetch(apiUrl("api/access/external-services/catalog"));
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Access catalog ${res.status}`);
-  }
-  const data = await res.json();
+  const data = await assertOkOrThrow(res, "Access catalog");
   return { entries: Array.isArray(data.entries) ? data.entries : [] };
 }
 
@@ -381,7 +369,7 @@ export async function putAccessExternalServices(body) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.ok !== true) {
-    throw new Error(data.error || `Access external services PUT ${res.status}`);
+    throw new Error(apiErrMessage(data, `Access external services PUT ${res.status}`));
   }
   return { entries: Array.isArray(data.entries) ? data.entries : [] };
 }
@@ -391,11 +379,7 @@ export async function putAccessExternalServices(body) {
 /** Lock state for Intro / Rules / Access (each may have its own 6-digit PIN). */
 export async function fetchIrPanelLocksAll() {
   const res = await fetch(apiUrl("api/ir-panel-lock"));
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `IR panel lock ${res.status}`);
-  }
-  const data = await res.json();
+  const data = await assertOkOrThrow(res, "IR panel lock");
   return {
     intro: { locked: data.intro?.locked === true },
     rules: { locked: data.rules?.locked === true },
@@ -412,7 +396,7 @@ export async function postIrPanelLockSet(panel, pin) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.ok !== true) {
-    throw new Error(data.error || `Set PIN ${res.status}`);
+    throw new Error(apiErrMessage(data, `Set PIN ${res.status}`));
   }
   return data;
 }
@@ -426,7 +410,7 @@ export async function postIrPanelLockUnlock(panel, pin) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.ok !== true) {
-    throw new Error(data.error || `Unlock PIN ${res.status}`);
+    throw new Error(apiErrMessage(data, `Unlock PIN ${res.status}`));
   }
   return data;
 }
@@ -434,21 +418,13 @@ export async function postIrPanelLockUnlock(panel, pin) {
 /** Raw memory graph from the DB (category, short label, fact blob, edges). */
 export async function fetchMemoryGraphFromApi() {
   const res = await fetch(apiUrl("api/memory-graph"));
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Memory graph ${res.status}`);
-  }
-  return res.json();
+  return assertOkOrThrow(res, "Memory graph");
 }
 
 /** Aggregated usage stats: live regular chats plus archived rows from cleared IR threads and deleted themes. */
 export async function fetchAnalytics() {
   const res = await fetch(apiUrl("api/analytics"));
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Analytics ${res.status}`);
-  }
-  return res.json();
+  return assertOkOrThrow(res, "Analytics");
 }
 
 /**
@@ -462,6 +438,6 @@ export async function ingestMemoryGraphPayload(payload) {
     body: JSON.stringify(payload ?? {}),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error || `Memory graph ingest ${res.status}`);
+  if (!res.ok) throw new Error(apiErrMessage(data, `Memory graph ingest ${res.status}`));
   return data;
 }

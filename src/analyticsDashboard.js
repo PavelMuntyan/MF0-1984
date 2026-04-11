@@ -1,15 +1,8 @@
 import { PROVIDER_DISPLAY } from "./chatApi.js";
 import { apiHealth } from "./chatPersistence.js";
+import { escapeHtml } from "./escapeHtml.js";
 
 const PROVIDER_IDS = ["openai", "perplexity", "gemini-flash", "anthropic"];
-
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
 
 /** `YYYY-MM-DD` → `MM.DD` for chart axis */
 function chartDayLabelMmDd(isoDate) {
