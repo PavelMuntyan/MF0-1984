@@ -71,6 +71,26 @@ function buildMemoryLayers(memoryItems, threadId) {
  * Нормализуем историю в плоские сообщения (user/assistant).
  * @param {import("./types.js").ContextPack} pack
  */
+/**
+ * @param {string} base
+ * @param {string|null|undefined} attachmentsJson
+ */
+function userTurnContentForModel(base, attachmentsJson) {
+  const b = String(base ?? "").trim();
+  let names = [];
+  try {
+    const j = JSON.parse(String(attachmentsJson ?? "null"));
+    if (Array.isArray(j)) {
+      names = j.map((x) => (x && x.name ? String(x.name) : "")).filter(Boolean);
+    }
+  } catch {
+    /* ignore */
+  }
+  if (names.length === 0) return b;
+  const hint = `[Attached: ${names.join(", ")}]`;
+  return b ? `${b}\n\n${hint}` : hint;
+}
+
 function flattenHistoryMessages(pack) {
   /** @type {Array<{ id: string, role: string, content: string, created_at: string }>} */
   const fromMirror = (pack.threadMessages ?? []).map((m) => ({
@@ -90,7 +110,7 @@ function flattenHistoryMessages(pack) {
     out.push({
       id: `${t.id}:u`,
       role: "user",
-      content: String(t.user_text ?? ""),
+      content: userTurnContentForModel(t.user_text, t.user_attachments_json),
       created_at: t.user_message_at,
     });
     if (t.assistant_text != null && String(t.assistant_text).trim()) {

@@ -84,6 +84,113 @@ body {
   color: hsl(var(--foreground));
 }
 
+/* Просмотр картинки из чата: поверх интерфейса, Esc или клик по затемнению */
+.chat-image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 100000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: max(0.75rem, env(safe-area-inset-top, 0px)) max(0.75rem, env(safe-area-inset-right, 0px))
+    max(0.75rem, env(safe-area-inset-bottom, 0px)) max(0.75rem, env(safe-area-inset-left, 0px));
+  box-sizing: border-box;
+  max-width: 100vw;
+  max-height: 100dvh;
+  overflow: hidden;
+}
+
+.chat-image-lightbox[hidden] {
+  display: none !important;
+}
+
+.chat-image-lightbox-backdrop {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: hsl(0 0% 0% / 0.62);
+  cursor: pointer;
+}
+
+.dark .chat-image-lightbox-backdrop {
+  background: hsl(0 0% 0% / 0.72);
+}
+
+.chat-image-lightbox-frame {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  box-sizing: border-box;
+}
+
+.chat-image-lightbox-img {
+  display: block;
+  width: auto;
+  height: auto;
+  /* Жёстко не шире/выше окна (с учётом padding у оверлея); object-fit: contain — длинная сторона к краю */
+  max-width: calc(100vw - 2rem - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+  max-height: calc(100vh - 2rem - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+  max-height: calc(100dvh - 2rem - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+  object-fit: contain;
+  object-position: center;
+  border-radius: 0.4rem;
+  box-shadow:
+    0 12px 40px hsl(0 0% 0% / 0.35),
+    0 0 0 1px hsl(var(--border) / 0.35);
+}
+
+.chat-image-lightbox-close {
+  position: absolute;
+  top: -0.15rem;
+  right: -0.15rem;
+  transform: translate(40%, -40%);
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  margin: 0;
+  border: none;
+  border-radius: 9999px;
+  font-size: 1.35rem;
+  line-height: 1;
+  font-weight: 600;
+  cursor: pointer;
+  color: hsl(var(--foreground));
+  background: hsl(var(--card));
+  box-shadow:
+    0 0 0 1px hsl(var(--border)),
+    0 4px 14px hsl(0 0% 0% / 0.2);
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.chat-image-lightbox-close:hover {
+  background: hsl(var(--muted));
+  color: hsl(var(--foreground));
+}
+
+.chat-image-lightbox-close:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px hsl(var(--background)),
+    0 0 0 4px hsl(var(--ring) / 0.4);
+}
+
+.msg-assistant-text.msg-assistant-text--md img,
+.msg-user-text img {
+  cursor: zoom-in;
+}
+
 /* Full-screen notice when dev has no model API keys in `.env` */
 .env-keys-blocker {
   position: fixed;
@@ -261,7 +368,7 @@ body {
   height: 2.25rem;
 }
 
-/* Бейджи моделей — над полем ввода сообщения */
+/* Бейджи моделей — над полем ввода сообщения (сверху и снизу линия) */
 .model-badges {
   display: flex;
   flex-wrap: wrap;
@@ -271,6 +378,7 @@ body {
   flex-shrink: 0;
   padding: 0.4rem 0.7rem;
   border-top: 1px solid hsl(var(--border));
+  border-bottom: 1px solid hsl(var(--border));
   background: hsl(var(--background));
 }
 
@@ -1105,6 +1213,14 @@ button.btn {
   min-width: 0;
   min-height: 0;
   background: hsl(var(--background));
+  /* Та же высота плиток вложений, что у строки ввода в подвале */
+  --input-bar-row-height: calc(1rem + 0.875rem * 1.25 + 1rem);
+}
+
+#main-chat.main-chat--drag-over-files {
+  outline: 2px dashed hsl(var(--primary) / 0.55);
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 9999px hsl(var(--primary) / 0.07);
 }
 
 /* Прокрутка истории: новые реплики у низа, листаем вверх к старым */
@@ -1132,6 +1248,95 @@ button.btn {
   display: flex;
   flex-direction: column;
   background: hsl(var(--background));
+}
+
+.chat-attachments-strip {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  gap: 0.45rem;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.35rem 0.7rem 0.2rem;
+  overflow-x: auto;
+  align-items: flex-end;
+  -webkit-overflow-scrolling: touch;
+}
+
+.chat-attachments-strip[hidden] {
+  display: none !important;
+}
+
+.chat-attach-tile {
+  position: relative;
+  flex-shrink: 0;
+  width: var(--input-bar-row-height);
+  height: var(--input-bar-row-height);
+  border-radius: 0.45rem;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--muted) / 0.32);
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.chat-attach-tile-preview {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.chat-attach-tile-icon-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: hsl(var(--muted-foreground));
+}
+
+.chat-attach-tile-icon-wrap svg {
+  width: 1.35rem;
+  height: 1.35rem;
+  flex-shrink: 0;
+}
+
+.chat-attach-tile-remove {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  padding: 0;
+  margin: 0;
+  border: none;
+  border-radius: 0.22rem;
+  font-size: 0.78rem;
+  line-height: 1;
+  font-weight: 700;
+  cursor: pointer;
+  color: hsl(var(--foreground));
+  background: hsl(var(--background) / 0.82);
+  box-shadow: 0 0 0 1px hsl(var(--border) / 0.55);
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.chat-attach-tile-remove:hover {
+  background: hsl(var(--destructive) / 0.92);
+  color: hsl(var(--destructive-foreground));
+}
+
+.chat-attach-tile-remove:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px hsl(var(--background)),
+    0 0 0 4px hsl(var(--ring) / 0.35);
 }
 
 /* Сообщения в основном окне */
@@ -1199,6 +1404,44 @@ button.btn {
   position: relative;
   padding: 0.3rem 0 0.95rem;
   padding-right: 4.65rem;
+}
+
+.msg-user-attachments {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0 0 0.45rem;
+}
+
+.msg-user-attach-tile {
+  flex-shrink: 0;
+  width: var(--input-bar-row-height);
+  height: var(--input-bar-row-height);
+  border-radius: 0.45rem;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--muted) / 0.28);
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.msg-user-attach-tile-icon-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: hsl(var(--muted-foreground));
+}
+
+.msg-user-attach-tile-icon-wrap svg {
+  width: 1.35rem;
+  height: 1.35rem;
+  flex-shrink: 0;
+}
+
+.msg-user-text--placeholder {
+  min-height: 0;
 }
 
 .msg-user-text {
@@ -1552,6 +1795,9 @@ button.btn {
   margin: 0.5rem 0;
   border-radius: 0.5rem;
   border: 1px solid hsl(var(--border));
+  /* Не обрезать по контейнеру — только вписать по ширине; пропорции как у исходного файла */
+  object-fit: contain;
+  object-position: left top;
 }
 
 .msg-assistant-text.msg-assistant-text--md table {
@@ -1602,6 +1848,15 @@ button.btn {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 4;
   overflow: hidden;
+}
+
+/* Картинки в markdown не режем по «4 строкам текста»: даём прокрутку по высоте */
+.msg-assistant--collapsed .msg-assistant-text.msg-assistant-text--md:has(img) {
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow-x: hidden;
+  overflow-y: auto;
+  max-height: min(70vh, 32rem);
 }
 
 /* Fenced code не участвует в line-clamp родителя — в свёрнутом виде одна строка-плейсхолдер */
@@ -1679,18 +1934,34 @@ button.btn {
   color: hsl(var(--destructive));
 }
 
+/* Колонка: ряд вложений (если есть), затем строка «+ / поле / отправка» с линией сверху */
 .input-bar {
-  /* Одна строка поля ввода (padding + line-height) = высота «+» и отправки */
-  --input-bar-row-height: calc(1rem + 0.875rem * 1.25 + 1rem);
   display: flex;
+  flex-direction: column;
   flex-shrink: 0;
-  padding: 0.4rem;
-  border-top: 1px solid hsl(var(--border));
-  gap: 0.25rem;
-  align-items: flex-end;
+  padding: 0;
+  gap: 0;
+  align-items: stretch;
   background: hsl(var(--background));
   position: relative;
   z-index: 2;
+}
+
+.input-bar-main {
+  display: flex;
+  flex-direction: row;
+  flex-shrink: 0;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.4rem;
+  gap: 0.25rem;
+  align-items: flex-end;
+  /* Без вложений — одна линия снизу у .model-badges; с вложениями — линия над строкой «+ / поле / отправка» */
+  border-top: none;
+}
+
+.input-bar:has(#chat-attachments-strip:not([hidden])) .input-bar-main {
+  border-top: 1px solid hsl(var(--border));
 }
 
 .input-bar-field {

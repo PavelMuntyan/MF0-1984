@@ -28,7 +28,6 @@ export function requestTypeFromAttachMode(mode) {
   if (m === "web") return "web";
   if (m === "image") return "image";
   if (m === "research") return "research";
-  if (m === "files") return "files";
   return "default";
 }
 

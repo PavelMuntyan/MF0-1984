@@ -40,6 +40,7 @@
  * @typedef {Object} ContextPackTurn
  * @property {string} id
  * @property {string} user_text
+ * @property {string|null} [user_attachments_json]
  * @property {string|null} assistant_text
  * @property {string} user_message_at
  */

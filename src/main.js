@@ -37,6 +37,12 @@ import {
   sortThemesFavoritesFirst,
   toggleFavoriteThemeId,
 } from "./themeFavorites.js";
+import {
+  classifyComposerAttachmentKind,
+  MAX_COMPOSER_ATTACHMENTS,
+  prepareComposerAttachmentsForApi,
+  revokeComposerAttachmentPreview,
+} from "./composerAttachments.js";
 
 const MAX_LOG_LINES = 400;
 /** Верхняя граница оценки входных токенов для сборки контекста треда (до ответа модели). */
@@ -51,6 +57,12 @@ let expandedThemeDialogListThemeId = null;
 
 /** Анти-дребезг отправки; при true второй клик игнорируется. Сбрасывается в finally отправки и при смене темы/диалога. */
 let chatComposerSending = false;
+
+/**
+ * Вложения к текущему сообщению (до отправки).
+ * @type {Array<{ id: string, file: File, kind: ReturnType<typeof classifyComposerAttachmentKind>, previewUrl?: string | null }>}
+ */
+let composerAttachmentRows = [];
 
 /** Календарная дата везде в формате YYYY-MM-DD */
 function formatDateYmd(d) {
@@ -81,7 +93,6 @@ function attachModeLogLabel(mode) {
   if (m === "web") return "web search";
   if (m === "image") return "image";
   if (m === "research") return "deep research";
-  if (m === "files") return "files (picker only)";
   return "default text";
 }
 
@@ -186,6 +197,21 @@ function initThemeToggle() {
   });
 }
 
+/** @param {{ log?: boolean }} [options] — log=false: только закрыть (уже есть запись в журнале, напр. Clear). */
+function closeActivityPanel(options = {}) {
+  const panel = document.getElementById("activity-log-panel");
+  const toggleBtn = document.getElementById("btn-activity-toggle");
+  if (!panel || panel.hidden) return;
+  panel.hidden = true;
+  if (toggleBtn) {
+    toggleBtn.setAttribute("aria-pressed", "false");
+    toggleBtn.setAttribute("aria-label", "Show activity log");
+  }
+  if (options.log !== false) {
+    appendActivityLog("Activity log: closed");
+  }
+}
+
 function initActivityPanel() {
   const panel = document.getElementById("activity-log-panel");
   const toggleBtn = document.getElementById("btn-activity-toggle");
@@ -209,13 +235,33 @@ function initActivityPanel() {
     appendActivityLog("Activity log: cleared");
     activityLogLines = [];
     renderActivityLog();
-    setOpen(false);
+    closeActivityPanel({ log: false });
   });
 
   closeBtn?.addEventListener("click", () => {
-    appendActivityLog("Activity log: closed");
-    setOpen(false);
+    closeActivityPanel();
   });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (!panel || panel.hidden) return;
+    e.preventDefault();
+    e.stopPropagation();
+    closeActivityPanel();
+  });
+
+  document.addEventListener(
+    "pointerdown",
+    (e) => {
+      if (!panel || panel.hidden) return;
+      const t = e.target;
+      if (!(t instanceof Node)) return;
+      if (panel.contains(t)) return;
+      if (toggleBtn && (toggleBtn === t || toggleBtn.contains(t))) return;
+      closeActivityPanel();
+    },
+    true,
+  );
 }
 
 /** @param {{ log?: boolean }} [options] — log=false: не писать в журнал (напр. при переходе из записи). */
@@ -1102,6 +1148,206 @@ const ATTACH_TITLES = {
   web: "Web search",
 };
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function elSvg(tag, attrs = {}) {
+  const el = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v != null) el.setAttribute(k, String(v));
+  }
+  return el;
+}
+
+function composerAttachmentIconSvg(kind) {
+  const svg = elSvg("svg", {
+    viewBox: "0 0 24 24",
+    width: "22",
+    height: "22",
+    fill: "none",
+    stroke: "currentColor",
+    "stroke-width": "2",
+    "stroke-linecap": "round",
+    "stroke-linejoin": "round",
+    "aria-hidden": "true",
+  });
+  if (kind === "document") {
+    for (const d of [
+      "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z",
+      "M14 2v6h6",
+      "M16 13H8",
+      "M16 17H8",
+      "M10 9H8",
+    ]) {
+      const p = elSvg("path", { d });
+      svg.appendChild(p);
+    }
+  } else if (kind === "code") {
+    svg.appendChild(elSvg("circle", { cx: "12", cy: "12", r: "3" }));
+    svg.appendChild(
+      elSvg("path", {
+        d: "M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c0 .26.1.51.29.7A1.65 1.65 0 0 0 21 10.09V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.51-1z",
+      }),
+    );
+  } else {
+    for (const d of [
+      "M4 6h16v10H4z",
+      "M8 21h8",
+      "M9 16v5",
+      "M15 16v5",
+      "M8 10h2",
+      "M14 10h2",
+    ]) {
+      svg.appendChild(elSvg("path", { d }));
+    }
+  }
+  return svg;
+}
+
+/** Иконка вложения в уже отправленном сообщении (без превью — только контур, как у документа/шестерни/сервера). */
+function userMessageAttachmentGlyph(kind) {
+  if (kind === "image") {
+    const svg = elSvg("svg", {
+      viewBox: "0 0 24 24",
+      width: "22",
+      height: "22",
+      fill: "none",
+      stroke: "currentColor",
+      "stroke-width": "2",
+      "stroke-linecap": "round",
+      "stroke-linejoin": "round",
+      "aria-hidden": "true",
+    });
+    svg.appendChild(elSvg("rect", { width: "18", height: "18", x: "3", y: "3", rx: "2", ry: "2" }));
+    svg.appendChild(elSvg("circle", { cx: "9", cy: "9", r: "2" }));
+    svg.appendChild(elSvg("path", { d: "m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" }));
+    return svg;
+  }
+  return composerAttachmentIconSvg(kind);
+}
+
+function normalizeStoredUserAttachmentKind(k) {
+  const s = String(k ?? "").toLowerCase();
+  if (s === "image" || s === "document" || s === "code" || s === "other") return s;
+  return "other";
+}
+
+function buildUserMessageCopyText(rawText, attachmentStrip) {
+  const t = String(rawText ?? "").trim();
+  const names = (attachmentStrip ?? [])
+    .map((x) => String(x?.name ?? "").trim())
+    .filter(Boolean);
+  if (!t) return names.join("\n");
+  if (!names.length) return t;
+  return `${t}\n\n${names.join("\n")}`;
+}
+
+function clearComposerAttachmentRows() {
+  for (const row of composerAttachmentRows) {
+    revokeComposerAttachmentPreview(row);
+  }
+  composerAttachmentRows = [];
+  renderComposerAttachmentsStrip();
+  syncComposerSendButtonState();
+}
+
+function removeComposerAttachmentById(id) {
+  const ix = composerAttachmentRows.findIndex((r) => r.id === id);
+  if (ix < 0) return;
+  const [row] = composerAttachmentRows.splice(ix, 1);
+  revokeComposerAttachmentPreview(row);
+  renderComposerAttachmentsStrip();
+  syncComposerSendButtonState();
+}
+
+function renderComposerAttachmentsStrip() {
+  const strip = document.getElementById("chat-attachments-strip");
+  if (!strip) return;
+  strip.replaceChildren();
+  if (composerAttachmentRows.length === 0) {
+    strip.hidden = true;
+    return;
+  }
+  strip.hidden = false;
+  for (const row of composerAttachmentRows) {
+    const tile = document.createElement("div");
+    tile.className = "chat-attach-tile";
+    tile.dataset.attachmentId = row.id;
+
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.className = "chat-attach-tile-remove";
+    rm.setAttribute("aria-label", "Remove attachment");
+    rm.textContent = "×";
+    rm.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      removeComposerAttachmentById(row.id);
+    });
+
+    if (row.kind === "image" && row.previewUrl) {
+      const img = document.createElement("img");
+      img.className = "chat-attach-tile-preview";
+      img.alt = row.file.name || "Image preview";
+      img.src = row.previewUrl;
+      tile.appendChild(rm);
+      tile.appendChild(img);
+    } else {
+      const wrap = document.createElement("div");
+      wrap.className = "chat-attach-tile-icon-wrap";
+      wrap.appendChild(composerAttachmentIconSvg(row.kind));
+      tile.appendChild(rm);
+      tile.appendChild(wrap);
+    }
+    strip.appendChild(tile);
+  }
+}
+
+function addComposerAttachmentsFromFileList(fileList) {
+  const incoming = Array.from(fileList ?? []).filter((f) => f instanceof File);
+  if (incoming.length === 0) return;
+  const room = MAX_COMPOSER_ATTACHMENTS - composerAttachmentRows.length;
+  if (room <= 0) {
+    appendActivityLog(`Attachments: limit is ${MAX_COMPOSER_ATTACHMENTS} files.`);
+    return;
+  }
+  const take = incoming.slice(0, room);
+  if (take.length < incoming.length) {
+    appendActivityLog(
+      `Attachments: only ${take.length} file(s) added (max ${MAX_COMPOSER_ATTACHMENTS} total).`,
+    );
+  }
+  for (const file of take) {
+    const kind = classifyComposerAttachmentKind(file);
+    /** @type {{ id: string, file: File, kind: typeof kind, previewUrl?: string | null }} */
+    const row = {
+      id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      file,
+      kind,
+      previewUrl: null,
+    };
+    if (kind === "image") {
+      try {
+        row.previewUrl = URL.createObjectURL(file);
+      } catch {
+        row.previewUrl = null;
+      }
+    }
+    composerAttachmentRows.push(row);
+  }
+  renderComposerAttachmentsStrip();
+  syncComposerSendButtonState();
+}
+
+function syncComposerSendButtonState() {
+  const ta = document.getElementById("chat-input");
+  const sendBtn = document.getElementById("btn-chat-send");
+  if (!(ta instanceof HTMLTextAreaElement) || !sendBtn) return;
+  if (chatComposerSending) return;
+  const hasText = ta.value.trim().length > 0;
+  const hasFiles = composerAttachmentRows.length > 0;
+  sendBtn.disabled = !hasText && !hasFiles;
+}
+
 function initNewDialogueButton() {
   const btn = document.getElementById("btn-new-dialogue");
   if (!btn) return;
@@ -1125,6 +1371,7 @@ function initNewDialogueButton() {
 
     composerAttachMode = "";
     refreshModelBadges();
+    clearComposerAttachmentRows();
 
     const menu = document.getElementById("attach-menu");
     if (menu) menu.hidden = true;
@@ -1249,12 +1496,18 @@ function initAttachMenu() {
         return;
       }
 
+      if (action === "files") {
+        fileInput?.click();
+        appendActivityLog("Add photos & files: file picker opened");
+        refreshModelBadges();
+        close();
+        return;
+      }
+
       composerAttachMode = action ?? "";
       syncAttachButton();
 
-      if (action === "files") {
-        fileInput?.click();
-      } else if (action === "image") {
+      if (action === "image") {
         appendActivityLog('Attach menu: Create image');
         activateProviderForImageCreation();
         appendActivityLog("In this mode only ChatGPT and Gemini are available (other models disabled)");
@@ -1273,6 +1526,7 @@ function initAttachMenu() {
   fileInput?.addEventListener("change", () => {
     const n = fileInput.files?.length ?? 0;
     if (n > 0) {
+      addComposerAttachmentsFromFileList(fileInput.files);
       appendActivityLog(`Add photos & files: ${n} file(s) selected`);
     }
     fileInput.value = "";
@@ -1634,7 +1888,12 @@ function createDeepResearchBadgeIcon() {
 /**
  * @param {string} rawText
  * @param {string} modelLabel
- * @param {{ webSearch?: boolean; imageCreation?: boolean; deepResearch?: boolean }} [options]
+ * @param {{
+ *   webSearch?: boolean;
+ *   imageCreation?: boolean;
+ *   deepResearch?: boolean;
+ *   attachmentStrip?: Array<{ name: string; kind: string }>;
+ * }} [options]
  */
 function appendUserMessage(rawText, modelLabel, options) {
   const list = document.getElementById("messages-list");
@@ -1643,9 +1902,13 @@ function appendUserMessage(rawText, modelLabel, options) {
   const webSearch = Boolean(options?.webSearch);
   const imageCreation = Boolean(options?.imageCreation);
   const deepResearch = Boolean(options?.deepResearch);
+  const attachmentStrip = Array.isArray(options?.attachmentStrip) ? options.attachmentStrip : [];
 
   const msg = document.createElement("div");
   msg.className = "msg msg-user";
+  if (attachmentStrip.length) {
+    msg.dataset.userAttachmentNames = attachmentStrip.map((x) => x.name).filter(Boolean).join(" ");
+  }
 
   const head = document.createElement("div");
   head.className = "msg-user-head";
@@ -1682,13 +1945,38 @@ function appendUserMessage(rawText, modelLabel, options) {
   const content = document.createElement("div");
   content.className = "msg-user-content";
 
+  if (attachmentStrip.length > 0) {
+    const strip = document.createElement("div");
+    strip.className = "msg-user-attachments";
+    strip.setAttribute("aria-label", "Attached files");
+    for (const item of attachmentStrip) {
+      const tile = document.createElement("div");
+      tile.className = "msg-user-attach-tile";
+      const nm = String(item?.name ?? "file").trim() || "file";
+      tile.title = nm;
+      const wrap = document.createElement("div");
+      wrap.className = "msg-user-attach-tile-icon-wrap";
+      wrap.appendChild(userMessageAttachmentGlyph(normalizeStoredUserAttachmentKind(item?.kind)));
+      tile.appendChild(wrap);
+      strip.appendChild(tile);
+    }
+    content.appendChild(strip);
+  }
+
   const textEl = document.createElement("div");
   textEl.className = "msg-user-text msg-user-text--clamped";
-  textEl.textContent = rawText;
+  const bodyText = String(rawText ?? "").trim();
+  if (bodyText) {
+    textEl.textContent = rawText;
+  } else {
+    textEl.classList.add("msg-user-text--placeholder");
+    textEl.textContent = "";
+  }
 
   const actions = document.createElement("div");
   actions.className = "msg-bubble-actions";
-  actions.appendChild(makeCopyButton(() => rawText));
+  const copyPlain = buildUserMessageCopyText(rawText, attachmentStrip);
+  actions.appendChild(makeCopyButton(() => copyPlain));
 
   const expandBtn = document.createElement("button");
   expandBtn.type = "button";
@@ -1735,7 +2023,9 @@ function refreshThemeHighlightsFromChat() {
   if (!list) return;
   const userMsgs = list.querySelectorAll(".msg-user");
   const last = userMsgs[userMsgs.length - 1];
-  const text = last?.querySelector(".msg-user-text")?.textContent?.trim() ?? "";
+  const textBody = last?.querySelector(".msg-user-text")?.textContent?.trim() ?? "";
+  const names = String(last?.dataset?.userAttachmentNames ?? "").trim();
+  const text = [textBody, names].filter(Boolean).join(" ").trim();
   if (!text) return;
 
   const norm = text.toLowerCase();
@@ -1989,10 +2279,26 @@ function replayTurnInChat(turn) {
   const respProvider = turn.responding_provider_id || reqProvider;
   const modelLabel = PROVIDER_DISPLAY[reqProvider] ?? reqProvider;
   const rt = turn.request_type || "default";
+  /** @type {Array<{ name: string; kind: string }>} */
+  let attachmentStrip = [];
+  try {
+    const j = JSON.parse(String(turn.user_attachments_json ?? "null"));
+    if (Array.isArray(j)) {
+      attachmentStrip = j
+        .filter((x) => x && typeof x === "object")
+        .map((x) => ({
+          name: String(x.name ?? "file").slice(0, 512),
+          kind: normalizeStoredUserAttachmentKind(x.kind),
+        }));
+    }
+  } catch {
+    attachmentStrip = [];
+  }
   appendUserMessage(turn.user_text, modelLabel, {
     webSearch: rt === "web",
     imageCreation: rt === "image",
     deepResearch: rt === "research",
+    attachmentStrip: attachmentStrip.length > 0 ? attachmentStrip : undefined,
   });
   const pending = appendAssistantPending();
   if (!pending) return;
@@ -2087,12 +2393,18 @@ function initChatComposer() {
   if (!ta || !sendBtn) return;
 
   syncChatInputHeight(ta);
-  ta.addEventListener("input", () => syncChatInputHeight(ta));
+  ta.addEventListener("input", () => {
+    syncChatInputHeight(ta);
+    syncComposerSendButtonState();
+  });
+  syncComposerSendButtonState();
 
   async function submitChat() {
     if (chatComposerSending) return;
     const trimmed = ta.value.trim();
-    if (!trimmed) return;
+    const modeForSend = composerAttachMode;
+    const filesSnapshot = composerAttachmentRows.map((r) => r.file);
+    if (!trimmed && filesSnapshot.length === 0) return;
 
     const mainChatEl = document.getElementById("main-chat");
     if (mainChatEl && irChatPanelIsOpen(mainChatEl)) {
@@ -2115,8 +2427,20 @@ function initChatComposer() {
     }
 
     const modelLabel = PROVIDER_DISPLAY[providerId] ?? providerId;
-    const modeForSend = composerAttachMode;
-    const promptForApi = buildChatPromptForApi(trimmed, modeForSend);
+
+    const persistUserText = trimmed;
+
+    const attachmentStripMeta =
+      filesSnapshot.length > 0
+        ? filesSnapshot.map((f) => ({
+            name: f.name || "file",
+            kind: classifyComposerAttachmentKind(f),
+          }))
+        : [];
+
+    const titleSeed =
+      trimmed.trim() ||
+      (filesSnapshot.length > 0 ? filesSnapshot.map((f) => f.name || "file").join(", ") : "");
 
     const userMessageAt = new Date().toISOString();
     let persistDialogId = activeDialogId;
@@ -2132,11 +2456,11 @@ function initChatComposer() {
           /** Новый диалог в уже выбранной теме: без лишнего вызова LLM. Новая тема: заголовок через LLM с таймаутом. */
           const themeIdForNewDialog = String(activeThemeId ?? "").trim();
           const bootTitle = themeIdForNewDialog
-            ? titleFromUserMessage(trimmed)
+            ? titleFromUserMessage(titleSeed)
             : await Promise.race([
-                generateThemeDialogTitle(providerId, trimmed, key),
+                generateThemeDialogTitle(providerId, titleSeed, key),
                 new Promise((resolve) => {
-                  setTimeout(() => resolve(titleFromUserMessage(trimmed)), 12000);
+                  setTimeout(() => resolve(titleFromUserMessage(titleSeed)), 12000);
                 }),
               ]);
           if (themeIdForNewDialog) {
@@ -2159,17 +2483,50 @@ function initChatComposer() {
         }
       }
 
+      const attApi =
+        filesSnapshot.length > 0
+          ? await prepareComposerAttachmentsForApi(filesSnapshot)
+          : { images: [], textAppend: "", filenames: [] };
+      if (filesSnapshot.length > 0) {
+        clearComposerAttachmentRows();
+      }
+
+      let promptForApi = buildChatPromptForApi(trimmed, modeForSend);
+      if (attApi.textAppend) {
+        promptForApi = promptForApi ? `${promptForApi}\n\n${attApi.textAppend}` : attApi.textAppend;
+      }
+      if (!String(promptForApi).trim() && attApi.images.length > 0) {
+        promptForApi = "(See attached images.)";
+      }
+
+      /* Режим «Create image»: в API уходит только текст; прикреплённые картинки — явная подсказка в промпте. */
+      if (modeForSend === "image" && attApi.images.length > 0) {
+        const imgNames = attachmentStripMeta
+          .filter((x) => x.kind === "image")
+          .map((x) => x.name)
+          .filter(Boolean)
+          .join(", ");
+        const note = `The user attached ${attApi.images.length} reference image(s): ${imgNames || "attached images"}. Use them as visual reference when generating.`;
+        promptForApi = String(promptForApi).trim()
+          ? `${String(promptForApi).trim()}\n\n${note}`
+          : note;
+      }
+
+      /** @type {{ images: Array<{ mimeType: string, base64: string }> } | undefined} */
+      const chatAttachments = attApi.images.length > 0 ? { images: attApi.images } : undefined;
+
       sendBtn.disabled = true;
       ta.disabled = true;
 
       appendActivityLog(
-        `Chat → request: ${attachModeLogLabel(modeForSend)}, model ${modelLabel}, input chars: ${trimmed.length}`,
+        `Chat → request: ${attachModeLogLabel(modeForSend)}, model ${modelLabel}, input chars: ${trimmed.length}, attachments: ${filesSnapshot.length}`,
       );
 
-      appendUserMessage(trimmed, modelLabel, {
+      appendUserMessage(persistUserText, modelLabel, {
         webSearch: modeForSend === "web",
         imageCreation: modeForSend === "image",
         deepResearch: modeForSend === "research",
+        attachmentStrip: attachmentStripMeta.length > 0 ? attachmentStripMeta : undefined,
       });
       didAppendUserToUi = true;
       refreshThemeHighlightsFromChat();
@@ -2193,7 +2550,9 @@ function initChatComposer() {
           delete pending.dataset.assistantResponseKind;
         }
         if (modeForSend === "image") {
-          const { text } = await completeImageGeneration(providerId, promptForApi, key);
+          const imageGenOpts =
+            attApi.images.length > 0 ? { chatAttachments: { images: attApi.images } } : {};
+          const { text } = await completeImageGeneration(providerId, promptForApi, key, imageGenOpts);
           fullText = text;
           const te = pending?.querySelector(".msg-assistant-text");
           if (te) setAssistantMessageMarkdown(te, fullText);
@@ -2209,6 +2568,9 @@ function initChatComposer() {
             webSearch: modeForSend === "web",
             deepResearch: modeForSend === "research",
           };
+          if (chatAttachments) {
+            chatOpts.chatAttachments = chatAttachments;
+          }
           if (persistDialogId && modeForSend !== "image" && (await apiHealth())) {
             try {
               const pack = await fetchContextPack(persistDialogId, promptForApi);
@@ -2271,6 +2633,7 @@ function initChatComposer() {
       chatComposerSending = false;
       sendBtn.disabled = false;
       ta.disabled = false;
+      syncComposerSendButtonState();
       scrollMessagesToEnd();
       if (persistDialogId && didAppendUserToUi) {
         const assistantMessageAt = new Date().toISOString();
@@ -2279,15 +2642,20 @@ function initChatComposer() {
             ? String(pending.dataset.assistantMarkdown)
             : fullText;
         try {
-          const saveOut = await saveConversationTurn(persistDialogId, {
-            user_text: trimmed,
+          /** @type {Record<string, unknown>} */
+          const turnPayload = {
+            user_text: persistUserText,
             assistant_text: assistantOut || null,
             requested_provider_id: providerId,
             responding_provider_id: providerId,
             request_type: requestTypeFromAttachMode(modeForSend),
             user_message_at: userMessageAt,
             assistant_message_at: assistantMessageAt,
-          });
+          };
+          if (attachmentStripMeta.length > 0) {
+            turnPayload.user_attachments_json = JSON.stringify(attachmentStripMeta);
+          }
+          const saveOut = await saveConversationTurn(persistDialogId, turnPayload);
           const tid = saveOut && typeof saveOut === "object" && saveOut.id != null ? String(saveOut.id) : "";
           if (pending && tid) {
             pending.dataset.turnId = tid;
@@ -2313,6 +2681,163 @@ function initChatComposer() {
   });
 }
 
+const MAIN_CHAT_FILE_DROP_CLASS = "main-chat--drag-over-files";
+
+function dataTransferHasFileList(dataTransfer) {
+  if (!dataTransfer) return false;
+  try {
+    return [...dataTransfer.types].includes("Files");
+  } catch {
+    return false;
+  }
+}
+
+/** Перетаскивание файлов на область чата — в композер, без кнопки «Добавить фото и файлы». */
+function initChatFileDropZone() {
+  const mainChat = document.getElementById("main-chat");
+  if (!mainChat) return;
+
+  /** После `drop` часть браузеров шлёт ещё `dragover` с типом Files — без этого рамка залипает. */
+  let suppressDropHighlightUntil = 0;
+
+  function clearDropHighlight() {
+    mainChat.classList.remove(MAIN_CHAT_FILE_DROP_CLASS);
+  }
+
+  function onWindowDragOver(e) {
+    if (performance.now() < suppressDropHighlightUntil) {
+      clearDropHighlight();
+      return;
+    }
+    if (!dataTransferHasFileList(e.dataTransfer)) {
+      clearDropHighlight();
+      return;
+    }
+    const top = document.elementFromPoint(e.clientX, e.clientY);
+    if (top instanceof Node && mainChat.contains(top)) {
+      e.preventDefault();
+      try {
+        e.dataTransfer.dropEffect = "copy";
+      } catch {
+        /* ignore */
+      }
+      mainChat.classList.add(MAIN_CHAT_FILE_DROP_CLASS);
+    } else {
+      clearDropHighlight();
+    }
+  }
+
+  function onWindowDrop(e) {
+    clearDropHighlight();
+    if (!dataTransferHasFileList(e.dataTransfer)) return;
+    const t = e.target;
+    if (!(t instanceof Node) || !mainChat.contains(t)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const fl = e.dataTransfer?.files;
+    if (fl?.length) {
+      addComposerAttachmentsFromFileList(fl);
+      /* «Хвостовые» dragover с types: Files после сброса — иначе рамка снова включается. */
+      suppressDropHighlightUntil = performance.now() + 600;
+    }
+    queueMicrotask(() => clearDropHighlight());
+  }
+
+  function onWindowDragEnd() {
+    clearDropHighlight();
+  }
+
+  /** Уход курсора за пределы документа — без следующего `dragover` рамка иначе не снимается. */
+  function onDocumentDragLeave(e) {
+    if (!dataTransferHasFileList(e.dataTransfer)) return;
+    const rel = e.relatedTarget;
+    if (rel != null && rel instanceof Node && document.documentElement.contains(rel)) return;
+    clearDropHighlight();
+  }
+
+  window.addEventListener("dragover", onWindowDragOver, true);
+  window.addEventListener("drop", onWindowDrop, true);
+  window.addEventListener("dragend", onWindowDragEnd, true);
+  document.documentElement.addEventListener("dragleave", onDocumentDragLeave, true);
+  window.addEventListener("blur", clearDropHighlight);
+}
+
+/** Клик по картинке в истории чата — полноэкранный просмотр; Esc или клик по фону — закрыть. */
+function initChatImageLightbox() {
+  const root = document.getElementById("chat-image-lightbox");
+  const backdrop = root?.querySelector(".chat-image-lightbox-backdrop");
+  const frame = root?.querySelector(".chat-image-lightbox-frame");
+  const btnClose = root?.querySelector(".chat-image-lightbox-close");
+  const imgEl = root?.querySelector(".chat-image-lightbox-img");
+  const list = document.getElementById("messages-list");
+  if (!root || !(imgEl instanceof HTMLImageElement) || !list) return;
+
+  let prevActive = /** @type {HTMLElement | null} */ (null);
+
+  function isOpen() {
+    return !root.hidden;
+  }
+
+  function close() {
+    if (!isOpen()) return;
+    root.hidden = true;
+    imgEl.removeAttribute("src");
+    imgEl.alt = "";
+    document.removeEventListener("keydown", onDocKeydown, true);
+    document.body.style.overflow = "";
+    if (prevActive && typeof prevActive.focus === "function") {
+      try {
+        prevActive.focus();
+      } catch {
+        /* ignore */
+      }
+    }
+    prevActive = null;
+  }
+
+  function onDocKeydown(e) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+    }
+  }
+
+  function openFrom(img) {
+    if (!(img instanceof HTMLImageElement) || !img.src) return;
+    prevActive = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    imgEl.src = img.currentSrc || img.src;
+    imgEl.alt = img.alt || "Image";
+    root.hidden = false;
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", onDocKeydown, true);
+    requestAnimationFrame(() => {
+      try {
+        btnClose?.focus();
+      } catch {
+        /* ignore */
+      }
+    });
+  }
+
+  list.addEventListener("click", (e) => {
+    const t = e.target;
+    if (!(t instanceof HTMLImageElement)) return;
+    if (!t.closest(".msg")) return;
+    if (t.closest(".msg-bubble-actions")) return;
+    if (t.closest(".chat-attach-tile")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openFrom(t);
+  });
+
+  backdrop?.addEventListener("click", () => close());
+  btnClose?.addEventListener("click", () => close());
+  frame?.addEventListener("click", (e) => {
+    if (e.target === frame) close();
+  });
+}
+
 function bootApp() {
   initThemeToggle();
   initActivityPanel();
@@ -2325,6 +2850,8 @@ function bootApp() {
   initNewDialogueButton();
   initAttachMenu();
   initChatComposer();
+  initChatFileDropZone();
+  initChatImageLightbox();
   initIntroRulesAccessPanels();
 
   appendActivityLog("MF0-1984 ready.");

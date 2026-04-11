@@ -22,11 +22,12 @@ CREATE INDEX idx_dialogs_theme_id ON dialogs (theme_id);
 
 -- One row per exchange: user prompt and model reply (same ordering field for chronological chat).
 -- requested_provider_id / responding_provider_id: e.g. openai, perplexity, gemini-flash, anthropic
--- request_type: matches attach menu — default | files | image | research | web (add values as product grows)
+-- request_type: matches attach menu — default | image | research | web (add values as product grows)
 CREATE TABLE conversation_turns (
   id TEXT PRIMARY KEY NOT NULL,
   dialog_id TEXT NOT NULL REFERENCES dialogs (id) ON DELETE CASCADE,
   user_text TEXT NOT NULL,
+  user_attachments_json TEXT,
   assistant_text TEXT,
   requested_provider_id TEXT NOT NULL,
   responding_provider_id TEXT,

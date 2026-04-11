@@ -564,6 +564,8 @@
               </div>
 
               <div class="input-bar">
+                <div id="chat-attachments-strip" class="chat-attachments-strip" hidden aria-label="Attached files"></div>
+                <div class="input-bar-main">
                 <div class="input-bar-attach">
                   <button
                     type="button"
@@ -638,7 +640,7 @@
                       <span class="attach-menu-label">Web search</span>
                     </button>
                   </div>
-                  <input type="file" id="attach-file-input" class="attach-file-input" multiple accept="image/*,.pdf,.txt,.doc,.docx" hidden />
+                  <input type="file" id="attach-file-input" class="attach-file-input" multiple accept="*/*" hidden />
                 </div>
                 <div class="input-bar-field">
                   <textarea
@@ -649,11 +651,37 @@
                   ></textarea>
                 </div>
                 <button type="button" class="send-btn" id="btn-chat-send" aria-label="Send message">↑</button>
+                </div>
               </div>
               </div>
             </div>
           </div>
         </div>
+      </div>
+    </div>
+
+    <div
+      id="chat-image-lightbox"
+      class="chat-image-lightbox"
+      hidden
+      role="dialog"
+      aria-modal="true"
+      aria-label="Image preview"
+    >
+      <button
+        type="button"
+        class="chat-image-lightbox-backdrop"
+        aria-label="Close image preview"
+      ></button>
+      <div class="chat-image-lightbox-frame">
+        <button
+          type="button"
+          class="chat-image-lightbox-close"
+          aria-label="Close"
+        >
+          ×
+        </button>
+        <img class="chat-image-lightbox-img" alt="" decoding="async" />
       </div>
     </div>
 

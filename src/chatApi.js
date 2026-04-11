@@ -51,8 +51,16 @@ const GEMINI_GENERATION_CONFIG = {
  * @param {{ googleSearch?: boolean }} [opts]
  */
 function geminiJsonBody(text, opts = {}) {
+  return geminiRequestBodyFromParts([{ text }], opts);
+}
+
+/**
+ * @param {Array<{ text?: string, inlineData?: { mimeType: string, data: string } }>} parts
+ * @param {{ googleSearch?: boolean }} [opts]
+ */
+function geminiRequestBodyFromParts(parts, opts = {}) {
   const body = {
-    contents: [{ parts: [{ text }] }],
+    contents: [{ parts }],
     generationConfig: GEMINI_GENERATION_CONFIG,
   };
   if (opts.googleSearch) {
@@ -61,17 +69,122 @@ function geminiJsonBody(text, opts = {}) {
   return body;
 }
 
+/**
+ * @param {Array<{ role: string, content: unknown }>} messages
+ */
+function lastUserMessageIndex(messages) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === "user") return i;
+  }
+  return -1;
+}
+
+/**
+ * @param {unknown} c
+ */
+function stringifyOpenAiLikeContent(c) {
+  if (typeof c === "string") return c;
+  if (!Array.isArray(c)) return "";
+  return c
+    .filter((x) => x && x.type === "text" && typeof x.text === "string")
+    .map((x) => x.text)
+    .join("\n");
+}
+
+/**
+ * В последнее user-сообщение добавляются только картинки (текст вложений уже в строке запроса).
+ * @param {Array<{ role: string, content: unknown }>} messages
+ * @param {{ images?: Array<{ mimeType: string, base64: string }> } | null | undefined} att
+ */
+function applyChatAttachmentsToOpenAiMessages(messages, att) {
+  const imgs = Array.isArray(att?.images) ? att.images : [];
+  if (imgs.length === 0) {
+    return messages.map((m) => ({ role: m.role, content: m.content }));
+  }
+  const out = messages.map((m) => ({ role: m.role, content: m.content }));
+  const ix = lastUserMessageIndex(out);
+  const idx = ix >= 0 ? ix : (out.push({ role: "user", content: "" }), out.length - 1);
+
+  const prev = stringifyOpenAiLikeContent(out[idx].content) || String(out[idx].content ?? "");
+  const mergedText = prev.trim() || "(Attached images.)";
+
+  /** @type {unknown[]} */
+  const parts = [{ type: "text", text: mergedText }];
+  for (const im of imgs) {
+    const mime = im.mimeType || "image/png";
+    parts.push({
+      type: "image_url",
+      image_url: { url: `data:${mime};base64,${im.base64}` },
+    });
+  }
+  out[idx] = { role: "user", content: parts };
+  return out;
+}
+
+/**
+ * @param {Array<{ role: string, content: unknown }>} messages
+ * @param {{ images?: Array<{ mimeType: string, base64: string }> } | null | undefined} att
+ */
+function applyChatAttachmentsToAnthropicMessages(messages, att) {
+  const imgs = Array.isArray(att?.images) ? att.images : [];
+  if (imgs.length === 0) {
+    return messages.map((m) => ({ role: m.role, content: m.content }));
+  }
+  const out = messages.map((m) => ({ role: m.role, content: m.content }));
+  const ix = lastUserMessageIndex(out);
+  const idx = ix >= 0 ? ix : (out.push({ role: "user", content: "" }), out.length - 1);
+
+  const prev =
+    typeof out[idx].content === "string"
+      ? out[idx].content
+      : stringifyOpenAiLikeContent(out[idx].content);
+  const mergedText = String(prev ?? "").trim() || "(Attached images.)";
+
+  /** @type {unknown[]} */
+  const blocks = [{ type: "text", text: mergedText }];
+  for (const im of imgs) {
+    blocks.push({
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: im.mimeType || "image/png",
+        data: im.base64,
+      },
+    });
+  }
+  out[idx] = { role: "user", content: blocks };
+  return out;
+}
+
 /** Требование Anthropic при вызове из браузера (в т.ч. через /llm/anthropic-прокси). */
 const ANTHROPIC_BROWSER_ACCESS_HEADER = {
   "anthropic-dangerous-direct-browser-access": "true",
 };
 
-async function geminiGenerateContent(modelId, trimmed, key, googleSearch = false) {
+/**
+ * @param {string} modelId
+ * @param {string} trimmed
+ * @param {string} key
+ * @param {boolean} [googleSearch]
+ * @param {{ images?: Array<{ mimeType: string, base64: string }> } | null} [chatAtt]
+ */
+async function geminiGenerateContent(modelId, trimmed, key, googleSearch = false, chatAtt = null) {
+  const imgs = Array.isArray(chatAtt?.images) ? chatAtt.images : [];
+  /** @type {Array<{ text?: string, inlineData?: { mimeType: string, data: string } }>} */
+  const parts = [{ text: trimmed }];
+  for (const im of imgs) {
+    parts.push({
+      inlineData: {
+        mimeType: im.mimeType || "image/png",
+        data: im.base64,
+      },
+    });
+  }
   const url = `/llm/gemini/v1beta/models/${modelId}:generateContent?key=${encodeURIComponent(key)}`;
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(geminiJsonBody(trimmed, { googleSearch })),
+    body: JSON.stringify(geminiRequestBodyFromParts(parts, { googleSearch })),
   });
   if (!res.ok) throw new Error(await readErrorBody(res));
   const data = await res.json();
@@ -250,7 +363,7 @@ function humanizeOpenAiImageError(raw, status) {
  * @param {string} providerId
  * @param {string} text
  * @param {string} apiKey
- * @param {{ webSearch?: boolean, deepResearch?: boolean, systemInstruction?: string, llmMessages?: Array<{ role: string, content: string }> }} [options] — webSearch/deepResearch = поиск и спец-модели где поддерживается; llmMessages = собранный контекст треда
+ * @param {{ webSearch?: boolean, deepResearch?: boolean, systemInstruction?: string, llmMessages?: Array<{ role: string, content: string }>, chatAttachments?: { images?: Array<{ mimeType: string, base64: string }> } }} [options] — webSearch/deepResearch = поиск и спец-модели где поддерживается; llmMessages = собранный контекст треда; chatAttachments = картинки для последнего user (текст файлов уже в text)
  * @returns {Promise<{ text: string }>}
  */
 export async function completeChatMessage(providerId, text, apiKey, options = {}) {
@@ -260,13 +373,17 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
   }
   const trimmed = text.trim();
   const hasLlm = Array.isArray(options.llmMessages) && options.llmMessages.length > 0;
-  if (!hasLlm && !trimmed) {
+  const hasAttImg = (options.chatAttachments?.images?.length ?? 0) > 0;
+  if (!hasLlm && !trimmed && !hasAttImg) {
     throw new Error("Empty message");
   }
   const webSearch = Boolean(options.webSearch);
   const deepResearch = Boolean(options.deepResearch);
   const useWebGrounding = webSearch || deepResearch;
-  const oaMsgs = openAiCompatMessages(trimmed, options);
+  const oaMsgs = applyChatAttachmentsToOpenAiMessages(
+    openAiCompatMessages(trimmed, options),
+    options.chatAttachments,
+  );
 
   switch (providerId) {
     case "openai": {
@@ -293,7 +410,10 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
       const anthropicBody = {
         model: ANTHROPIC_MODEL,
         max_tokens: 4096,
-        messages: anthropicApiMessages(trimmed, options),
+        messages: applyChatAttachmentsToAnthropicMessages(
+          anthropicApiMessages(trimmed, options),
+          options.chatAttachments,
+        ),
       };
       if (options.systemInstruction) {
         anthropicBody.system = options.systemInstruction;
@@ -330,7 +450,13 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
           ? options.llmMessages
           : [{ role: "user", content: trimmed }];
       const combined = geminiFlattenChat(String(options.systemInstruction ?? ""), gMsgs);
-      return geminiGenerateContent(GEMINI_MODEL_FLASH, combined, key, useWebGrounding);
+      return geminiGenerateContent(
+        GEMINI_MODEL_FLASH,
+        combined,
+        key,
+        useWebGrounding,
+        options.chatAttachments,
+      );
     }
     case "perplexity": {
       const perplexityBody = {
@@ -499,7 +625,7 @@ export async function generateThemeDialogTitle(providerId, userMessage, apiKey) 
 
 /**
  * Потоковый ответ: onDelta вызывается для каждой порции текста по мере прихода.
- * @param {{ webSearch?: boolean, deepResearch?: boolean, systemInstruction?: string, llmMessages?: Array<{ role: string, content: string }> }} [options]
+ * @param {{ webSearch?: boolean, deepResearch?: boolean, systemInstruction?: string, llmMessages?: Array<{ role: string, content: string }>, chatAttachments?: { images?: Array<{ mimeType: string, base64: string }> } }} [options]
  * @returns {Promise<string>} полный накопленный текст
  */
 export async function completeChatMessageStreaming(providerId, text, apiKey, onDelta, options = {}) {
@@ -509,13 +635,17 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
   }
   const trimmed = text.trim();
   const hasLlm = Array.isArray(options.llmMessages) && options.llmMessages.length > 0;
-  if (!hasLlm && !trimmed) {
+  const hasAttImg = (options.chatAttachments?.images?.length ?? 0) > 0;
+  if (!hasLlm && !trimmed && !hasAttImg) {
     throw new Error("Empty message");
   }
   const webSearch = Boolean(options.webSearch);
   const deepResearch = Boolean(options.deepResearch);
   const useWebGrounding = webSearch || deepResearch;
-  const oaMsgs = openAiCompatMessages(trimmed, options);
+  const oaMsgs = applyChatAttachmentsToOpenAiMessages(
+    openAiCompatMessages(trimmed, options),
+    options.chatAttachments,
+  );
 
   let full;
 
@@ -568,7 +698,10 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
       const aStreamBody = {
         model: ANTHROPIC_MODEL,
         max_tokens: 4096,
-        messages: anthropicApiMessages(trimmed, options),
+        messages: applyChatAttachmentsToAnthropicMessages(
+          anthropicApiMessages(trimmed, options),
+          options.chatAttachments,
+        ),
         stream: true,
       };
       if (options.systemInstruction) {
@@ -599,6 +732,17 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
           ? options.llmMessages
           : [{ role: "user", content: trimmed }];
       const combined = geminiFlattenChat(String(options.systemInstruction ?? ""), gMsgs);
+      const imgs = Array.isArray(options.chatAttachments?.images) ? options.chatAttachments.images : [];
+      /** @type {Array<{ text?: string, inlineData?: { mimeType: string, data: string } }>} */
+      const gParts = [{ text: combined }];
+      for (const im of imgs) {
+        gParts.push({
+          inlineData: {
+            mimeType: im.mimeType || "image/png",
+            data: im.base64,
+          },
+        });
+      }
       // Без alt=sse Google отдаёт не классический SSE (см. ai.google.dev streamGenerateContent) — парсер не получает data:-чанки по мере генерации.
       const url = `/llm/gemini/v1beta/models/${GEMINI_MODEL_FLASH}:streamGenerateContent?key=${encodeURIComponent(key)}&alt=sse`;
       const res = await fetch(url, {
@@ -607,7 +751,9 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
           "Content-Type": "application/json",
           Accept: "text/event-stream",
         },
-        body: JSON.stringify(geminiJsonBody(combined, { googleSearch: useWebGrounding })),
+        body: JSON.stringify(
+          geminiRequestBodyFromParts(gParts, { googleSearch: useWebGrounding }),
+        ),
       });
       const gStream = await streamGeminiGenerateContent(res, onDelta);
       full = mergePlainBracketRefsWithCitationList(gStream.text, gStream.citations, {
@@ -663,26 +809,54 @@ export function apiImageGenerationModelHint(providerId) {
   }
 }
 
-async function openaiImageGeneration(prompt, key) {
-  const res = await fetch("/llm/openai/v1/images/generations", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${key}`,
-    },
-    body: JSON.stringify({
-      model: OPENAI_IMAGE_MODEL,
-      prompt,
-      n: 1,
-      size: "1024x1024",
-    }),
-  });
-  if (!res.ok) {
-    const msg = await readErrorBody(res);
-    throw new Error(humanizeOpenAiImageError(msg, res.status));
+/**
+ * Размер кадра для Images API (gpt-image): явные пропорции из промпта или auto.
+ * @param {string} prompt
+ */
+function openAiImageSizeFromPrompt(prompt) {
+  const s = String(prompt ?? "").toLowerCase();
+  if (
+    /\b(9\s*:\s*16|9:16|portrait|vertical\s+format|tall\s+image|phone\s+screen|story\s+format)\b/.test(
+      s,
+    )
+  ) {
+    return "1024x1536";
   }
-  const data = await res.json();
-  const item = data.data?.[0];
+  if (/\b(16\s*:\s*9|16:9|landscape|wide\s+shot|horizontal|banner|cinematic\s+wide)\b/.test(s)) {
+    return "1536x1024";
+  }
+  if (/\b(1\s*:\s*1|1:1|square)\b/.test(s)) {
+    return "1024x1024";
+  }
+  return "auto";
+}
+
+/**
+ * @param {string} mimeType
+ * @param {string} base64
+ * @returns {Promise<Blob>}
+ */
+async function base64ImageToBlob(mimeType, base64) {
+  const mime = String(mimeType || "image/png").split(";")[0].trim() || "image/png";
+  const res = await fetch(`data:${mime};base64,${base64}`);
+  if (!res.ok) throw new Error("Could not prepare reference image for upload");
+  return res.blob();
+}
+
+function extensionForImageMime(mime) {
+  const m = String(mime || "").toLowerCase();
+  if (m.includes("jpeg") || m === "image/jpg") return "jpg";
+  if (m.includes("webp")) return "webp";
+  if (m.includes("gif")) return "gif";
+  return "png";
+}
+
+/**
+ * @param {unknown} data
+ * @returns {string} markdown
+ */
+function openAiImageDataToMarkdown(data) {
+  const item = data && typeof data === "object" && Array.isArray(data.data) ? data.data[0] : null;
   if (!item) throw new Error("Empty image API response");
   if (item.url) {
     return `![Generated image](${item.url})`;
@@ -693,13 +867,165 @@ async function openaiImageGeneration(prompt, key) {
   throw new Error("API response contained no image URL or image data");
 }
 
-async function geminiImageGeneration(prompt, key) {
+/**
+ * Референсы: официально `POST /v1/images/edits` + multipart (`image[]`, `prompt`, `model`, `size`).
+ * @param {string} prompt
+ * @param {string} key
+ * @param {Array<{ mimeType: string, base64: string }>} images
+ * @param {string} preferredSize
+ */
+async function openaiImageEditsWithReferences(prompt, key, images, preferredSize) {
+  async function postEdits(size) {
+    const fd = new FormData();
+    fd.append("model", OPENAI_IMAGE_MODEL);
+    fd.append("prompt", prompt);
+    fd.append("size", size);
+    for (let i = 0; i < images.length; i++) {
+      const im = images[i];
+      const mime = im.mimeType || "image/png";
+      const blob = await base64ImageToBlob(mime, im.base64);
+      const ext = extensionForImageMime(mime);
+      fd.append("image[]", blob, `reference-${i}.${ext}`);
+    }
+    return fetch("/llm/openai/v1/images/edits", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}` },
+      body: fd,
+    });
+  }
+
+  let res = await postEdits(preferredSize);
+  let errBody = "";
+  if (!res.ok) {
+    errBody = await readErrorBody(res);
+    if (
+      preferredSize === "auto" &&
+      /size|invalid|unknown|not\s+support/i.test(String(errBody))
+    ) {
+      res = await postEdits("1024x1024");
+      if (!res.ok) errBody = await readErrorBody(res);
+    }
+  }
+  if (!res.ok) {
+    throw new Error(humanizeOpenAiImageError(errBody, res.status));
+  }
+  const data = await res.json();
+  return openAiImageDataToMarkdown(data);
+}
+
+/**
+ * @param {string} prompt
+ * @param {string} key
+ * @param {{ images?: Array<{ mimeType: string, base64: string }> } | null | undefined} [chatAtt]
+ */
+async function openaiImageGeneration(prompt, key, chatAtt = null) {
+  const imgs = Array.isArray(chatAtt?.images) ? chatAtt.images : [];
+  const preferredSize = openAiImageSizeFromPrompt(prompt);
+
+  if (imgs.length > 0) {
+    return openaiImageEditsWithReferences(prompt, key, imgs, preferredSize);
+  }
+
+  const payload = {
+    model: OPENAI_IMAGE_MODEL,
+    prompt,
+    n: 1,
+    size: preferredSize,
+  };
+  let res = await fetch("/llm/openai/v1/images/generations", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${key}`,
+    },
+    body: JSON.stringify(payload),
+  });
+  let errBody = "";
+  if (!res.ok) {
+    errBody = await readErrorBody(res);
+    if (
+      preferredSize === "auto" &&
+      /size|invalid|unknown|not\s+support/i.test(String(errBody))
+    ) {
+      payload.size = "1024x1024";
+      res = await fetch("/llm/openai/v1/images/generations", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${key}`,
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) errBody = await readErrorBody(res);
+    }
+  }
+  if (!res.ok) {
+    throw new Error(humanizeOpenAiImageError(errBody, res.status));
+  }
+  const data = await res.json();
+  return openAiImageDataToMarkdown(data);
+}
+
+/**
+ * Режим «Создать изображение»: промпт + опционально референсные картинки (как в доке — текст, затем inlineData).
+ * @param {string} prompt
+ * @param {string} key
+ * @param {{ images?: Array<{ mimeType: string, base64: string }> } | null | undefined} [chatAtt]
+ */
+/**
+ * Самый крупный inline-блок в поддереве ответа (часто финальная картинка; мелочь в метаданных отсекаем по длине).
+ * @param {unknown} root
+ * @param {number} [minDataLen]
+ * @returns {{ mime: string, data: string } | null}
+ */
+function geminiLargestInlineImageInTree(root, minDataLen = 256) {
+  /** @type {{ mime: string, data: string } | null} */
+  let best = null;
+  let bestLen = 0;
+  function walk(node, depth) {
+    if (!node || depth > 28 || typeof node !== "object") return;
+    const id = /** @type {{ mimeType?: string, mime_type?: string, data?: string }} */ (
+      node.inlineData ?? node.inline_data
+    );
+    if (id?.data && typeof id.data === "string") {
+      const len = id.data.length;
+      if (len >= minDataLen && len > bestLen) {
+        bestLen = len;
+        best = {
+          mime: String(id.mimeType || id.mime_type || "image/png"),
+          data: id.data,
+        };
+      }
+    }
+    if (Array.isArray(node)) {
+      for (const x of node) walk(x, depth + 1);
+      return;
+    }
+    for (const k of Object.keys(node)) walk(/** @type {Record<string, unknown>} */ (node)[k], depth + 1);
+  }
+  walk(root, 0);
+  return best;
+}
+
+async function geminiImageGeneration(prompt, key, chatAtt = null) {
+  const imgs = Array.isArray(chatAtt?.images) ? chatAtt.images : [];
+  /** @type {Array<{ text?: string, inlineData?: { mimeType: string, data: string } }>} */
+  const parts = [{ text: prompt }];
+  for (const im of imgs) {
+    parts.push({
+      inlineData: {
+        mimeType: im.mimeType || "image/png",
+        data: im.base64,
+      },
+    });
+  }
+
   const url = `/llm/gemini/v1beta/models/${GEMINI_IMAGE_MODEL}:generateContent?key=${encodeURIComponent(key)}`;
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
+      contents: [{ role: "user", parts }],
       /* Без явных модальностей API часто отдаёт только текст; картинка приходит во parts как inlineData. */
       generationConfig: {
         responseModalities: ["TEXT", "IMAGE"],
@@ -720,18 +1046,16 @@ async function geminiImageGeneration(prompt, key) {
   function collectFromParts(parts) {
     if (!Array.isArray(parts)) return;
     for (const p of parts) {
-      if (p?.thought === true) continue;
-      if (p?.text) textBits.push(String(p.text));
-      const id = p?.inlineData ?? p?.inline_data;
-      if (id?.data && id?.mimeType) {
-        const mime = String(id.mimeType);
+      if (!p || typeof p !== "object") continue;
+      const id = p.inlineData ?? p.inline_data;
+      if (id?.data && typeof id.data === "string") {
+        const mime = String(id.mimeType || id.mime_type || "image/png");
         const b64 = String(id.data);
         imageMd = `![Generated image](data:${mime};base64,${b64})`;
-      } else if (id?.data && id?.mime_type) {
-        const mime = String(id.mime_type);
-        const b64 = String(id.data);
-        imageMd = `![Generated image](data:${mime};base64,${b64})`;
+        continue;
       }
+      if (p.thought === true) continue;
+      if (p.text) textBits.push(String(p.text));
     }
   }
 
@@ -741,8 +1065,29 @@ async function geminiImageGeneration(prompt, key) {
   }
 
   if (!imageMd) {
+    for (const cand of candidates) {
+      const blob = geminiLargestInlineImageInTree(cand?.content, 128);
+      if (blob) {
+        imageMd = `![Generated image](data:${blob.mime};base64,${blob.data})`;
+        break;
+      }
+    }
+  }
+
+  if (!imageMd) {
     const t = textBits.join("\n").trim();
-    throw new Error(t || "Model did not return an image");
+    const fr = candidates.map((c) => c?.finishReason).filter(Boolean);
+    const frHint = fr.length ? `finishReason: ${fr.join(", ")}` : "";
+    const block = data.promptFeedback?.blockReason;
+    const blockHint = block ? `promptFeedback: ${block}` : "";
+    const detail = [frHint, blockHint].filter(Boolean).join("; ");
+    const hint =
+      t.length > 0
+        ? `Model did not return image data (only text). ${detail ? `${detail}. ` : ""}First line: ${t.split("\n")[0].slice(0, 160)}${t.length > 160 ? "…" : ""}`
+        : detail
+          ? `Model did not return an image (${detail})`
+          : "Model did not return an image";
+    throw new Error(hint);
   }
   const prefix = textBits.filter(Boolean).join("\n\n").trim();
   return prefix ? `${prefix}\n\n${imageMd}` : imageMd;
@@ -750,9 +1095,10 @@ async function geminiImageGeneration(prompt, key) {
 
 /**
  * Генерация изображения по текстовому описанию (режим «Создать изображение»).
+ * @param {{ chatAttachments?: { images?: Array<{ mimeType: string, base64: string }> } }} [options] — референсные картинки: Gemini (parts), ChatGPT (`/images/edits` + multipart).
  * @returns {Promise<{ text: string }>} markdown с картинкой (![]())
  */
-export async function completeImageGeneration(providerId, prompt, apiKey) {
+export async function completeImageGeneration(providerId, prompt, apiKey, options = {}) {
   const key = String(apiKey ?? "").trim();
   if (!key) {
     throw new Error("No API key for the selected model (.env)");
@@ -764,11 +1110,11 @@ export async function completeImageGeneration(providerId, prompt, apiKey) {
 
   switch (providerId) {
     case "openai": {
-      const text = await openaiImageGeneration(trimmed, key);
+      const text = await openaiImageGeneration(trimmed, key, options.chatAttachments ?? null);
       return { text };
     }
     case "gemini-flash": {
-      const text = await geminiImageGeneration(trimmed, key);
+      const text = await geminiImageGeneration(trimmed, key, options.chatAttachments ?? null);
       return { text };
     }
     case "anthropic":

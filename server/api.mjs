@@ -46,6 +46,47 @@ function applyAssistantFavoriteColumns(database) {
   }
 }
 
+/** Имена вложений для контекста LLM / RAG (в UI не показывается). */
+function applyUserAttachmentsJsonColumn(database) {
+  const cols = database.prepare(`PRAGMA table_info(conversation_turns)`).all();
+  const names = new Set(cols.map((c) => c.name));
+  if (!names.has("user_attachments_json")) {
+    database.exec(`ALTER TABLE conversation_turns ADD COLUMN user_attachments_json TEXT`);
+  }
+}
+
+function parseTurnUserAttachmentsJson(raw) {
+  if (raw == null || String(raw).trim() === "") return [];
+  try {
+    const j = JSON.parse(String(raw));
+    if (!Array.isArray(j)) return [];
+    return j
+      .filter((x) => x && typeof x === "object")
+      .slice(0, 10)
+      .map((x) => ({
+        name: String(x.name ?? "file").slice(0, 512),
+        kind: ["image", "document", "code", "other"].includes(String(x.kind)) ? String(x.kind) : "other",
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function attachmentHintForModelFromJson(jsonStr) {
+  const rows = parseTurnUserAttachmentsJson(jsonStr);
+  if (rows.length === 0) return "";
+  const names = rows.map((r) => r.name).filter(Boolean);
+  if (names.length === 0) return "";
+  return `[Attached: ${names.join(", ")}]`;
+}
+
+function userTextForContextPipeline(storedUserText, attachmentsJson) {
+  const base = String(storedUserText ?? "").trim();
+  const hint = attachmentHintForModelFromJson(attachmentsJson);
+  if (!hint) return base;
+  return base ? `${base}\n\n${hint}` : hint;
+}
+
 function ensureDatabase() {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const database = new Database(dbPath);
@@ -57,6 +98,7 @@ function ensureDatabase() {
   }
   applyContextEngineMigration(database);
   applyAssistantFavoriteColumns(database);
+  applyUserAttachmentsJsonColumn(database);
   return database;
 }
 
@@ -127,7 +169,7 @@ function listThemesWithDialogs() {
 function listTurns(dialogId) {
   return db
     .prepare(
-      `SELECT id, user_text, assistant_text, requested_provider_id, responding_provider_id, request_type, user_message_at, assistant_message_at,
+      `SELECT id, user_text, user_attachments_json, assistant_text, requested_provider_id, responding_provider_id, request_type, user_message_at, assistant_message_at,
               assistant_favorite, assistant_favorite_markdown
        FROM conversation_turns WHERE dialog_id = ? ORDER BY datetime(user_message_at) ASC, id ASC`,
     )
@@ -142,6 +184,7 @@ function listAssistantFavorites() {
          t.dialog_id,
          d.theme_id AS theme_id,
          t.user_text,
+         t.user_attachments_json,
          t.assistant_favorite_markdown,
          t.assistant_message_at,
          d.title AS dialog_title,
@@ -368,21 +411,28 @@ const server = http.createServer(async (req, res) => {
       (p === "/api/assistant-favorites" || p === "/api/dialogs/assistant-favorites")
     ) {
       const rows = listAssistantFavorites();
-      const favorites = rows.map((r) => ({
-        turnId: r.turn_id,
-        dialogId: r.dialog_id,
-        themeId: r.theme_id,
-        themeTitle: r.theme_title,
-        dialogTitle: r.dialog_title,
-        userPreview: String(r.user_text ?? "")
+      const favorites = rows.map((r) => {
+        const line = String(r.user_text ?? "")
           .trim()
           .split(/\r?\n/)
-          .find((line) => line.trim().length > 0)
-          ?.trim()
-          .slice(0, 120),
-        markdown: r.assistant_favorite_markdown ?? "",
-        assistantMessageAt: rawDbTimestamp(r.assistant_message_at),
-      }));
+          .find((x) => x.trim().length > 0)
+          ?.trim();
+        const fromFiles = parseTurnUserAttachmentsJson(r.user_attachments_json)
+          .map((x) => x.name)
+          .filter(Boolean)
+          .join(", ");
+        const userPreview = (line && line.slice(0, 120)) || (fromFiles && fromFiles.slice(0, 120)) || "";
+        return {
+          turnId: r.turn_id,
+          dialogId: r.dialog_id,
+          themeId: r.theme_id,
+          themeTitle: r.theme_title,
+          dialogTitle: r.dialog_title,
+          userPreview,
+          markdown: r.assistant_favorite_markdown ?? "",
+          assistantMessageAt: rawDbTimestamp(r.assistant_message_at),
+        };
+      });
       return json(res, 200, { favorites });
     }
 
@@ -588,6 +638,8 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const turnId = crypto.randomUUID();
       const userText = String(body.user_text ?? "");
+      const userAttachmentsJson =
+        body.user_attachments_json != null ? String(body.user_attachments_json) : "";
       const assistantText = body.assistant_text != null ? String(body.assistant_text) : null;
       const requestedProviderId = String(body.requested_provider_id ?? "");
       const respondingProviderId =
@@ -597,21 +649,30 @@ const server = http.createServer(async (req, res) => {
       const assistantMessageAt =
         body.assistant_message_at != null ? String(body.assistant_message_at) : null;
 
-      if (!userText || !requestedProviderId || !userMessageAt) {
-        return json(res, 400, { error: "user_text, requested_provider_id, user_message_at required" });
+      const attachRows = parseTurnUserAttachmentsJson(userAttachmentsJson);
+      const hasUserChars = String(userText).trim().length > 0;
+      const hasAttach = attachRows.length > 0;
+      if ((!hasUserChars && !hasAttach) || !requestedProviderId || !userMessageAt) {
+        return json(res, 400, {
+          error: "user_text (or attachments), requested_provider_id, user_message_at required",
+        });
       }
+
+      const attachJsonToStore = hasAttach ? JSON.stringify(attachRows) : null;
+      const pipelineUserText = userTextForContextPipeline(userText, attachJsonToStore);
 
       const now = new Date().toISOString();
       const tx = db.transaction(() => {
         db.prepare(
           `INSERT INTO conversation_turns (
-            id, dialog_id, user_text, assistant_text, requested_provider_id, responding_provider_id,
+            id, dialog_id, user_text, user_attachments_json, assistant_text, requested_provider_id, responding_provider_id,
             request_type, user_message_at, assistant_message_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           turnId,
           dialogId,
           userText,
+          attachJsonToStore,
           assistantText,
           requestedProviderId,
           respondingProviderId,
@@ -627,7 +688,7 @@ const server = http.createServer(async (req, res) => {
         runAfterTurnPipeline(
           dialogId,
           turnId,
-          userText,
+          pipelineUserText,
           assistantText,
           userMessageAt,
           assistantMessageAt || now,
