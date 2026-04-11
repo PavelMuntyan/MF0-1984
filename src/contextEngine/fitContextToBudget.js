@@ -46,13 +46,15 @@ export function fitContextToBudget(built, maxInputTokens) {
   let memTok = estimateTokens(memoryText);
   let accessText = String(built.accessCatalogBlock ?? "").trim();
   let accessTok = estimateTokens(accessText);
+  let userAddrText = String(built.userAddressingProfile ?? "").trim();
+  let userAddrTok = estimateTokens(userAddrText);
 
   const coreTok = estimateTokens(built.systemCore);
   const rulesTok = estimateTokens(built.activeRulesDigest);
   const recentTok = recentMsgs.reduce((a, m) => a + estimateTokens(m.content), 0);
   const finalTok = estimateTokens(final.content);
 
-  const fixed = coreTok + rulesTok + recentTok + finalTok + 200;
+  const fixed = coreTok + userAddrTok + rulesTok + recentTok + finalTok + 200;
   let remaining = budget - fixed - memTok - retrievedTok - accessTok - memTreeTok;
 
   const dropped = [];
@@ -93,9 +95,22 @@ export function fitContextToBudget(built, maxInputTokens) {
     dropped.push("access_catalog_shrink");
   }
 
+  while (remaining < 0 && userAddrTok > 80 && userAddrText.length > 120) {
+    const prevLen = userAddrText.length;
+    const newLen = Math.max(120, Math.floor(prevLen * 0.62));
+    userAddrText = userAddrText.slice(0, newLen) + (newLen < prevLen ? "\n…" : "");
+    const newTok = estimateTokens(userAddrText);
+    remaining += userAddrTok - newTok;
+    userAddrTok = newTok;
+    dropped.push("user_profile_shrink");
+  }
+
   const systemInstruction = [
     "=== CORE ===",
     built.systemCore,
+    userAddrText.trim()
+      ? "=== USER PROFILE & ADDRESSING (Memory tree: People → User) ===\n" + userAddrText.trim()
+      : "",
     "=== RULES DIGEST ===",
     built.activeRulesDigest || "(none)",
     accessText.trim() ? "=== ACCESS CATALOG (metadata only; no API keys) ===\n" + accessText : "",
@@ -130,6 +145,7 @@ export function fitContextToBudget(built, maxInputTokens) {
   return {
     context: {
       ...built,
+      userAddressingProfile: userAddrText.trim(),
       relevantMemoryBlock: memoryText,
       accessCatalogBlock: accessText,
       combinedSystemInstruction: systemInstruction,

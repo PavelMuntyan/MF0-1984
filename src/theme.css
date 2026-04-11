@@ -1716,7 +1716,13 @@ button.btn {
   color: hsl(var(--primary));
 }
 
-.chat--rules .messages-viewport {
+/* Rules: same layout as Intro / Access — thread in shared viewport; hide empty IR body strip */
+.chat--rules #chat-rules-view.chat-ir-view {
+  flex: 0 0 auto;
+  min-height: 0;
+}
+
+.chat--rules #chat-rules-view .chat-ir-body {
   display: none !important;
 }
 

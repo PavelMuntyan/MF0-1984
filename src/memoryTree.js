@@ -15,6 +15,15 @@ export function openMemoryTree() {
 /** @type {null | { className: string, viewId: string, btnId: string }} */
 let irPanelStashedForMemoryTree = null;
 
+/** While Memory tree is open, `chat--intro` is removed from `#main-chat` — use this for Intro Keeper / session. */
+export function memoryTreeCoversIntroChat() {
+  const chat = document.getElementById("main-chat");
+  return Boolean(
+    chat?.classList.contains("chat--memory-tree") &&
+      irPanelStashedForMemoryTree?.className === "chat--intro",
+  );
+}
+
 /** Close Memory tree view and return to chat (no-op if already closed). */
 export function closeMemoryTree() {
   closeMemoryTreeImpl();

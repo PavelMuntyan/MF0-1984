@@ -90,6 +90,7 @@ export async function fetchContextPack(dialogId, userQuery = "") {
     threadMessages: [],
     turns,
     userQuery: String(userQuery ?? "").slice(0, 2000),
+    userAddressingProfile: "",
   };
 }
 
@@ -279,6 +280,39 @@ export async function fetchRulesSession() {
   const dialogId = String(data?.dialogId ?? "").trim();
   if (!dialogId) throw new Error("Rules session: empty dialog id");
   return { themeId: String(data?.themeId ?? "").trim(), dialogId };
+}
+
+/** Saved Rules buckets from `/api/rules/keeper-files` (same shape as merge body). */
+export async function fetchRulesKeeperBundle() {
+  const res = await fetch(apiUrl("api/rules/keeper-files"));
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Rules keeper files ${res.status}`);
+  }
+  const data = await res.json();
+  const items = (k) => (Array.isArray(data[k]) ? data[k] : []);
+  return {
+    core_rules: items("core_rules"),
+    private_rules: items("private_rules"),
+    forbidden_actions: items("forbidden_actions"),
+    workflow_rules: items("workflow_rules"),
+  };
+}
+
+/**
+ * @param {{ core_rules?: string[], private_rules?: string[], forbidden_actions?: string[], workflow_rules?: string[] }} patch
+ */
+export async function mergeRulesKeeperPatch(patch) {
+  const res = await fetch(apiUrl("api/rules/keeper-merge"), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch ?? {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok !== true) {
+    throw new Error(data.error || `Rules keeper merge ${res.status}`);
+  }
+  return { merged_total: Number(data.merged_total) || 0 };
 }
 
 /**

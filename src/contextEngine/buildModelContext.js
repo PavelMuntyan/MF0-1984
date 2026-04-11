@@ -166,6 +166,7 @@ export function buildModelContext(input) {
   const { threadId, userPrompt, contextPack, modelFlags, accessServicesCatalog, memoryTreeSupplement } = input;
   const pack = contextPack;
   const rules = pack.rules ?? [];
+  const userAddressingProfile = String(pack.userAddressingProfile ?? "").trim();
 
   const systemCore = pickSystemCore(rules);
   const activeRulesDigest = buildRulesDigest(rules);
@@ -239,9 +240,12 @@ export function buildModelContext(input) {
   const combinedSystemInstruction = [
     "=== CORE ===",
     systemCore,
-    "=== ACTIVE RULES (digest) ===",
+    userAddressingProfile
+      ? "=== USER PROFILE & ADDRESSING (Memory tree: People → User) ===\n" + userAddressingProfile
+      : "",
+    "=== RULES DIGEST ===",
     activeRulesDigest || "(none)",
-    accessCatalogBlock.trim() ? "=== ACCESS CATALOG (metadata only) ===\n" + accessCatalogBlock : "",
+    accessCatalogBlock.trim() ? "=== ACCESS CATALOG (metadata only; no API keys) ===\n" + accessCatalogBlock : "",
     "=== MEMORY (compact) ===",
     relevantMemoryBlock || "(none)",
     globalConstraints ? "=== CRITICAL CONSTRAINTS ===\n" + globalConstraints : "",
@@ -253,6 +257,7 @@ export function buildModelContext(input) {
     modelFlags: modelFlags ?? {},
     layerTokens: {
       systemCore: estimateTokens(systemCore),
+      userAddressingProfile: estimateTokens(userAddressingProfile),
       rulesDigest: estimateTokens(activeRulesDigest),
       accessCatalog: estimateTokens(accessCatalogBlock),
       memory: estimateTokens(relevantMemoryBlock),
@@ -266,6 +271,7 @@ export function buildModelContext(input) {
       memoryPicked: memoryLayer.length,
       retrievedChunks: retrievedChunks.length,
       memoryTreeSupplementChars: memSupPlain.length,
+      userProfileChars: userAddressingProfile.length,
       recentMessages: recentMessages.length,
       historyTotal: flat.length,
     },
@@ -278,6 +284,7 @@ export function buildModelContext(input) {
     activeRulesDigest,
     relevantMemoryBlock,
     accessCatalogBlock,
+    userAddressingProfile,
     retrievedChunks,
     recentMessages,
     finalMessagesForModel,

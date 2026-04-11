@@ -174,7 +174,7 @@ async function runRouterModel(providerId, key, treeDump, userQuery) {
         body: JSON.stringify({
           model: ROUTER_MODEL.openai,
           temperature: 0.15,
-          max_tokens: 6000,
+          max_completion_tokens: 6000,
           messages: [
             { role: "system", content: MEMORY_TREE_ROUTER_SYSTEM },
             { role: "user", content: userBlock },

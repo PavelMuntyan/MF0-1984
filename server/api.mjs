@@ -744,6 +744,31 @@ function hasContextTables() {
   );
 }
 
+const USER_PROFILE_CONTEXT_MAX_CHARS = 8000;
+
+/** People / "User" blob from the Memory tree (Intro + Keeper) — how to address the person and stated facts. */
+function readMemoryGraphUserProfileForContextPack() {
+  try {
+    ensureMemoryGraphHubAnchorsPresent(db);
+  } catch {
+    /* ignore */
+  }
+  try {
+    const tbl = db
+      .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='memory_graph_nodes'`)
+      .get();
+    if (!tbl) return "";
+    const row = db
+      .prepare(`SELECT blob FROM memory_graph_nodes WHERE category = ? AND label = ?`)
+      .get("People", "User");
+    const b = String(row?.blob ?? "").trim();
+    if (!b) return "";
+    return b.length <= USER_PROFILE_CONTEXT_MAX_CHARS ? b : `${b.slice(0, USER_PROFILE_CONTEXT_MAX_CHARS)}…`;
+  } catch {
+    return "";
+  }
+}
+
 function listContextPack(dialogId, userQuery) {
   const drow = db
     .prepare(
@@ -753,22 +778,36 @@ function listContextPack(dialogId, userQuery) {
     .get(dialogId);
   if (!drow) return null;
   const turns = listTurns(dialogId);
+  const userAddressingProfile = readMemoryGraphUserProfileForContextPack();
   if (!hasContextTables()) {
+    let rulesKeeperVirtual = [];
+    try {
+      rulesKeeperVirtual = keeperBundleToVirtualContextRules(readRulesKeeperBundlePayload());
+    } catch (e) {
+      console.warn("[mf-lab-api] rules keeper (no context tables):", e);
+    }
     return {
       threadId: dialogId,
       dialogTitle: drow.dialog_title,
       themeTitle: drow.theme_title,
-      rules: [],
+      rules: rulesKeeperVirtual,
       memoryItems: [],
       summaries: [],
       threadMessages: [],
       turns,
       userQuery: userQuery || "",
+      userAddressingProfile,
     };
   }
-  const rules = db
+  const rulesDb = db
     .prepare(`SELECT id, rule_type, title, content, priority, tags, is_active FROM rules WHERE is_active = 1`)
     .all();
+  let rules = [...rulesDb];
+  try {
+    rules = [...rules, ...keeperBundleToVirtualContextRules(readRulesKeeperBundlePayload())];
+  } catch (e) {
+    console.warn("[mf-lab-api] rules keeper bundle:", e);
+  }
   const memoryItems = db
     .prepare(
       `SELECT id, scope, thread_id, memory_type, title, content, priority, tags, is_active
@@ -800,7 +839,183 @@ function listContextPack(dialogId, userQuery) {
     threadMessages,
     turns,
     userQuery: userQuery || "",
+    userAddressingProfile,
   };
+}
+
+const RULES_KEEPER_DIR = path.join(root, "rules");
+const RULES_KEEPER_SPEC = [
+  { key: "core_rules", file: "core_rules.json", rule_type: "keeper3_core", title: "Saved conduct — general" },
+  {
+    key: "private_rules",
+    file: "private_rules.json",
+    rule_type: "keeper3_private",
+    title: "Saved conduct — personal boundaries",
+  },
+  {
+    key: "forbidden_actions",
+    file: "forbidden_actions.json",
+    rule_type: "keeper3_forbidden",
+    title: "Saved conduct — must not do",
+  },
+  {
+    key: "workflow_rules",
+    file: "workflow_rules.json",
+    rule_type: "keeper3_workflow",
+    title: "Saved conduct — step-by-step habits",
+  },
+];
+const RULES_KEEPER_ITEM_TEXT_MAX = 4000;
+const RULES_KEEPER_MAX_ITEMS = 120;
+
+function ensureRulesKeeperDir() {
+  if (!fs.existsSync(RULES_KEEPER_DIR)) {
+    fs.mkdirSync(RULES_KEEPER_DIR, { recursive: true });
+  }
+}
+
+function readRulesKeeperItemsFromFile(fileName) {
+  ensureRulesKeeperDir();
+  const fp = path.join(RULES_KEEPER_DIR, fileName);
+  if (!fs.existsSync(fp)) {
+    fs.writeFileSync(fp, `${JSON.stringify({ items: [] }, null, 2)}\n`, "utf8");
+    return [];
+  }
+  let raw;
+  try {
+    raw = fs.readFileSync(fp, "utf8");
+  } catch {
+    return [];
+  }
+  let j;
+  try {
+    j = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  const arr = Array.isArray(j?.items) ? j.items : Array.isArray(j) ? j : [];
+  /** @type {{ text: string, addedAt: string }[]} */
+  const out = [];
+  for (const it of arr) {
+    const text =
+      typeof it === "string"
+        ? String(it).trim()
+        : String(it?.text ?? it?.content ?? "").trim();
+    if (!text) continue;
+    const addedAt = typeof it === "object" && it?.addedAt ? String(it.addedAt) : "";
+    out.push({
+      text: text.slice(0, RULES_KEEPER_ITEM_TEXT_MAX),
+      addedAt: addedAt || new Date().toISOString(),
+    });
+  }
+  return out.slice(0, RULES_KEEPER_MAX_ITEMS + 40);
+}
+
+function writeRulesKeeperItemsFile(fileName, items) {
+  ensureRulesKeeperDir();
+  const fp = path.join(RULES_KEEPER_DIR, fileName);
+  const trimmed = items.slice(0, RULES_KEEPER_MAX_ITEMS);
+  fs.writeFileSync(fp, `${JSON.stringify({ items: trimmed }, null, 2)}\n`, "utf8");
+}
+
+function readRulesKeeperBundlePayload() {
+  /** @type {Record<string, { text: string, addedAt: string }[]>} */
+  const out = {};
+  for (const spec of RULES_KEEPER_SPEC) {
+    out[spec.key] = readRulesKeeperItemsFromFile(spec.file);
+  }
+  return out;
+}
+
+function normRulesKeeperDedupeKey(text) {
+  return String(text ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .slice(0, 600);
+}
+
+function mergeRulesKeeperItemLists(existing, incoming) {
+  const seen = new Set(existing.map((x) => normRulesKeeperDedupeKey(x.text)));
+  const now = new Date().toISOString();
+  const merged = [...existing];
+  for (const it of incoming) {
+    const t = String(it.text ?? it).trim().slice(0, RULES_KEEPER_ITEM_TEXT_MAX);
+    if (!t) continue;
+    const k = normRulesKeeperDedupeKey(t);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    merged.push({ text: t, addedAt: now });
+    if (merged.length >= RULES_KEEPER_MAX_ITEMS) break;
+  }
+  return merged.slice(-RULES_KEEPER_MAX_ITEMS);
+}
+
+/**
+ * @param {unknown} body
+ * @returns {{ ok: true, merged_total: number } | { error: string, status: number }}
+ */
+function mergeRulesKeeperPatchFromBody(body) {
+  if (!body || typeof body !== "object") {
+    return { error: "expected JSON object", status: 400 };
+  }
+  /** @param {unknown} v */
+  const toIncoming = (v) => {
+    if (!Array.isArray(v)) return [];
+    /** @type {{ text: string }[]} */
+    const texts = [];
+    for (const x of v) {
+      if (typeof x === "string" && x.trim()) texts.push({ text: x.trim() });
+      else if (x && typeof x === "object") {
+        const t = String(x.text ?? x.rule ?? x.content ?? "").trim();
+        if (t) texts.push({ text: t });
+      }
+    }
+    return texts;
+  };
+  let mergedTotal = 0;
+  for (const spec of RULES_KEEPER_SPEC) {
+    const incoming = toIncoming(/** @type {Record<string, unknown>} */ (body)[spec.key]);
+    if (incoming.length === 0) continue;
+    const cur = readRulesKeeperItemsFromFile(spec.file);
+    const merged = mergeRulesKeeperItemLists(cur, incoming);
+    mergedTotal += Math.max(0, merged.length - cur.length);
+    writeRulesKeeperItemsFile(spec.file, merged);
+  }
+  return { ok: true, merged_total: mergedTotal };
+}
+
+/**
+ * @param {Record<string, { text: string, addedAt: string }[]>} bundle
+ * @returns {Array<{ id: string, rule_type: string, title: string, content: string, priority: string, tags: string, is_active: number }>}
+ */
+function keeperBundleToVirtualContextRules(bundle) {
+  /** @type {Array<{ id: string, rule_type: string, title: string, content: string, priority: string, tags: string, is_active: number }>} */
+  const out = [];
+  if (!bundle || typeof bundle !== "object") return out;
+  for (const spec of RULES_KEEPER_SPEC) {
+    const items = Array.isArray(bundle[spec.key]) ? bundle[spec.key] : [];
+    if (items.length === 0) continue;
+    const lines = items
+      .map((it) => {
+        const t = String(it.text ?? it).trim();
+        return t ? `- ${t}` : "";
+      })
+      .filter(Boolean);
+    if (lines.length === 0) continue;
+    const content = lines.join("\n").slice(0, 14000);
+    const priority = spec.key === "forbidden_actions" ? "critical" : "high";
+    out.push({
+      id: `mf0-keeper3-${spec.key}`,
+      rule_type: spec.rule_type,
+      title: spec.title,
+      content,
+      priority,
+      tags: "[]",
+      is_active: 1,
+    });
+  }
+  return out;
 }
 
 function userTextTriggersAccessDataDumpLockdown(userText) {
@@ -1713,6 +1928,25 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && p === "/api/rules/session") {
       const s = getOrCreateRulesSession();
       return json(res, 200, { ok: true, themeId: s.themeId, dialogId: s.dialogId });
+    }
+
+    if (req.method === "GET" && p === "/api/rules/keeper-files") {
+      try {
+        const bundle = readRulesKeeperBundlePayload();
+        return json(res, 200, { ok: true, ...bundle });
+      } catch (e) {
+        console.error("[mf-lab-api] rules/keeper-files:", e);
+        return json(res, 500, { ok: false, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+
+    if (req.method === "PUT" && p === "/api/rules/keeper-merge") {
+      const body = await readBody(req);
+      const out = mergeRulesKeeperPatchFromBody(body);
+      if ("error" in out) {
+        return json(res, out.status, { ok: false, error: out.error });
+      }
+      return json(res, 200, { ok: true, merged_total: out.merged_total });
     }
 
     if (req.method === "GET" && p === "/api/access/external-services") {

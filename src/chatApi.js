@@ -23,6 +23,15 @@ export const PROVIDER_DISPLAY = {
 };
 
 const OPENAI_MODEL = "gpt-5.4";
+
+/** Intro Keeper JSON can list many projects + links; small caps truncate mid-JSON → parse failure and nothing ingests. */
+const INTRO_GRAPH_EXTRACT_OPENAI_MAX_TOKENS = 12000;
+const INTRO_GRAPH_NORMALIZE_OPENAI_MAX_TOKENS = 12000;
+
+/** OpenAI Chat Completions: gpt-5* rejects `max_tokens` — use `max_completion_tokens` (see API error text). */
+function oaMaxCompletionTokens(n) {
+  return { max_completion_tokens: Math.max(1, Math.floor(Number(n) || 1)) };
+}
 /**
  * Chat Completions built-in web search: only dedicated search models are supported here
  * (see OpenAI “Web search” guide — e.g. gpt-5-search-api, gpt-4o-search-preview).
@@ -567,7 +576,7 @@ export async function generateThemeDialogTitle(providerId, userMessage, apiKey) 
           body: JSON.stringify({
             model: OPENAI_MODEL,
             temperature: 0.2,
-            max_tokens: 48,
+            ...oaMaxCompletionTokens(48),
             messages: [
               { role: "system", content: THEME_TITLE_SYSTEM },
               { role: "user", content: snippet },
@@ -749,6 +758,7 @@ const INTRO_GRAPH_EXTRACT_SYSTEM =
   "- Extract only facts the USER clearly states or clearly implies; do not invent.\n" +
   '- "notes": one short factual clause grounded in the user message (may echo context).\n' +
   '- "links" only when the user clearly relates two of your entities; "relation": brief verb phrase (e.g. "works at", "lives in", "born on"). Prefer linking new entities to "User" when the fact is about the user.\n' +
+  '- **Shows / series / films / games / IPs:** Each **named production** the user cites (animated series, game tie-in show, franchise title in any language) → one **Projects** node with a short canonical **label** (official title or best-known short name) and factual **notes**; link **User** → that project (e.g. "worked on", "contributed to", "conceived format for"). If they name a **studio or employer**, use **Companies** and link User → Company and optionally Company → Project.\n' +
   '- For category "Interests" in Intro, use only BROAD umbrella labels (1–3 words, e.g. "Astronomy" not a minor celestial body name); link them to the hub { "category": "Interests", "label": "Interests" } with relation "under" when such a hub appears in your output.\n' +
   '- If the USER asks to **add, remove, merge, relink, or fix** something in the memory graph, in **any language or writing system**, output entities and links that express that request so it can be applied — do not return empty only because the wording was not in English.\n' +
   '- If nothing graph-worthy in this turn: {"entities":[],"links":[],"commands":[]}.\n' +
@@ -1007,7 +1017,7 @@ export async function extractAccessKeeper2EntriesFromTranscript(
         body: JSON.stringify({
           model: OPENAI_MODEL,
           temperature: 0.1,
-          max_tokens: 12000,
+          ...oaMaxCompletionTokens(12000),
           response_format: { type: "json_object" },
           messages: [
             { role: "system", content: ACCESS_KEEPER2_EXTRACT_SYSTEM },
@@ -1033,6 +1043,224 @@ export async function extractAccessKeeper2EntriesFromTranscript(
   }
 }
 
+const RULES_KEEPER3_ITEM_MAX = 4000;
+const RULES_KEEPER3_EXTRACT_SYSTEM =
+  "You are a **background Rules extractor** for this app (not shown to the user).\n" +
+  "The user payload has **Section A**: every **USER** message from the Rules thread, oldest first, each in its own block. " +
+  "In Rules, **each** of those messages must be **evaluated**: does it add, change, or remove project conduct for assistants? " +
+  "If it is **only** thanks, ok, emoji, or empty acknowledgement with **no** new normative content, emit **nothing** from that block. " +
+  "Otherwise extract — even one short sentence can yield one or more atomic rules. Do **not** skip a block because it is brief.\n" +
+  "**Section B** is the full USER+ASSISTANT thread for disambiguation only; never invent rules from assistant text alone unless the user clearly adopted it in their own words.\n" +
+  "Classify each extracted rule into exactly one bucket:\n" +
+  "- **core_rules**: universal behavior, tone, honesty, length, language.\n" +
+  "- **private_rules**: personal preferences and boundaries (addressing, disclosure, style).\n" +
+  "- **forbidden_actions**: explicit prohibitions (must **never** do).\n" +
+  "- **workflow_rules**: ordered steps, checklists, or process to follow when answering.\n" +
+  "Only extract what the **user** stated or clearly implied; do **not** invent policies.\n" +
+  "If the **last** Section A block clearly states new conduct, you should normally output at least one new string (unless it is purely non-normative as above).\n" +
+  "If the user wrote a **numbered list, bullet list, or line-by-line** rules (each line a separate rule), you **must** emit **at least one string per substantive line** (map lines to the best bucket); do **not** return all-empty out of caution.\n" +
+  "EXISTING_STORE_SUMMARY_JSON lists snippets already stored per bucket — avoid duplicates (same meaning).\n" +
+  "Output **one** JSON object only, no markdown fences:\n" +
+  '{ "core_rules": string[], "private_rules": string[], "forbidden_actions": string[], "workflow_rules": string[] }\n' +
+  "Each string is one atomic rule (one sentence or short phrase). At most **36** new strings **total** across all four arrays for this response.";
+
+/**
+ * @param {unknown} raw
+ * @returns {{ core_rules: string[], private_rules: string[], forbidden_actions: string[], workflow_rules: string[] }}
+ */
+function normalizeRulesKeeper3Patch(raw) {
+  const empty = { core_rules: [], private_rules: [], forbidden_actions: [], workflow_rules: [] };
+  if (!raw || typeof raw !== "object") return empty;
+  /** @param {unknown} v */
+  const asList = (v) => {
+    if (!Array.isArray(v)) return [];
+    const out = [];
+    for (const x of v) {
+      const s = typeof x === "string" ? x.trim() : String(/** @type {any} */ (x)?.text ?? "").trim();
+      if (s.length >= 2) out.push(s.slice(0, RULES_KEEPER3_ITEM_MAX));
+    }
+    return out.slice(0, 32);
+  };
+  const j = /** @type {Record<string, unknown>} */ (raw);
+  const patch = {
+    core_rules: asList(j.core_rules),
+    private_rules: asList(j.private_rules),
+    forbidden_actions: asList(j.forbidden_actions),
+    workflow_rules: asList(j.workflow_rules),
+  };
+  let budget = 36;
+  /** @param {string[]} arr */
+  const capArr = (arr) => {
+    const out = [];
+    for (const s of arr) {
+      if (budget <= 0) break;
+      out.push(s);
+      budget -= 1;
+    }
+    return out;
+  };
+  return {
+    core_rules: capArr(patch.core_rules),
+    private_rules: capArr(patch.private_rules),
+    forbidden_actions: capArr(patch.forbidden_actions),
+    workflow_rules: capArr(patch.workflow_rules),
+  };
+}
+
+/**
+ * @param {string} text
+ */
+function parseRulesKeeper3JsonFromModelText(text) {
+  try {
+    let s = String(text ?? "").trim();
+    const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fence) s = fence[1].trim();
+    const j = JSON.parse(s);
+    return normalizeRulesKeeper3Patch(j);
+  } catch (e) {
+    console.warn(
+      "[Rules extract] JSON parse failed:",
+      e instanceof Error ? e.message : String(e),
+      String(text ?? "").slice(0, 240),
+    );
+    return { core_rules: [], private_rules: [], forbidden_actions: [], workflow_rules: [] };
+  }
+}
+
+/**
+ * Rules thread: classify user-stated rules into four buckets (merged on disk by the API).
+ * @param {string} providerId
+ * @param {string} apiKey
+ * @param {string} transcript
+ * @param {string} existingSummaryJson
+ */
+/**
+ * When the LLM extractor returns nothing: split the **latest** user message into candidate rules
+ * (bullets, numbering, one rule per line). Puts probable prohibitions into `forbidden_actions`.
+ * @param {string} text — usually the last user message in Rules
+ * @returns {{ core_rules: string[], private_rules: string[], forbidden_actions: string[], workflow_rules: string[] }}
+ */
+export function extractRulesListStubsFromUserText(text) {
+  const raw = String(text ?? "").trim();
+  const empty = { core_rules: [], private_rules: [], forbidden_actions: [], workflow_rules: [] };
+  if (raw.length < 6) return empty;
+
+  /** No bare `don't` — it matches style tips ("don't waffle") that belong in core, not prohibitions. */
+  const forbiddenRe =
+    /\b(never|must not|mustn't|do not|cannot|can't|forbidden|prohibit|no\s+\w+\s+allowed)\b/i;
+  const trivialLine =
+    /^(thanks|thank you|thx|ok|okay|yes|no|спасибо|ок|да|нет|понял|поняла|ясно)\b[!.\s]*$/i;
+
+  /** @type {string[]} */
+  const core = [];
+  /** @type {string[]} */
+  const forbidden = [];
+  const seen = new Set();
+
+  const pushUnique = (arr, line) => {
+    const t = line.replace(/\s+/g, " ").trim().slice(0, RULES_KEEPER3_ITEM_MAX);
+    if (t.length < 4) return;
+    const k = t.toLowerCase().slice(0, 400);
+    if (seen.has(k)) return;
+    seen.add(k);
+    arr.push(t);
+  };
+
+  const stripLead = (s) =>
+    String(s ?? "")
+      .replace(
+        /^[\s\u2022\u2023\u25CF\u25E6\u25AA\u2043\u2014\u2013\-*]+(?:\d{1,3}[.):）]\s*)?/u,
+        "",
+      )
+      .trim();
+
+  for (const line0 of raw.split(/\r?\n/)) {
+    let line = stripLead(line0);
+    if (line.length < 6) continue;
+    if (trivialLine.test(line)) continue;
+    if (forbiddenRe.test(line)) pushUnique(forbidden, line);
+    else pushUnique(core, line);
+    if (core.length + forbidden.length >= 36) break;
+  }
+
+  if (core.length === 0 && forbidden.length === 0 && raw.length >= 12 && !raw.includes("\n")) {
+    const parts = raw.split(/[;；]\s*/).map((p) => stripLead(p)).filter((p) => p.length >= 8);
+    for (const p of parts.slice(0, 20)) {
+      if (forbiddenRe.test(p)) pushUnique(forbidden, p);
+      else pushUnique(core, p);
+      if (core.length + forbidden.length >= 36) break;
+    }
+  }
+
+  /** One short paragraph / single sentence (no bullets, no semicolons): still project conduct. */
+  if (core.length === 0 && forbidden.length === 0) {
+    const one = raw.replace(/\s+/g, " ").trim();
+    if (one.length >= 8 && !trivialLine.test(one)) {
+      if (forbiddenRe.test(one)) pushUnique(forbidden, one);
+      else pushUnique(core, one);
+    }
+  }
+
+  return {
+    core_rules: core,
+    private_rules: [],
+    forbidden_actions: forbidden,
+    workflow_rules: [],
+  };
+}
+
+export async function extractRulesKeeper3FromTranscript(
+  providerId,
+  apiKey,
+  transcript,
+  existingSummaryJson,
+) {
+  const key = String(apiKey ?? "").trim();
+  const t = String(transcript ?? "").trim().slice(0, 72000);
+  if (!key || !t) {
+    return { core_rules: [], private_rules: [], forbidden_actions: [], workflow_rules: [] };
+  }
+  const ex = String(existingSummaryJson ?? "").trim().slice(0, 12000);
+  const userBlock =
+    `EXISTING_STORE_SUMMARY_JSON:\n${ex || "{}"}\n\n` + `EXTRACTOR_INPUT:\n${t}`;
+
+  try {
+    if (providerId === "openai") {
+      const res = await fetch("/llm/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${key}`,
+        },
+        body: JSON.stringify({
+          model: OPENAI_MODEL,
+          temperature: 0.1,
+          ...oaMaxCompletionTokens(8000),
+          response_format: { type: "json_object" },
+          messages: [
+            { role: "system", content: RULES_KEEPER3_EXTRACT_SYSTEM },
+            { role: "user", content: userBlock },
+          ],
+        }),
+      });
+      if (!res.ok) throw new Error(await readErrorBody(res));
+      const data = await res.json();
+      const content = data.choices?.[0]?.message?.content;
+      if (content == null) throw new Error("Empty API response");
+      const rawText = typeof content === "string" ? content : String(content);
+      return parseRulesKeeper3JsonFromModelText(rawText);
+    }
+
+    const { text } = await completeChatMessage(providerId, userBlock, key, {
+      systemInstruction: `${RULES_KEEPER3_EXTRACT_SYSTEM}\nRespond with a single JSON object only, no markdown fences.`,
+    });
+    return parseRulesKeeper3JsonFromModelText(text);
+  } catch (e) {
+    console.warn("[Rules extract] request failed:", e instanceof Error ? e.message : String(e));
+    return { core_rules: [], private_rules: [], forbidden_actions: [], workflow_rules: [] };
+  }
+}
+
 export async function extractChatInterestSketchForIngest(providerId, apiKey, userText) {
   const key = String(apiKey ?? "").trim();
   const u = String(userText ?? "").trim().slice(0, 8000);
@@ -1051,7 +1279,7 @@ export async function extractChatInterestSketchForIngest(providerId, apiKey, use
       body: JSON.stringify({
         model: OPENAI_MODEL,
         temperature: 0.12,
-        max_tokens: 900,
+        ...oaMaxCompletionTokens(900),
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: CHAT_INTEREST_SKETCH_EXTRACT_SYSTEM },
@@ -1129,6 +1357,24 @@ function parseIntroGraphJsonFromModelText(text) {
   return { ...base, commands };
 }
 
+/**
+ * Same as {@link parseIntroGraphJsonFromModelText} but never throws (truncated/invalid JSON from model).
+ * @param {string} text
+ * @param {string} [logTag]
+ */
+function parseIntroGraphJsonFromModelTextSafe(text, logTag = "Intro graph") {
+  try {
+    return parseIntroGraphJsonFromModelText(text);
+  } catch (e) {
+    console.warn(
+      `[${logTag}] JSON parse failed:`,
+      e instanceof Error ? e.message : String(e),
+      String(text ?? "").slice(0, 400),
+    );
+    return { entities: [], links: [], commands: [] };
+  }
+}
+
 const INTRO_GRAPH_NORMALIZE_SYSTEM =
   "You are the **Keeper** — the only stage that reconciles the memory tree with the database before writes. The **user is authoritative** (any language): when introMode is true, their explicit instructions for the graph override your habits and **must** be reflected in your output.\n" +
   "**Never** base decisions on assistant or model text. When introMode is true, `proposed` was produced from **user-only** extraction; `userTurn` is the same user text — treat it as the sole source of user intent. Do not reinterpret the graph using imagined assistant replies.\n" +
@@ -1148,7 +1394,9 @@ const INTRO_GRAPH_NORMALIZE_SYSTEM =
   '  • moveEdge: { "op": "moveEdge", "relation": string, "oldFrom", "oldTo", "newFrom", "newTo" } — each endpoint { "category", "label" }; old edge removed, new edge inserted.\n' +
   "You may return **commands only** with empty entities/links when the user message is purely a structural instruction.\n" +
   "\n" +
-  "**Intro (introMode true):** If userTurn clearly asks to **maintain or correct** the memory graph (add, merge, unify duplicates, relink, fix identity, move facts onto People/\"User\", retract redundancy), you **must** output entities/links and/or **commands** that implement that request against existingNodes — this is non-negotiable for the Keeper. Use proposed as material distilled from that same user text when non-empty; **an empty proposed graph does not excuse skipping** edits that userTurn still demands. If userTurn has no graph-maintenance intent, return empty unless rules below still require output from proposed.\n" +
+  "**Intro (introMode true):** (A) If userTurn clearly asks to **maintain or correct** the memory graph (add, merge, unify duplicates, relink, fix identity, move facts onto People/\"User\", retract redundancy), you **must** output entities/links and/or **commands** that implement that request against existingNodes — this is non-negotiable for the Keeper. Use proposed as material distilled from that same user text when non-empty; **an empty proposed graph does not excuse skipping** edits that userTurn still demands.\n" +
+  "(B) **Profile facts:** When userTurn states **substantive facts** about the person (name, place, work, family, dates, preferences, biography — any language) and is **not** only acknowledgements (thanks/ok/emoji), you **must** output a minimal faithful graph from userTurn **even if proposed.entities and proposed.links are both empty**. Merge new facts into the existing People/\"User\" node when present (append to notes); otherwise emit the correct nodes/links. **Never** return {\"entities\":[],\"links\":[],\"commands\":[]} for such a userTurn solely because the extractor returned an empty proposed pack.\n" +
+  "If userTurn is only brief acknowledgement with no new factual content, you may return empty when proposed is also empty.\n" +
   "**Not Intro (introMode false):** Use only proposed + existingNodes. `proposed` was built from **user-only** text (interest sketch); do not enrich it from assistant or model sources.\n" +
   "\n" +
   "Rules (general, any language or domain — do not invent facts):\n" +
@@ -1222,29 +1470,37 @@ export async function normalizeIntroMemoryGraphForDb(
         "Content-Type": "application/json",
         Authorization: `Bearer ${key}`,
       },
-      body: JSON.stringify({
-        model: OPENAI_MODEL,
-        temperature: 0,
-        max_tokens: 4096,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: INTRO_GRAPH_NORMALIZE_SYSTEM },
-          { role: "user", content: userJson },
-        ],
-      }),
+        body: JSON.stringify({
+          model: OPENAI_MODEL,
+          temperature: 0,
+          ...oaMaxCompletionTokens(INTRO_GRAPH_NORMALIZE_OPENAI_MAX_TOKENS),
+          response_format: { type: "json_object" },
+          messages: [
+            { role: "system", content: INTRO_GRAPH_NORMALIZE_SYSTEM },
+            { role: "user", content: userJson },
+          ],
+        }),
     });
     if (!res.ok) throw new Error(await readErrorBody(res));
     const data = await res.json();
     const content = data.choices?.[0]?.message?.content;
     if (content == null) throw new Error("Empty API response");
     const rawText = typeof content === "string" ? content : String(content);
-    return parseIntroGraphJsonFromModelText(rawText);
+    const normalized = parseIntroGraphJsonFromModelTextSafe(rawText, "Intro normalize");
+    const n =
+      normalized.entities.length + normalized.links.length + (normalized.commands?.length ?? 0);
+    if (n > 0) return normalized;
+    return { ...base, commands: fromExtract };
   }
 
   const { text } = await completeChatMessage(providerId, userJson, key, {
     systemInstruction: `${INTRO_GRAPH_NORMALIZE_SYSTEM}\nRespond with one JSON object only, no markdown fences.`,
   });
-  return parseIntroGraphJsonFromModelText(text);
+  const normalized = parseIntroGraphJsonFromModelTextSafe(text, "Intro normalize");
+  const n =
+    normalized.entities.length + normalized.links.length + (normalized.commands?.length ?? 0);
+  if (n > 0) return normalized;
+  return { ...base, commands: fromExtract };
 }
 
 /**
@@ -1253,6 +1509,20 @@ export async function normalizeIntroMemoryGraphForDb(
  * @param {string} apiKey
  * @param {string} userText
  */
+/** Last-resort Intro ingest when both extract and normalize return nothing (still saves facts onto People/User). */
+export function introUserNotesFallbackPack(userText) {
+  const raw = String(userText ?? "").trim();
+  if (raw.length < 6) return { entities: [], links: [], commands: [] };
+  const trivial =
+    /^(thanks|thank you|thx|ok|okay|yes|no|спасибо|ок|да|нет|понял|поняла|ясно)\b[!.\s]*$/iu;
+  if (trivial.test(raw)) return { entities: [], links: [], commands: [] };
+  return {
+    entities: [{ category: "People", label: "User", notes: raw.slice(0, 4000) }],
+    links: [],
+    commands: [],
+  };
+}
+
 export async function extractIntroMemoryGraphForIngest(providerId, apiKey, userText) {
   const key = String(apiKey ?? "").trim();
   const u = String(userText ?? "").trim().slice(0, 8000);
@@ -1268,29 +1538,29 @@ export async function extractIntroMemoryGraphForIngest(providerId, apiKey, userT
         "Content-Type": "application/json",
         Authorization: `Bearer ${key}`,
       },
-      body: JSON.stringify({
-        model: OPENAI_MODEL,
-        temperature: 0.1,
-        max_tokens: 2048,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: INTRO_GRAPH_EXTRACT_SYSTEM },
-          { role: "user", content: userBlock },
-        ],
-      }),
+        body: JSON.stringify({
+          model: OPENAI_MODEL,
+          temperature: 0.1,
+          ...oaMaxCompletionTokens(INTRO_GRAPH_EXTRACT_OPENAI_MAX_TOKENS),
+          response_format: { type: "json_object" },
+          messages: [
+            { role: "system", content: INTRO_GRAPH_EXTRACT_SYSTEM },
+            { role: "user", content: userBlock },
+          ],
+        }),
     });
     if (!res.ok) throw new Error(await readErrorBody(res));
     const data = await res.json();
     const content = data.choices?.[0]?.message?.content;
     if (content == null) throw new Error("Empty API response");
     const rawText = typeof content === "string" ? content : String(content);
-    return parseIntroGraphJsonFromModelText(rawText);
+    return parseIntroGraphJsonFromModelTextSafe(rawText, "Intro extract");
   }
 
   const { text } = await completeChatMessage(providerId, userBlock, key, {
     systemInstruction: `${INTRO_GRAPH_EXTRACT_SYSTEM}\nRespond with a single JSON object only, no markdown fences.`,
   });
-  return parseIntroGraphJsonFromModelText(text);
+  return parseIntroGraphJsonFromModelTextSafe(text, "Intro extract");
 }
 
 /**

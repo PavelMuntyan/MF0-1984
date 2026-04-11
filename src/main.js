@@ -9,7 +9,10 @@ import {
   extractIntroMemoryGraphForIngest,
   extractChatInterestSketchForIngest,
   extractAccessKeeper2EntriesFromTranscript,
+  extractRulesKeeper3FromTranscript,
+  extractRulesListStubsFromUserText,
   extractAccessExternalServiceStubsFromBulkListText,
+  introUserNotesFallbackPack,
   normalizeIntroMemoryGraphForDb,
   generateThemeDialogTitle,
   PROVIDER_DISPLAY,
@@ -21,6 +24,7 @@ import {
   closeMemoryTree,
   enrichMemoryGraphFromApi,
   initMemoryTree,
+  memoryTreeCoversIntroChat,
   openMemoryTree,
   setMemoryGraphData,
 } from "./memoryTree.js";
@@ -44,6 +48,8 @@ import {
   fetchIntroSession,
   fetchAccessSession,
   fetchRulesSession,
+  fetchRulesKeeperBundle,
+  mergeRulesKeeperPatch,
   clearDialogTurnsArchive,
   fetchAccessExternalServices,
   fetchAccessDataDumpEnrichment,
@@ -195,6 +201,48 @@ function mergeAccessExternalServiceEntries(existing, patch) {
   return [...map.values()].slice(0, 200);
 }
 
+/**
+ * Short text-only summary of saved Rules buckets for the extractor prompt.
+ * @param {{
+ *   core_rules: { text?: string }[],
+ *   private_rules: { text?: string }[],
+ *   forbidden_actions: { text?: string }[],
+ *   workflow_rules: { text?: string }[],
+ * }} bundle
+ */
+function rulesKeeperExistingSummaryForExtract(bundle) {
+  const slice = (arr, n) =>
+    (Array.isArray(arr) ? arr : [])
+      .slice(0, n)
+      .map((x) => (x && typeof x === "object" ? String(x.text ?? "").trim() : String(x ?? "").trim()))
+      .filter((s) => s.length > 0)
+      .map((s) => s.slice(0, 120));
+  return JSON.stringify({
+    core_rules: slice(bundle.core_rules, 24),
+    private_rules: slice(bundle.private_rules, 24),
+    forbidden_actions: slice(bundle.forbidden_actions, 24),
+    workflow_rules: slice(bundle.workflow_rules, 24),
+  }).slice(0, 12000);
+}
+
+/**
+ * @param {{
+ *   core_rules: string[],
+ *   private_rules: string[],
+ *   forbidden_actions: string[],
+ *   workflow_rules: string[],
+ * }} a
+ * @param {typeof a} b
+ */
+function mergeRulesKeeperClientPatches(a, b) {
+  return {
+    core_rules: [...(a.core_rules ?? []), ...(b.core_rules ?? [])],
+    private_rules: [...(a.private_rules ?? []), ...(b.private_rules ?? [])],
+    forbidden_actions: [...(a.forbidden_actions ?? []), ...(b.forbidden_actions ?? [])],
+    workflow_rules: [...(a.workflow_rules ?? []), ...(b.workflow_rules ?? [])],
+  };
+}
+
 function syncIrPanelVaultDom() {
   const chat = document.getElementById("main-chat");
   if (!chat) return;
@@ -260,6 +308,15 @@ const ACCESS_SECTION_SYSTEM_APPEND =
   "**What actually lands in the store:** only what Keeper 2 extracts into fixed fields (`name`, `description`, `endpointUrl`, `accessKey`, and long free-form `notes`). Your chat reply is **not** copied verbatim into the database. Do **not** tell the user you \"saved the whole message\" or \"everything is recorded\" if you mean long markdown, tables, or every example — say instead that the app will persist the **structured** details from the conversation, or summarize what belongs in those fields.\n" +
   "If the rules digest in context sounds broadly anti-secret, it still **does not** override this paragraph for **third-party** service credentials in Access.\n" +
   "Keep answers concise; you need not echo full keys back in the reply unless the user wants confirmation.";
+
+const RULES_SECTION_SYSTEM_APPEND =
+  "You are in the **Rules** section: the user defines **how assistants in this project should behave**.\n" +
+  "After each exchange the app **turns what they say into saved project conduct** (general expectations, personal boundaries, " +
+  "things that must never be done, and step-by-step habits). You do **not** need to explain how that happens under the hood.\n" +
+  "**Keep replies short:** if something is ambiguous, ask a **brief** clarifying question; otherwise mirror what you understood " +
+  "in one or two sentences and confirm in **everyday language** that you took the rule on board (e.g. that you will follow it, " +
+  "or that the project will apply it). Do **not** mention internal pipelines, storage, filenames, or background jobs by name. " +
+  "Do **not** deliver long essays, tutorials, or full policy manuals in chat.";
 
 /** User typed the `#data` command (standalone token) — lock model to Access external-services store (SQLite) only. */
 function userMessageTriggersAccessDataDump(text) {
@@ -2375,6 +2432,7 @@ async function retryAssistantReply(clickedAssistantWrap) {
       chatAttachments: undefined,
       introChatOpen,
       accessChatOpen,
+      rulesChatOpen,
     });
     let buf = "";
     try {
@@ -3278,6 +3336,7 @@ function replayDialogTurnsGrouped(turns) {
  *   chatAttachments: { images: Array<{ mimeType: string, base64: string }> } | undefined,
  *   introChatOpen: boolean,
  *   accessChatOpen: boolean,
+ *   rulesChatOpen: boolean,
  * }} p
  */
 async function buildChatOptsForModelRequest(p) {
@@ -3291,6 +3350,7 @@ async function buildChatOptsForModelRequest(p) {
     chatAttachments,
     introChatOpen,
     accessChatOpen,
+    rulesChatOpen,
   } = p;
   const chatOpts = {
     webSearch: accessDataDumpMode ? false : modeForSend === "web",
@@ -3350,9 +3410,10 @@ async function buildChatOptsForModelRequest(p) {
           }
         }
       } else if (await apiHealth()) {
-        const catalogPromise = accessChatOpen
-          ? Promise.resolve({ entries: [] })
-          : fetchAccessExternalServicesCatalog().catch(() => ({ entries: [] }));
+        const catalogPromise =
+          accessChatOpen || rulesChatOpen
+            ? Promise.resolve({ entries: [] })
+            : fetchAccessExternalServicesCatalog().catch(() => ({ entries: [] }));
         const [pack, catalogRes, graphPayload] = await Promise.all([
           fetchContextPack(persistDialogId, promptForApi),
           catalogPromise,
@@ -3360,7 +3421,11 @@ async function buildChatOptsForModelRequest(p) {
         ]);
         let memoryTreeSupplement = "";
         const graphNodes = Array.isArray(graphPayload?.nodes) ? graphPayload.nodes : [];
-        if (graphNodes.length > 0 && String(promptForApi ?? "").trim()) {
+        if (
+          graphNodes.length > 0 &&
+          String(promptForApi ?? "").trim() &&
+          !rulesChatOpen
+        ) {
           try {
             memoryTreeSupplement = await fetchMemoryTreeSupplementForPrompt({
               userQuery: promptForApi,
@@ -3389,6 +3454,8 @@ async function buildChatOptsForModelRequest(p) {
           sysOut = [sysOut, INTRO_COACH_SYSTEM_APPEND].filter(Boolean).join("\n\n");
         } else if (accessChatOpen) {
           sysOut = [sysOut, ACCESS_SECTION_SYSTEM_APPEND].filter(Boolean).join("\n\n");
+        } else if (rulesChatOpen) {
+          sysOut = [sysOut, RULES_SECTION_SYSTEM_APPEND].filter(Boolean).join("\n\n");
         }
         chatOpts.systemInstruction = sysOut;
         chatOpts.llmMessages = fitted.messagesForApi;
@@ -3416,6 +3483,13 @@ async function buildChatOptsForModelRequest(p) {
     } else if (!curA.includes("Access section")) {
       chatOpts.systemInstruction = `${curA}\n\n${ACCESS_SECTION_SYSTEM_APPEND}`;
     }
+  } else if (!accessDataDumpMode && rulesChatOpen && modeForSend !== "image") {
+    const curR = String(chatOpts.systemInstruction ?? "").trim();
+    if (!curR) {
+      chatOpts.systemInstruction = RULES_SECTION_SYSTEM_APPEND;
+    } else if (!curR.includes("**Rules** section")) {
+      chatOpts.systemInstruction = `${curR}\n\n${RULES_SECTION_SYSTEM_APPEND}`;
+    }
   }
   return chatOpts;
 }
@@ -3441,9 +3515,11 @@ function initChatComposer() {
 
     const mainChatEl = document.getElementById("main-chat");
     const introChatOpen = Boolean(mainChatEl?.classList.contains("chat--intro"));
+    /** Intro thread or Intro stashed under open Memory tree (DOM drops `chat--intro` while tree is open). */
+    const introContextActive = introChatOpen || memoryTreeCoversIntroChat();
     const rulesChatOpen = Boolean(mainChatEl?.classList.contains("chat--rules"));
     const accessChatOpen = Boolean(mainChatEl?.classList.contains("chat--access"));
-    if (introChatOpen && getIrPanelLockedSync("intro")) {
+    if (introContextActive && getIrPanelLockedSync("intro")) {
       appendActivityLog("Intro is locked — unlock it to send messages.");
       return;
     }
@@ -3502,7 +3578,7 @@ function initChatComposer() {
 
     const userMessageAt = new Date().toISOString();
     let persistDialogId = activeDialogId;
-    if (introChatOpen) {
+    if (introContextActive) {
       try {
         persistDialogId = await ensureIntroSessionClient();
       } catch (e) {
@@ -3612,7 +3688,7 @@ function initChatComposer() {
         attachmentStrip: attachmentStripMeta.length > 0 ? attachmentStripMeta : undefined,
       });
       didAppendUserToUi = true;
-      if (introChatOpen && modeForSend !== "image") {
+      if (introContextActive && modeForSend !== "image") {
         const mt = detectIntroMemoryTreeCommands(persistUserText);
         if (mt.didTouchMemoryTreeTopic) {
           if (mt.close) closeMemoryTree();
@@ -3679,8 +3755,9 @@ function initChatComposer() {
             modeForSend,
             accessDataDumpMode,
             chatAttachments,
-            introChatOpen,
+            introChatOpen: introContextActive,
             accessChatOpen,
+            rulesChatOpen,
           });
           let buf = "";
           try {
@@ -3738,6 +3815,7 @@ function initChatComposer() {
             ? String(pending.dataset.assistantMarkdown)
             : fullText;
         const hadAssistantError = Boolean(pending?.classList.contains("msg-assistant--error"));
+        let tid = "";
         try {
           /** @type {Record<string, unknown>} */
           const turnPayload = {
@@ -3754,77 +3832,117 @@ function initChatComposer() {
             turnPayload.user_attachments_json = JSON.stringify(attachmentStripMeta);
           }
           const saveRes = await saveConversationTurn(persistDialogId, turnPayload);
-          const tid =
+          tid =
             saveRes && typeof saveRes === "object" && saveRes.id != null ? String(saveRes.id) : "";
-          if (
-            !accessDataDumpMode &&
-            introChatOpen &&
-            modeForSend !== "image" &&
-            !hadAssistantError
-          ) {
+          if (pending && tid) {
+            pending.dataset.turnId = tid;
+            if (!String(pending.dataset.exchangeRootTurnId ?? "").trim()) {
+              pending.dataset.exchangeRootTurnId = tid;
+            }
+            if (!String(pending.dataset.replyOrdinal ?? "").trim()) {
+              pending.dataset.replyOrdinal = "1";
+            }
+            syncAssistantFavoriteStarButton(pending);
+            syncAssistantRetryButton(pending);
+          }
+          await renderThemesSidebar();
+        } catch (saveErr) {
+          appendActivityLog(
+            `Chat DB save: ${saveErr instanceof Error ? saveErr.message : String(saveErr)}`,
+          );
+        }
+        if (
+          !accessDataDumpMode &&
+          introContextActive &&
+          modeForSend !== "image" &&
+          !hadAssistantError
+        ) {
+          try {
+            appendActivityLog("Keeper (Intro): start — extracting from user text…");
+            /** @type {{ entities: unknown[], links: unknown[], commands?: unknown[] }} */
+            let extracted = { entities: [], links: [], commands: [] };
             try {
-              appendActivityLog("Keeper (Intro): start — extracting from user text…");
-              const extracted = await extractIntroMemoryGraphForIngest(providerId, key, persistUserText);
-              appendActivityLog(`Keeper (Intro): extract — ${keeperPayloadSummary(extracted)}`);
-              let pack = extracted;
-              if (await apiHealth()) {
-                try {
-                  const existing = await fetchMemoryGraphFromApi();
-                  appendActivityLog(
-                    `Keeper (Intro): normalize to DB (${(existing.nodes ?? []).length} nodes in graph)…`,
-                  );
-                  pack = await normalizeIntroMemoryGraphForDb(
-                    providerId,
-                    key,
-                    extracted,
-                    existing.nodes ?? [],
-                    {
-                      introMode: true,
-                      userText: persistUserText,
-                    },
-                  );
-                  appendActivityLog(`Keeper (Intro): normalize — ${keeperPayloadSummary(pack)}`);
-                } catch (normErr) {
-                  appendActivityLog(
-                    `Keeper (Intro): normalize — error: ${normErr instanceof Error ? normErr.message : String(normErr)}`,
-                  );
-                  appendActivityLog(
-                    `Keeper (Intro): pack without normalize — ${keeperPayloadSummary(pack)}`,
-                  );
-                }
-              } else {
-                appendActivityLog(
-                  "Keeper (Intro): normalize skipped — local API unavailable; pack is extract-only.",
-                );
-              }
-              const cmdLen = Array.isArray(pack.commands) ? pack.commands.length : 0;
-              if (pack.entities.length > 0 || pack.links.length > 0 || cmdLen > 0) {
-                const ing = await ingestMemoryGraphPayload({
-                  entities: pack.entities ?? [],
-                  links: pack.links ?? [],
-                  commands: pack.commands ?? [],
-                });
-                const u = Number(ing?.upsertedEntities);
-                const l = Number(ing?.insertedLinks);
-                appendActivityLog(
-                  `Keeper (Intro): ingest — upserted nodes: ${Number.isFinite(u) ? u : "?"}, inserted edges: ${Number.isFinite(l) ? l : "?"}.${keeperIngestCommandsLine(ing)}`,
-                );
-              } else {
-                appendActivityLog(
-                  "Keeper (Intro): ingest skipped — empty pack after extract/normalize. The model returned no entities/links/commands for this message (or the API did not respond).",
-                );
-              }
-            } catch (ingErr) {
+              extracted = await extractIntroMemoryGraphForIngest(providerId, key, persistUserText);
+            } catch (exErr) {
               appendActivityLog(
-                `Keeper (Intro): failure — ${ingErr instanceof Error ? ingErr.message : String(ingErr)}`,
+                `Keeper (Intro): extract request failed — ${exErr instanceof Error ? exErr.message : String(exErr)}. Continuing with empty extract (normalize + fallback can still run).`,
               );
             }
-            try {
-              await loadMemoryGraphIntoUi();
-            } catch {
-              /* loadMemoryGraphIntoUi logs */
+            appendActivityLog(`Keeper (Intro): extract — ${keeperPayloadSummary(extracted)}`);
+            let pack = extracted;
+            if (await apiHealth()) {
+              try {
+                const existing = await fetchMemoryGraphFromApi();
+                appendActivityLog(
+                  `Keeper (Intro): normalize to DB (${(existing.nodes ?? []).length} nodes in graph)…`,
+                );
+                pack = await normalizeIntroMemoryGraphForDb(
+                  providerId,
+                  key,
+                  extracted,
+                  existing.nodes ?? [],
+                  {
+                    introMode: true,
+                    userText: persistUserText,
+                  },
+                );
+                appendActivityLog(`Keeper (Intro): normalize — ${keeperPayloadSummary(pack)}`);
+              } catch (normErr) {
+                appendActivityLog(
+                  `Keeper (Intro): normalize — error: ${normErr instanceof Error ? normErr.message : String(normErr)}`,
+                );
+                appendActivityLog(
+                  `Keeper (Intro): pack without normalize — ${keeperPayloadSummary(pack)}`,
+                );
+              }
+            } else {
+              appendActivityLog(
+                "Keeper (Intro): normalize skipped — local API unavailable; pack is extract-only.",
+              );
             }
-          } else if (accessChatOpen && modeForSend !== "image" && !hadAssistantError) {
+            let entN = Array.isArray(pack.entities) ? pack.entities.length : 0;
+            let linkN = Array.isArray(pack.links) ? pack.links.length : 0;
+            let cmdLen = Array.isArray(pack.commands) ? pack.commands.length : 0;
+            if (entN === 0 && linkN === 0 && cmdLen === 0) {
+              const fb = introUserNotesFallbackPack(persistUserText);
+              const fbe = Array.isArray(fb.entities) ? fb.entities.length : 0;
+              if (fbe > 0) {
+                pack = fb;
+                entN = fbe;
+                linkN = Array.isArray(fb.links) ? fb.links.length : 0;
+                cmdLen = Array.isArray(fb.commands) ? fb.commands.length : 0;
+                appendActivityLog(
+                  "Keeper (Intro): empty extract/normalize — applied People/User notes fallback so the turn still reaches the Memory tree.",
+                );
+              }
+            }
+            if (entN > 0 || linkN > 0 || cmdLen > 0) {
+              const ing = await ingestMemoryGraphPayload({
+                entities: pack.entities ?? [],
+                links: pack.links ?? [],
+                commands: pack.commands ?? [],
+              });
+              const u = Number(ing?.upsertedEntities);
+              const l = Number(ing?.insertedLinks);
+              appendActivityLog(
+                `Keeper (Intro): ingest — upserted nodes: ${Number.isFinite(u) ? u : "?"}, inserted edges: ${Number.isFinite(l) ? l : "?"}.${keeperIngestCommandsLine(ing)}`,
+              );
+            } else {
+              appendActivityLog(
+                "Keeper (Intro): ingest skipped — empty pack after extract/normalize. The model returned no entities/links/commands for this message (or the API did not respond).",
+              );
+            }
+          } catch (ingErr) {
+            appendActivityLog(
+              `Keeper (Intro): failure — ${ingErr instanceof Error ? ingErr.message : String(ingErr)}`,
+            );
+          }
+          try {
+            await loadMemoryGraphIntoUi();
+          } catch {
+            /* loadMemoryGraphIntoUi logs */
+          }
+        } else if (accessChatOpen && modeForSend !== "image" && !hadAssistantError) {
             try {
               appendActivityLog("Keeper 2 (Access): start — scanning conversation…");
               const turnsAcc = await fetchTurns(persistDialogId);
@@ -3875,9 +3993,91 @@ function initChatComposer() {
                 `Keeper 2 (Access): failure — ${k2Err instanceof Error ? k2Err.message : String(k2Err)}`,
               );
             }
+          } else if (rulesChatOpen && modeForSend !== "image" && !hadAssistantError) {
+            try {
+              appendActivityLog("Rules: updating saved conduct from the thread…");
+              const turnsR = await fetchTurns(persistDialogId);
+              const slice = turnsR.slice(-40);
+              const rParts = [];
+              /** @type {string[]} */
+              const userOnlyChronological = [];
+              for (const row of slice) {
+                const u = String(row.user_text ?? "").trim();
+                const a = String(row.assistant_text ?? "").trim();
+                if (u) {
+                  userOnlyChronological.push(u);
+                  rParts.push(`USER:\n${u}`);
+                }
+                if (a) rParts.push(`ASSISTANT:\n${a}`);
+              }
+              const nUser = userOnlyChronological.length;
+              const sectionA =
+                nUser === 0
+                  ? "(no user messages in window)\n"
+                  : userOnlyChronological
+                      .map(
+                        (text, i) =>
+                          `--- USER message ${i + 1} of ${nUser} ---\n${text}`,
+                      )
+                      .join("\n\n");
+              const sectionB = rParts.join("\n\n");
+              const transcriptR = (
+                "SECTION A — EVERY USER MESSAGE IN THIS RULES THREAD (oldest first). " +
+                "Evaluate **each** block: should it add or change saved project conduct? " +
+                "If it is only thanks/ok/emoji with no new rule content, skip that block only.\n\n" +
+                `${sectionA}\n\n` +
+                "SECTION B — FULL THREAD (USER and ASSISTANT; context for disambiguation only):\n\n" +
+                `${sectionB}`
+              ).slice(0, 72000);
+              const bundle = await fetchRulesKeeperBundle();
+              const existingSummaryR = rulesKeeperExistingSummaryForExtract(bundle);
+              const stubPatch = extractRulesListStubsFromUserText(persistUserText);
+              let patchR = await extractRulesKeeper3FromTranscript(
+                providerId,
+                key,
+                transcriptR,
+                existingSummaryR,
+              );
+              const countPatch = (p) =>
+                p.core_rules.length +
+                p.private_rules.length +
+                p.forbidden_actions.length +
+                p.workflow_rules.length;
+              let nAdd = countPatch(patchR);
+              const nStub = countPatch(stubPatch);
+              const userNonEmptyLines = persistUserText
+                .split(/\r?\n/)
+                .map((l) => l.trim())
+                .filter((l) => l.length > 0).length;
+              if (nAdd === 0 && nStub > 0) {
+                patchR = stubPatch;
+                nAdd = nStub;
+                appendActivityLog(
+                  `Rules: model returned no rows — used message-text fallback (${nStub} candidate line(s) from your last message).`,
+                );
+              } else if (nAdd > 0 && userNonEmptyLines >= 3 && nStub > nAdd) {
+                patchR = mergeRulesKeeperClientPatches(patchR, stubPatch);
+                nAdd = countPatch(patchR);
+                appendActivityLog(
+                  `Rules: merged message-text fallback (${nStub} line(s)) with model output (${nAdd} total candidate line(s)).`,
+                );
+              }
+              if (nAdd === 0) {
+                appendActivityLog("Rules: no new rule lines for this turn.");
+              } else {
+                const { merged_total: mergedTotal } = await mergeRulesKeeperPatch(patchR);
+                appendActivityLog(
+                  `Rules: merged ${nAdd} candidate line(s); ${mergedTotal} new unique line(s) in the saved rules store.`,
+                );
+              }
+            } catch (k3Err) {
+              appendActivityLog(
+                `Rules: saved-rules update failed — ${k3Err instanceof Error ? k3Err.message : String(k3Err)}`,
+              );
+            }
           } else if (
             !accessDataDumpMode &&
-            !introChatOpen &&
+            !introContextActive &&
             !accessChatOpen &&
             !rulesChatOpen &&
             modeForSend !== "image" &&
@@ -3935,23 +4135,6 @@ function initChatComposer() {
               );
             }
           }
-          if (pending && tid) {
-            pending.dataset.turnId = tid;
-            if (!String(pending.dataset.exchangeRootTurnId ?? "").trim()) {
-              pending.dataset.exchangeRootTurnId = tid;
-            }
-            if (!String(pending.dataset.replyOrdinal ?? "").trim()) {
-              pending.dataset.replyOrdinal = "1";
-            }
-            syncAssistantFavoriteStarButton(pending);
-            syncAssistantRetryButton(pending);
-          }
-          await renderThemesSidebar();
-        } catch (saveErr) {
-          appendActivityLog(
-            `Chat DB save: ${saveErr instanceof Error ? saveErr.message : String(saveErr)}`,
-          );
-        }
       }
     }
   }

@@ -64,6 +64,7 @@
  * @property {ContextPackTurn[]} turns
  * @property {ContextPackThreadMessage[]} threadMessages
  * @property {string} userQuery
+ * @property {string} [userAddressingProfile] — Memory tree People/User blob (facts, how to address); from context-pack
  */
 
 /**
@@ -102,6 +103,7 @@
  * @property {ModelMessage[]} recentMessages
  * @property {ModelMessage[]} finalMessagesForModel
  * @property {string} combinedSystemInstruction
+ * @property {string} userAddressingProfile — trimmed profile blob passed into budget fitter
  * @property {Object} debug
  */
 
