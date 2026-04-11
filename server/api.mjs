@@ -32,6 +32,21 @@ const migration008 = path.join(root, "db", "migrations", "008_access_external_se
 const migration009 = path.join(root, "db", "migrations", "009_analytics_usage_archive.sql");
 const PORT = resolveApiPort(process.env.API_PORT);
 
+/** Default max JSON body size for POST/PUT (bytes). Override with API_MAX_BODY_BYTES. */
+const DEFAULT_API_MAX_BODY_BYTES = 10 * 1024 * 1024;
+const MIN_API_MAX_BODY_BYTES = 1024 * 1024;
+const MAX_API_MAX_BODY_BYTES = 100 * 1024 * 1024;
+
+function getApiMaxBodyBytes() {
+  const raw = process.env.API_MAX_BODY_BYTES;
+  if (raw === undefined || raw === null || String(raw).trim() === "") return DEFAULT_API_MAX_BODY_BYTES;
+  const n = parseInt(String(raw).trim(), 10);
+  if (!Number.isFinite(n) || n < MIN_API_MAX_BODY_BYTES || n > MAX_API_MAX_BODY_BYTES) {
+    return DEFAULT_API_MAX_BODY_BYTES;
+  }
+  return n;
+}
+
 /** Max length for Access `notes` field (DB + JSON import). */
 const ACCESS_ENTRY_NOTES_MAX = 12000;
 
@@ -287,23 +302,59 @@ function apiErrorBody(message) {
   return { ok: false, error: String(message ?? "") };
 }
 
+class BodyTooLargeError extends Error {
+  /** @param {number} maxBytes */
+  constructor(maxBytes) {
+    super(`Request body exceeds maximum size (${maxBytes} bytes).`);
+    this.name = "BodyTooLargeError";
+    this.maxBytes = maxBytes;
+  }
+}
+
 function readBody(req) {
+  const maxBytes = getApiMaxBodyBytes();
   return new Promise((resolve, reject) => {
     const chunks = [];
-    req.on("data", (c) => chunks.push(c));
+    let total = 0;
+    let settled = false;
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
+    const ok = (val) => {
+      if (settled) return;
+      settled = true;
+      resolve(val);
+    };
+    req.on("data", (chunk) => {
+      if (settled) return;
+      total += chunk.length;
+      if (total > maxBytes) {
+        fail(new BodyTooLargeError(maxBytes));
+        try {
+          req.destroy();
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on("end", () => {
+      if (settled) return;
       const raw = Buffer.concat(chunks).toString("utf8");
       if (!raw.trim()) {
-        resolve({});
+        ok({});
         return;
       }
       try {
-        resolve(JSON.parse(raw));
+        ok(JSON.parse(raw));
       } catch (e) {
-        reject(e);
+        fail(e);
       }
     });
-    req.on("error", reject);
+    req.on("error", fail);
   });
 }
 
@@ -2083,6 +2134,10 @@ const server = http.createServer(async (req, res) => {
     json(res, 404, apiErrorBody("Not found"));
   } catch (e) {
     console.error(e);
+    if (e instanceof BodyTooLargeError) {
+      json(res, 413, apiErrorBody(e.message));
+      return;
+    }
     json(res, 500, apiErrorBody(e instanceof Error ? e.message : String(e)));
   }
 });
