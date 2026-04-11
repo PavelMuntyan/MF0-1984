@@ -1,5 +1,5 @@
 /**
- * PM2: API (по умолчанию 35184, см. API_PORT) + Vite (1984). Survives closing the terminal.
+ * PM2: API (default 35184, see API_PORT) + Vite (1984). Survives closing the terminal.
  * Start: npm run pm2:start   Stop: npm run pm2:stop   Logs: npm run pm2:logs
  */
 const path = require("path");

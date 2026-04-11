@@ -1,10 +1,10 @@
-/* Memory tree: граф в чате, панель управления в сайдбаре — те же токены, что в theme.css */
+/* Memory tree: graph in chat, controls in sidebar — same tokens as theme.css */
 
 .chat {
   position: relative;
 }
 
-/* Фон области графа — мягкие градиенты из палитры темы (светлая / тёмная через переменные) */
+/* Graph area background — soft gradients from theme tokens (light/dark via variables) */
 .memory-tree-graph-host {
   position: relative;
   flex: 1;
@@ -44,7 +44,7 @@
   min-height: 12rem;
 }
 
-/* Сайдбар: панель Memory tree (родитель — .sidebar-panel с card / border из theme.css) */
+/* Sidebar: Memory tree panel (parent .sidebar-panel uses card/border from theme.css) */
 .memory-tree-side-panel {
   flex: 1 1 0;
   min-height: 0;
@@ -70,7 +70,7 @@
   display: none !important;
 }
 
-/* Схлопнутый блок Themes: подсказка развернуть — цвета из темы */
+/* Collapsed Themes block: expand cue — theme colors */
 .dialogues-mt-expand-cue {
   display: none;
   align-items: center;
@@ -120,7 +120,7 @@
   color: hsl(var(--foreground));
 }
 
-/* Прокручиваемая колонка контролов */
+/* Scrollable controls column */
 .memory-tree-side-panel .mt-ui {
   flex: 1;
   min-height: 0;
@@ -242,7 +242,7 @@
   margin-top: 0.25rem;
 }
 
-/* Основная кнопка — как .send-btn; вторичные — как outline .btn */
+/* Primary button like .send-btn; secondary like outline .btn */
 .memory-tree-side-panel .mt-btn {
   display: inline-flex;
   align-items: center;
@@ -332,7 +332,7 @@
   flex: 0 0 auto;
 }
 
-/* Подсказка поверх графа — как карточки / панели Human UI */
+/* Hint overlay on graph — card/panel tokens like Human UI */
 .memory-tree-graph-host .mt-hint {
   position: absolute;
   right: 0.85rem;

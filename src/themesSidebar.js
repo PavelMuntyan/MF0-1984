@@ -20,16 +20,16 @@ const DIALOGS_PAGE_SIZE = 5;
 /**
  * @param {object} theme
  * @param {string | null} activeDialogId
- * @param {string | null} activeThemeId — тема выбрана для нового диалога (чат пустой)
- * @param {(themeId: string) => void} onSelectThemeForNewDialog — клик по строке темы, кроме меню и папки (новый диалог)
- * @param {string | null} [expandedFolderThemeId] — id темы с раскрытым списком диалогов
- * @param {Set<string>} [favoriteThemeIds] — id тем в избранном (жёлтая звезда в строке заголовка)
+ * @param {string | null} activeThemeId — theme selected for a new dialog (empty chat)
+ * @param {(themeId: string) => void} onSelectThemeForNewDialog — click theme row except menu/folder (new dialog)
+ * @param {string | null} [expandedFolderThemeId] — theme id whose dialog list is expanded
+ * @param {Set<string>} [favoriteThemeIds] — favorite theme ids (yellow star in title row)
  */
 function normId(v) {
   return String(v ?? "").trim();
 }
 
-/** Подпись диалога в меню темы: до 28 символов текста, при обрезке — затем «…». */
+/** Dialog label in theme menu: up to 28 chars, then ellipsis if trimmed. */
 function formatDialogMenuTitle(raw) {
   const s = String(raw ?? "").trim() || "Dialogue";
   if (s.length <= 28) return s;
@@ -241,11 +241,11 @@ export function buildThemeCard(
   actions.append(themeMenuWrap, folderWrap);
   inner.append(info, actions);
   card.appendChild(inner);
-  /* Список диалогов — внутри бабла темы, разворачивается вниз (не отдельное выпадающее меню). */
+  /* Dialog list inside the theme bubble, expands downward (not a separate dropdown). */
   card.appendChild(menu);
 
   const themeId = normId(theme.id);
-  /* Клик по padding самой карточки не попадает во inner — без этого «новый диалог в теме» не включался. */
+  /* Clicks on card padding miss inner — without this, "new dialog in theme" selection did not fire. */
   if (themeId && typeof onSelectThemeForNewDialog === "function") {
     card.addEventListener("click", (e) => {
       if (

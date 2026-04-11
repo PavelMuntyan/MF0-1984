@@ -1,4 +1,4 @@
-/** Как ai-biz-os/frontend/src/lib/theme.js — общий ключ, тема синхронизируется между приложениями на одном origin. */
+/** Same as ai-biz-os/frontend/src/lib/theme.js — shared key; theme syncs across apps on one origin. */
 export const THEME_STORAGE_KEY = "ai-biz-os-theme";
 
 /** @returns {"light" | "dark"} */
@@ -12,7 +12,7 @@ export function readStoredTheme() {
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
-/** Применить класс `dark` на корневом элементе и сохранить выбор. */
+/** Toggle `dark` on the root element and persist the choice. */
 export function setTheme(mode) {
   const root = document.documentElement;
   const dark = mode === "dark";

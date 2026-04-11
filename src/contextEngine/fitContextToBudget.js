@@ -1,6 +1,6 @@
 /**
- * Укладывание контекста в бюджет токенов.
- * Сначала ужимаем retrieved-блок, затем текст памяти в system; не удаляем core/rules/recent целиком и финальный user.
+ * Fit assembled context into a token budget.
+ * Shrink retrieved block first, then memory text in system; keep core/rules/recent and the final user intact.
  */
 
 import { estimateTokens } from "./tokenEstimate.js";

@@ -1,8 +1,18 @@
 import ForceGraph3D from "3d-force-graph";
 import SpriteText from "three-spritetext";
+import { closeAnalyticsView } from "./analyticsDashboard.js";
 import "./memoryTree.css";
-
 let closeMemoryTreeImpl = () => {};
+let openMemoryTreeImpl = () => {};
+
+/** Open the Memory tree panel when the graph has data (e.g. Intro commands). */
+export function openMemoryTree() {
+  openMemoryTreeImpl();
+}
+
+/** Active Intro/Rules/Access panel before opening Memory tree (restore button highlight). */
+/** @type {null | { className: string, viewId: string, btnId: string }} */
+let irPanelStashedForMemoryTree = null;
 
 /** Close Memory tree view and return to chat (no-op if already closed). */
 export function closeMemoryTree() {
@@ -16,9 +26,11 @@ const GROUP_PALETTE = [
   { key: "Interests", color: "#34d399" },
   { key: "Documents", color: "#fbbf24" },
   { key: "Cities", color: "#fb7185" },
+  { key: "Countries", color: "#fcd34d" },
   { key: "Companies", color: "#38bdf8" },
   { key: "Projects", color: "#60a5fa" },
   { key: "Data", color: "#2dd4bf" },
+  { key: "Other", color: "#94a3b8" },
 ];
 
 function orderedGroupKeysFromNodes(nodes) {
@@ -213,12 +225,112 @@ function colorForGroup(groupKey, seen) {
   return fallback[idx % fallback.length];
 }
 
+function memoryGraphHubLabelNorm(s) {
+  return String(s ?? "")
+    .normalize("NFC")
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Graph anchor nodes only from a fixed edge type from the API (no label-language matching).
+ * Edge relation "profile and interests": People (profile) ↔ Interests (topic hub).
+ */
+function findMemoryGraphHubPairFromProfileEdge(rawNodes, rawLinks) {
+  const wantRel = "profile and interests";
+  for (const l of rawLinks) {
+    if (memoryGraphHubLabelNorm(l.label ?? "") !== wantRel) continue;
+    const s = String(l.source ?? "").trim();
+    const t = String(l.target ?? "").trim();
+    const ns = rawNodes.find((x) => String(x.id ?? "").trim() === s);
+    const nt = rawNodes.find((x) => String(x.id ?? "").trim() === t);
+    if (!ns || !nt) continue;
+    const cs = String(ns.category ?? "").trim();
+    const ct = String(nt.category ?? "").trim();
+    if (cs === "People" && ct === "Interests") {
+      return { profileAnchorPeopleId: s, interestsHubId: t };
+    }
+    if (cs === "Interests" && ct === "People") {
+      return { profileAnchorPeopleId: t, interestsHubId: s };
+    }
+  }
+  return { profileAnchorPeopleId: "", interestsHubId: "" };
+}
+
+/**
+ * API `/api/memory-graph` response → graph format for 3D view and legend.
+ * @param {{ nodes?: Array<{ id: string, category: string, label: string, blob?: string }>, links?: Array<{ id: string, source: string, target: string, label?: string }> }} api
+ */
+export function enrichMemoryGraphFromApi(api) {
+  const rawNodes = Array.isArray(api?.nodes) ? api.nodes : [];
+  const rawLinks = Array.isArray(api?.links) ? api.links : [];
+  const { profileAnchorPeopleId, interestsHubId } = findMemoryGraphHubPairFromProfileEdge(rawNodes, rawLinks);
+  const seen = new Map();
+  for (const n of rawNodes) {
+    const g = String(n.category ?? "Other").trim() || "Other";
+    if (!seen.has(g)) seen.set(g, n);
+  }
+  const nodes = rawNodes.map((n) => {
+    const group = String(n.category ?? "Other").trim() || "Other";
+    const name = String(n.label ?? "").trim() || "—";
+    const description = String(n.blob ?? "").trim();
+    const id = String(n.id ?? "");
+    const color = colorForGroup(group, seen);
+    const isProfileAnchor = Boolean(profileAnchorPeopleId && id === profileAnchorPeopleId);
+    const isInterestsHub = Boolean(interestsHubId && id === interestsHubId);
+    const memoryHubRole = isProfileAnchor ? "profile" : isInterestsHub ? "interests" : null;
+    let size = Math.min(14, Math.max(5, 4 + Math.min(name.length, 40) / 5));
+    if (memoryHubRole) {
+      size = 56;
+    }
+    const score = Math.min(100, 20 + (id.length % 80) + (name.length % 20));
+    return {
+      id,
+      name,
+      group,
+      color,
+      size,
+      memoryHubRole,
+      score,
+      year: new Date().getFullYear(),
+      description: description || `Category: ${group}\nLabel: ${name}`,
+    };
+  });
+  const links = rawLinks.map((l) => ({
+    id: String(l.id ?? ""),
+    source: String(l.source ?? ""),
+    target: String(l.target ?? ""),
+    label: String(l.label ?? "").trim() || "related",
+    strength: 0.45,
+  }));
+  return { nodes, links };
+}
+
 /** @type {{ nodes: object[], links: object[] } | null} */
 let dataBaseline = null;
+
+function memoryTreeHasGraphData() {
+  return Array.isArray(dataBaseline?.nodes) && dataBaseline.nodes.length > 0;
+}
+
+function syncMemoryTreeOpenButton() {
+  const openBtn = document.getElementById("btn-memory-tree");
+  if (!openBtn) return;
+  const has = memoryTreeHasGraphData();
+  openBtn.disabled = !has;
+  if (has) {
+    openBtn.removeAttribute("title");
+  } else {
+    openBtn.title = "No graph data yet";
+  }
+}
 let graphData = { nodes: [], links: [] };
 /** @type {ReturnType<ForceGraph3D> | null} */
 let Graph = null;
-let autoRotate = true;
+/** Off by default: otherwise the camera resets every frame and fights manual zoom. */
+let autoRotate = false;
+/** Once after nodes appear — initial frame; zoom only via Reset afterward. */
+let didMemoryTreeLayoutZoom = false;
 let rafId = 0;
 let angle = 0;
 let resizeObserver = null;
@@ -237,7 +349,9 @@ function createNodeThreeObject() {
   return (node) => {
     const sprite = new SpriteText(node.name);
     sprite.color = node.color;
-    sprite.textHeight = highlightedNodes.has(node) ? 8 : 5;
+    const hub = Boolean(node.memoryHubRole);
+    const baseText = highlightedNodes.has(node) ? 8 : hub ? 6.5 : 5;
+    sprite.textHeight = baseText;
     sprite.material.depthWrite = false;
     sprite.backgroundColor = isGraphDarkMode() ? "rgba(0,0,0,0.25)" : "rgba(255,255,255,0.92)";
     sprite.padding = 2;
@@ -281,6 +395,7 @@ let dom = {
   groupFilter: null,
   linkDistanceRange: null,
   chargeRange: null,
+  zoomRange: null,
   detailsBox: null,
   legend: null,
 };
@@ -345,10 +460,17 @@ function setNodeDetails(node) {
   const t = document.createElement("div");
   t.className = "mt-details-title";
   t.textContent = node.name ?? "";
+  dom.detailsBox.append(t);
+  if (node.memoryHubRole === "profile") {
+    const badge = document.createElement("div");
+    badge.className = "mt-profile-badge";
+    badge.textContent = "Main profile (you)";
+    dom.detailsBox.append(badge);
+  }
   const tx = document.createElement("div");
   tx.className = "mt-details-text";
   tx.textContent = node.description ?? "";
-  dom.detailsBox.append(t, tx);
+  dom.detailsBox.append(tx);
 }
 
 function handleNodeHover(node) {
@@ -446,6 +568,55 @@ function sizeGraphToContainer() {
   }
 }
 
+function cameraDistanceFromOrigin() {
+  if (!Graph) return 0;
+  const cam = Graph.cameraPosition();
+  return Math.hypot(cam.x, cam.y, cam.z);
+}
+
+/** Slider left = farther (zoom out), right = closer (zoom in). raw = range input value. */
+function zoomSliderRawToDistance(raw, min, max) {
+  const v = Number(raw);
+  if (!Number.isFinite(v)) return min;
+  return max + min - v;
+}
+
+/** Camera distance → slider position (inverse of zoomSliderRawToDistance). */
+function distanceToZoomSliderRaw(dist, min, max) {
+  const d = Number(dist);
+  if (!Number.isFinite(d)) return min;
+  const raw = max + min - d;
+  return Math.min(max, Math.max(min, Math.round(raw / 10) * 10));
+}
+
+function syncZoomSliderFromCamera() {
+  const el = dom.zoomRange;
+  if (!(el instanceof HTMLInputElement) || !Graph) return;
+  const d = cameraDistanceFromOrigin();
+  if (!Number.isFinite(d) || d < 1) return;
+  const min = Number(el.min);
+  const max = Number(el.max);
+  el.value = String(distanceToZoomSliderRaw(d, min, max));
+}
+
+function applyZoomSliderDistance(targetDist) {
+  if (!Graph) return;
+  const want = Number(targetDist);
+  if (!Number.isFinite(want) || want < 1) return;
+  const cam = Graph.cameraPosition();
+  const d = Math.hypot(cam.x, cam.y, cam.z);
+  if (d < 1e-6) {
+    Graph.cameraPosition({ x: 0, y: 0, z: want });
+    return;
+  }
+  const k = want / d;
+  Graph.cameraPosition({
+    x: cam.x * k,
+    y: cam.y * k,
+    z: cam.z * k,
+  });
+}
+
 function stopSpin() {
   if (rafId) cancelAnimationFrame(rafId);
   rafId = 0;
@@ -459,10 +630,13 @@ function spinLoop() {
 
   if (autoRotate) {
     angle += 0.0012;
-    const r = 520;
+    const cam = Graph.cameraPosition();
+    const r = Math.hypot(cam.x, cam.z);
+    const dist = r > 4 ? r : 520;
     Graph.cameraPosition({
-      x: Math.sin(angle) * r,
-      z: Math.cos(angle) * r,
+      x: Math.sin(angle) * dist,
+      y: cam.y,
+      z: Math.cos(angle) * dist,
     });
   }
 
@@ -475,15 +649,18 @@ function startSpin() {
 }
 
 function mountGraph() {
-  if (Graph || !dom.graphRoot || !dataBaseline) return;
+  if (Graph || !dom.graphRoot || dataBaseline == null) return;
 
   graphData = cloneGraphPayload(dataBaseline);
 
   Graph = ForceGraph3D()(dom.graphRoot)
     .backgroundColor("rgba(0,0,0,0)")
     .graphData(graphData)
-    .nodeLabel((node) => `${node.name} (${node.group})`)
-    .nodeRelSize(4)
+    .nodeLabel((node) => {
+      const tag = node.memoryHubRole === "profile" ? " — main profile" : "";
+      return `${node.name} (${node.group})${tag}`;
+    })
+    .nodeRelSize((node) => (node.memoryHubRole ? 7.5 : 3.2))
     .nodeVal((node) => node.size)
     .nodeOpacity(0.95)
     .linkOpacity(isGraphDarkMode() ? 0.22 : 0.32)
@@ -510,6 +687,12 @@ function mountGraph() {
       if (highlightedNodes.size > 0 && !highlightedNodes.has(node)) {
         return dark ? "rgba(120,120,120,0.35)" : "rgba(148,163,184,0.5)";
       }
+      if (node.memoryHubRole === "profile") {
+        return dark ? "#fcd34d" : "#d97706";
+      }
+      if (node.memoryHubRole === "interests") {
+        return dark ? "#4ade80" : "#15803d";
+      }
       return node.color;
     });
 
@@ -517,8 +700,22 @@ function mountGraph() {
   Graph.d3Force("link").distance(110);
 
   Graph.cameraPosition({ z: 520 });
+  syncZoomSliderFromCamera();
 
-  Graph.onEngineStop(() => Graph.zoomToFit(500, 60));
+  Graph.onEngineStop(() => {
+    if (didMemoryTreeLayoutZoom || graphData.nodes.length === 0) return;
+    didMemoryTreeLayoutZoom = true;
+    requestAnimationFrame(() => {
+      try {
+        if (Graph && graphData.nodes.length > 0) {
+          Graph.zoomToFit(500, 60);
+          syncZoomSliderFromCamera();
+        }
+      } catch {
+        /* ignore */
+      }
+    });
+  });
 
   if (dom.linkDistanceRange) {
     Graph.d3Force("link").distance(Number(dom.linkDistanceRange.value));
@@ -559,6 +756,15 @@ function mountGraph() {
     Graph.refresh();
   });
 
+  dom.zoomRange?.addEventListener("input", (e) => {
+    const t = e.target;
+    if (!(t instanceof HTMLInputElement) || !Graph) return;
+    const min = Number(t.min);
+    const max = Number(t.max);
+    const want = zoomSliderRawToDistance(Number(t.value), min, max);
+    applyZoomSliderDistance(want);
+  });
+
   document.getElementById("mt-btn-random")?.addEventListener("click", () => {
     if (!graphData.nodes.length) return;
     handleNodeClick(pick(graphData.nodes));
@@ -574,6 +780,12 @@ function mountGraph() {
     Graph.graphData(graphData);
     updateStats(graphData);
     if (dom.detailsBox) dom.detailsBox.innerHTML = defaultDetailsHtml();
+    if (graphData.nodes.length > 0) {
+      requestAnimationFrame(() => {
+        Graph?.zoomToFit?.(500, 60);
+        syncZoomSliderFromCamera();
+      });
+    }
   });
 
   document.getElementById("mt-btn-spin")?.addEventListener("click", () => {
@@ -591,9 +803,11 @@ function mountGraph() {
 export function setMemoryGraphData(data) {
   dataBaseline = cloneGraphPayload(data);
   fillLegendAndGroups();
+  syncMemoryTreeOpenButton();
 
   if (!Graph) return;
 
+  const hadNodes = graphData.nodes.length > 0;
   selectedNode = null;
   clearHighlight();
   if (dom.searchInput) dom.searchInput.value = "";
@@ -602,7 +816,10 @@ export function setMemoryGraphData(data) {
   Graph.graphData(graphData);
   updateStats(graphData);
   if (dom.detailsBox) dom.detailsBox.innerHTML = defaultDetailsHtml();
-  Graph.zoomToFit?.(400, 60);
+  /** Went from 0 nodes to >0 — let onEngineStop run zoomToFit once. */
+  if (!hadNodes && graphData.nodes.length > 0) {
+    didMemoryTreeLayoutZoom = false;
+  }
 }
 
 /**
@@ -626,21 +843,25 @@ export function initMemoryTree(appendActivityLog) {
     groupFilter: document.getElementById("mt-group-filter"),
     linkDistanceRange: document.getElementById("mt-link-distance"),
     chargeRange: document.getElementById("mt-charge"),
+    zoomRange: document.getElementById("mt-camera-distance"),
     detailsBox: document.getElementById("mt-details"),
     legend: document.getElementById("mt-legend"),
   };
 
   if (!dom.graphHost || !dom.graphRoot || !dom.sidePanel || !dom.chat) {
     closeMemoryTreeImpl = () => {};
+    openMemoryTreeImpl = () => {};
     return;
   }
 
-  dataBaseline = cloneGraphPayload(makeFakeData());
+  dataBaseline = cloneGraphPayload({ nodes: [], links: [] });
+  syncMemoryTreeOpenButton();
 
   const openBtn = document.getElementById("btn-memory-tree");
 
   function setOpen(open) {
     if (open) {
+      closeAnalyticsView();
       const irChat = document.getElementById("main-chat");
       if (irChat) {
         const irPanels = [
@@ -648,6 +869,10 @@ export function initMemoryTree(appendActivityLog) {
           { className: "chat--rules", viewId: "chat-rules-view", btnId: "btn-ir-rules" },
           { className: "chat--access", viewId: "chat-access-view", btnId: "btn-ir-access" },
         ];
+        const activeIr = irPanels.find((p) => irChat.classList.contains(p.className));
+        irPanelStashedForMemoryTree = activeIr
+          ? { className: activeIr.className, viewId: activeIr.viewId, btnId: activeIr.btnId }
+          : null;
         if (irPanels.some((p) => irChat.classList.contains(p.className))) {
           for (const p of irPanels) {
             irChat.classList.remove(p.className);
@@ -671,7 +896,6 @@ export function initMemoryTree(appendActivityLog) {
       mountGraph();
       requestAnimationFrame(() => {
         sizeGraphToContainer();
-        Graph?.zoomToFit?.(400, 60);
       });
       startSpin();
       appendActivityLog("Memory tree: opened");
@@ -690,6 +914,18 @@ export function initMemoryTree(appendActivityLog) {
 
       stopSpin();
       appendActivityLog("Memory tree: closed");
+
+      if (irPanelStashedForMemoryTree) {
+        const irChat = document.getElementById("main-chat");
+        const st = irPanelStashedForMemoryTree;
+        irPanelStashedForMemoryTree = null;
+        if (irChat) {
+          irChat.classList.add(st.className);
+          document.getElementById(st.viewId)?.removeAttribute("hidden");
+          document.getElementById(st.viewId)?.setAttribute("aria-hidden", "false");
+          document.getElementById(st.btnId)?.setAttribute("aria-expanded", "true");
+        }
+      }
     }
   }
 
@@ -709,9 +945,19 @@ export function initMemoryTree(appendActivityLog) {
   dom.dialoguesHeader?.addEventListener("click", exitFromHeaderCapture, true);
 
   openBtn?.addEventListener("click", () => {
+    if (!memoryTreeHasGraphData()) return;
     const next = dom.graphHost.hasAttribute("hidden");
     setOpen(next);
   });
+
+  openMemoryTreeImpl = () => {
+    if (!memoryTreeHasGraphData()) {
+      appendActivityLog("Memory tree: no data yet — cannot open the graph.");
+      return;
+    }
+    if (!dom.graphHost?.hasAttribute("hidden")) return;
+    setOpen(true);
+  };
 
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
@@ -719,4 +965,5 @@ export function initMemoryTree(appendActivityLog) {
     setOpen(false);
     openBtn?.focus();
   });
+
 }

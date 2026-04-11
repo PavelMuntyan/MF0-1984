@@ -1,5 +1,5 @@
 /**
- * Сборка слоёв контекста для одного запроса в тред (threadId = dialog id в БД).
+ * Assemble context layers for one thread request (threadId = dialog id in the DB).
  */
 
 import { retrieveRelevantChunksFallback } from "./retrievalFallback.js";
@@ -68,7 +68,7 @@ function buildMemoryLayers(memoryItems, threadId) {
 }
 
 /**
- * Нормализуем историю в плоские сообщения (user/assistant).
+ * Normalize history into flat user/assistant messages.
  * @param {import("./types.js").ContextPack} pack
  */
 /**

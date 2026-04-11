@@ -1,0 +1,10 @@
+---
+description: No one-off hacks or magic branches in code
+alwaysApply: true
+---
+
+# No one-off hacks or “magic for a single case”
+
+- **Do not add** hacks, branches tied to specific user data, hard-coded entity/name/brand lists, or heuristics that only apply to one node.
+- **Do not duplicate** business meaning with string tricks where real analysis belongs (duplicate entities, languages, categories) — move that to an **explicit**, **shared** layer (e.g. one LLM step with a clear JSON contract for arbitrary inputs), and keep persistence **straightforward** (exactly what that layer decided).
+- If a private hack seems unavoidable — **agree with the product owner first** or propose one short general rule; do not ship silently.

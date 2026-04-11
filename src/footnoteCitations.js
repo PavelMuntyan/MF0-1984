@@ -1,6 +1,6 @@
 /**
- * Единая обработка сносок [1], [2] и markdown-ссылок [n](https…)
- * для ответов любых моделей (Perplexity, OpenAI, Gemini, Claude и т.д.).
+ * Unified handling of bracket refs [1], [2] and markdown links [n](https…)
+ * for replies from any model (Perplexity, OpenAI, Gemini, Claude, etc.).
  */
 
 export function escapeHtmlAttrHref(url) {
@@ -13,8 +13,8 @@ export function escapeHtmlAttrHref(url) {
 }
 
 /**
- * Сырой массив citations из ответа/чанка Perplexity (и похожих), плюс search_results.
- * @param {object} data — JSON чанка SSE или полного ответа
+ * Raw citations array from a Perplexity-like response/chunk, plus search_results.
+ * @param {object} data — SSE chunk JSON or full response JSON
  * @returns {unknown[] | null}
  */
 export function pickPerplexityCitationPayload(data) {
@@ -36,7 +36,7 @@ export function pickPerplexityCitationPayload(data) {
   return sr;
 }
 
-/** URL из массива citations API (строки или объекты с `url` / `uri` / `link`). */
+/** URLs from a citations API array (strings or objects with `url` / `uri` / `link`). */
 export function normalizeCitationUrlList(raw) {
   if (!Array.isArray(raw)) return [];
   const out = [];
@@ -53,7 +53,7 @@ export function normalizeCitationUrlList(raw) {
   return out.filter((u) => /^https?:\/\//i.test(u));
 }
 
-/** Чтобы markdown-ссылка `[n](url)` не обрывалась на `)` внутри URL. */
+/** So markdown `[n](url)` does not break on `)` inside the URL. */
 export function escapeUrlForMarkdownDestination(url) {
   return String(url ?? "")
     .replace(/\(/g, "%28")
@@ -61,8 +61,8 @@ export function escapeUrlForMarkdownDestination(url) {
 }
 
 /**
- * Извлекает URL из OpenAI Chat Completions: `annotations` / `url_citation`.
- * @param {object|null|undefined} holder — `delta`, `message` или весь chunk
+ * Extract URLs from OpenAI Chat Completions: `annotations` / `url_citation`.
+ * @param {object|null|undefined} holder — `delta`, `message`, or whole chunk
  */
 export function collectOpenAiLikeAnnotationUrls(holder) {
   const ann = holder?.annotations;
@@ -82,8 +82,8 @@ export function collectOpenAiLikeAnnotationUrls(holder) {
 }
 
 /**
- * Источники из Gemini `groundingMetadata.groundingChunks`.
- * `uri` часто редирект на vertexaisearch — для UI важен `title` (заголовок страницы).
+ * Sources from Gemini `groundingMetadata.groundingChunks`.
+ * `uri` often redirects via vertexaisearch — for UI, prefer `title` (page title).
  * @param {object|null|undefined} candidate — `candidates[0]`
  * @returns {{ urls: string[], labels: string[] }}
  */
@@ -125,7 +125,7 @@ export function collectGeminiGroundingEntries(candidate) {
   return { urls, labels };
 }
 
-/** Только URL (обратная совместимость). */
+/** URLs only (backward compatibility). */
 export function collectGeminiGroundingUrls(candidate) {
   return collectGeminiGroundingEntries(candidate).urls;
 }
@@ -143,10 +143,10 @@ function sanitizeMarkdownLinkLabel(s) {
 }
 
 /**
- * Голые сноски [n] в тексте + параллельный список URL из API → markdown `[n](url)`,
- * затем `preprocessMarkdownNumericFootnoteLinks` превращает их в HTML (надёжнее, чем сырой `<a>` в marked).
- * Если в тексте нет [n], но URL есть — блок **Sources**.
- * @param {MergeCitationsOptions} [options] — `citationLabels[i]` подпись для строки Sources (например title из Gemini).
+ * Bare [n] refs in text + parallel URL list from API → markdown `[n](url)`,
+ * then `preprocessMarkdownNumericFootnoteLinks` turns them into HTML (safer than raw `<a>` in marked).
+ * If there are URLs but no [n] in text — append a **Sources** block.
+ * @param {MergeCitationsOptions} [options] — `citationLabels[i]` label for Sources rows (e.g. Gemini title).
  */
 export function mergePlainBracketRefsWithCitationList(body, citationUrls, options = {}) {
   const urls = normalizeCitationUrlList(citationUrls);
@@ -185,8 +185,8 @@ export function mergePlainBracketRefsWithCitationList(body, citationUrls, option
 }
 
 /**
- * Markdown-сноски `[n](https…)` (не изображения `![`) → вики-`<a>[n]</a>` + пробелы между соседними ссылками.
- * Вызывается перед `marked.parse` для всех ответов ассистента.
+ * Markdown footnotes `[n](https…)` (not images `![`) → wiki-style `<a>[n]</a>` + spaces between adjacent links.
+ * Called before `marked.parse` for all assistant replies.
  */
 export function preprocessMarkdownNumericFootnoteLinks(md) {
   let s = String(md ?? "");

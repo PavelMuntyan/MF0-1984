@@ -1,24 +1,24 @@
 ---
-description: После правок API агент сам перезапускает mf-lab-api (pm2 или порт 35184).
+description: After API edits the agent restarts mf-lab-api itself (pm2 or port 35184).
 alwaysApply: true
 ---
 
-# Перезапуск API MF0-1984 (`mf-lab`)
+# Restart MF0-1984 API (`mf-lab`)
 
-Когда менялся **`server/**/*.mjs`**, контракт `/api`, прокси к API или нужно поднять актуальный код на диске — **агент сам перезапускает локальный API** в терминале, а не только пишет пользователю «перезапустите».
+When **`server/**/*.mjs`**, the `/api` contract, the API proxy, or loading fresh code from disk matters — **the agent restarts the local API** in the terminal, not only telling the user to restart.
 
-## Порядок
+## Steps
 
-1. Рабочий каталог: корень **`mf-lab`** (где `server/api.mjs`, `package.json`).
-2. Сначала: **`pm2 restart mf-lab-api`** (при успехе при желании **`pm2 save`**).
-3. Если pm2 нет, нет процесса `mf-lab-api` или команда не удалась:
-   - порт API: **`API_PORT`** из окружения или **35184** по умолчанию;
-   - завершить процесс, слушающий этот порт (например `lsof -ti :35184`), затем запустить в фоне: **`node server/api.mjs`** из `mf-lab`.
-4. Проверка: **`GET http://127.0.0.1:<PORT>/api/health`** — в JSON должны быть **`ok: true`** и **`mfLabApi: true`**.
+1. Working directory: **`mf-lab` root** (where `server/api.mjs`, `package.json` live).
+2. First: **`pm2 restart mf-lab-api`** (optionally **`pm2 save`** on success).
+3. If pm2 is missing, there is no `mf-lab-api` process, or the command fails:
+   - API port: **`API_PORT`** from env or **35184** by default;
+   - kill the process listening on that port (e.g. `lsof -ti :35184`), then run in the background: **`node server/api.mjs`** from `mf-lab`.
+4. Check: **`GET http://127.0.0.1:<PORT>/api/health`** — JSON must include **`ok: true`** and **`mfLabApi: true`**.
 
-## Ограничения
+## Limits
 
-- Не использовать перезапуск как оправдание для **деструктивных тестов** по живой `data/*.sqlite` — см. **`no-destructive-db-in-agent-tests.mdc`**.
-- Если среда запрещает сеть/процессы и перезапуск невозможен — кратко написать пользователю, что сделать вручную.
+- Do not use restart as cover for **destructive tests** on live `data/*.sqlite` — see **`no-destructive-db-in-agent-tests.mdc`**.
+- If the environment blocks network/processes and restart is impossible — briefly tell the user what to do manually.
 
-Не ограничиваться фразой «перезапустите API» без попытки выполнить шаги выше, если инструменты терминала доступны.
+Do not stop at “please restart the API” without trying the steps above when the terminal is available.

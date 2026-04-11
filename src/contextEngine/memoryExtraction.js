@@ -1,6 +1,6 @@
 /**
- * Извлечение черновиков memory_items из пары сообщений (без второго вызова LLM).
- * Жёсткие эвристики — только явные формулировки; догадки и small talk отбрасываются.
+ * Draft memory_items from a user/assistant pair (no second LLM call).
+ * Strict heuristics — only explicit phrasing; guesses and small talk are dropped.
  */
 
 /**
@@ -28,7 +28,9 @@ export function extractMemoryItemsFromMessages(threadId, newMessages) {
   if (combined.length < 12) return [];
 
   if (
-    /^(hi|hello|hey|привет|здравствуй|thanks|thank you|спасибо)\b/i.test(u.trim()) &&
+    /^(hi|hello|hey|\u043f\u0440\u0438\u0432\u0435\u0442|\u0437\u0434\u0440\u0430\u0432\u0441\u0442\u0432\u0443\u0439|thanks|thank you|\u0441\u043f\u0430\u0441\u0438\u0431\u043e)\b/i.test(
+      u.trim(),
+    ) &&
     a.length < 80
   ) {
     return [];
@@ -38,7 +40,7 @@ export function extractMemoryItemsFromMessages(threadId, newMessages) {
   const out = [];
 
   const pref = u.match(
-    /(?:I prefer|I always want|please always|предпочитаю|всегда используй|always use)\s*[:\-]?\s*(.+)/i,
+    /(?:I prefer|I always want|please always|\u043f\u0440\u0435\u0434\u043f\u043e\u0447\u0438\u0442\u0430\u044e|\u0432\u0441\u0435\u0433\u0434\u0430\s+\u0438\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0439|always use)\s*[:\-]?\s*(.+)/i,
   );
   if (pref && pref[1] && pref[1].length > 3) {
     out.push({
@@ -53,7 +55,7 @@ export function extractMemoryItemsFromMessages(threadId, newMessages) {
   }
 
   const decided = combined.match(
-    /(?:we decided|we will|decision:|решили|договорились|it is decided)\s*[:\-]?\s*(.{8,400})/i,
+    /(?:we decided|we will|decision:|\u0440\u0435\u0448\u0438\u043b\u0438|\u0434\u043e\u0433\u043e\u0432\u043e\u0440\u0438\u043b\u0438\u0441\u044c|it is decided)\s*[:\-]?\s*(.{8,400})/i,
   );
   if (decided && decided[1]) {
     out.push({
@@ -68,7 +70,7 @@ export function extractMemoryItemsFromMessages(threadId, newMessages) {
   }
 
   const must = combined.match(
-    /(?:must not|never do|do not|нельзя|запрещено|forbidden)\s*[:\-]?\s*(.{6,400})/i,
+    /(?:must not|never do|do not|\u043d\u0435\u043b\u044c\u0437\u044f|\u0437\u0430\u043f\u0440\u0435\u0449\u0435\u043d\u043e|forbidden)\s*[:\-]?\s*(.{6,400})/i,
   );
   if (must && must[1]) {
     out.push({
@@ -83,7 +85,7 @@ export function extractMemoryItemsFromMessages(threadId, newMessages) {
   }
 
   const fact = combined.match(
-    /(?:confirmed fact|it is true that|факт:|подтверждаю,?\s*что)\s*[:\-]?\s*(.{10,400})/i,
+    /(?:confirmed fact|it is true that|\u0444\u0430\u043a\u0442:|\u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0430\u044e,?\s*\u0447\u0442\u043e)\s*[:\-]?\s*(.{10,400})/i,
   );
   if (fact && fact[1]) {
     out.push({

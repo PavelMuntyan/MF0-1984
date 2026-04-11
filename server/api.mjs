@@ -22,7 +22,11 @@ const dbPath = process.env.API_SQLITE_PATH
   : path.join(root, "data", "mf-lab.sqlite");
 const schemaPath = path.join(root, "db", "schema.sql");
 const migration003 = path.join(root, "db", "migrations", "003_context_engine.sql");
+const migration004 = path.join(root, "db", "migrations", "004_memory_graph.sql");
+const migration005 = path.join(root, "db", "migrations", "005_assistant_error.sql");
 const PORT = Number(process.env.API_PORT || 35184, 10);
+
+const ANALYTICS_PROVIDER_IDS = ["openai", "perplexity", "gemini-flash", "anthropic"];
 
 function applyContextEngineMigration(database) {
   const row = database.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='rules'`).get();
@@ -32,7 +36,7 @@ function applyContextEngineMigration(database) {
   }
 }
 
-/** Избранные ответы ассистента: снимок markdown в assistant_favorite_markdown. */
+/** Assistant favorites: markdown snapshot in assistant_favorite_markdown. */
 function applyAssistantFavoriteColumns(database) {
   const cols = database.prepare(`PRAGMA table_info(conversation_turns)`).all();
   const names = new Set(cols.map((c) => c.name));
@@ -46,12 +50,42 @@ function applyAssistantFavoriteColumns(database) {
   }
 }
 
-/** Имена вложений для контекста LLM / RAG (в UI не показывается). */
+/** Attachment names for LLM / RAG context (not shown in UI). */
 function applyUserAttachmentsJsonColumn(database) {
   const cols = database.prepare(`PRAGMA table_info(conversation_turns)`).all();
   const names = new Set(cols.map((c) => c.name));
   if (!names.has("user_attachments_json")) {
     database.exec(`ALTER TABLE conversation_turns ADD COLUMN user_attachments_json TEXT`);
+  }
+}
+
+function applyDialogsPurposeColumn(database) {
+  const cols = database.prepare(`PRAGMA table_info(dialogs)`).all();
+  const names = new Set(cols.map((c) => c.name));
+  if (!names.has("purpose")) {
+    database.exec(`ALTER TABLE dialogs ADD COLUMN purpose TEXT`);
+  }
+}
+
+function applyMemoryGraphMigration(database) {
+  const row = database
+    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='memory_graph_nodes'`)
+    .get();
+  if (row) return;
+  if (fs.existsSync(migration004)) {
+    database.exec(fs.readFileSync(migration004, "utf8"));
+  }
+}
+
+function applyAssistantErrorColumn(database) {
+  const cols = database.prepare(`PRAGMA table_info(conversation_turns)`).all();
+  const names = new Set(cols.map((c) => c.name));
+  if (!names.has("assistant_error")) {
+    if (fs.existsSync(migration005)) {
+      database.exec(fs.readFileSync(migration005, "utf8"));
+    } else {
+      database.exec(`ALTER TABLE conversation_turns ADD COLUMN assistant_error INTEGER NOT NULL DEFAULT 0`);
+    }
   }
 }
 
@@ -99,6 +133,9 @@ function ensureDatabase() {
   applyContextEngineMigration(database);
   applyAssistantFavoriteColumns(database);
   applyUserAttachmentsJsonColumn(database);
+  applyDialogsPurposeColumn(database);
+  applyMemoryGraphMigration(database);
+  applyAssistantErrorColumn(database);
   return database;
 }
 
@@ -133,16 +170,19 @@ function readBody(req) {
   });
 }
 
-/** Сырая метка из SQLite для клиента — формат YY-MM-DD HH:MM считается в браузере (локальное время). */
+/** Raw timestamp string from SQLite for the client — YY-MM-DD HH:MM is interpreted in the browser (local time). */
 function rawDbTimestamp(value) {
   if (value == null || value === "") return "";
   return String(value);
 }
 
 function listThemesWithDialogs() {
+  /** Hide the Intro service dialog's theme in the list — Intro is opened only from the Intro control. */
   const themes = db
     .prepare(
-      `SELECT id, title, created_at, updated_at FROM themes ORDER BY datetime(updated_at) DESC, datetime(created_at) DESC`,
+      `SELECT id, title, created_at, updated_at FROM themes
+       WHERE id NOT IN (SELECT theme_id FROM dialogs WHERE IFNULL(purpose, '') = 'intro')
+       ORDER BY datetime(updated_at) DESC, datetime(created_at) DESC`,
     )
     .all();
   const dialogsStmt = db.prepare(
@@ -352,7 +392,7 @@ function runAfterTurnPipeline(dialogId, turnId, userText, assistantText, userMes
 }
 
 /**
- * Удаляет тему и каскадом всё, что на неё ссылается (диалоги, треды, RAG по thread_id).
+ * Deletes a theme and cascades everything that references it (dialogs, threads, RAG by thread_id).
  * @param {string} themeId
  * @returns {{ ok: true, deletedThemeId: string } | { error: string, status: number }}
  */
@@ -365,6 +405,562 @@ function deleteThemeFromDb(themeId) {
   return { ok: true, deletedThemeId: id };
 }
 
+const MEMORY_GRAPH_CATEGORIES = new Set([
+  "People",
+  "Dates",
+  "Cities",
+  "Countries",
+  "Companies",
+  "Projects",
+  "Interests",
+  "Documents",
+  "Data",
+  "Other",
+]);
+
+/** Default graph anchors (empty DB): profile and thematic interests. */
+const MEMORY_GRAPH_HUB_USER_LABEL = "User";
+const MEMORY_GRAPH_HUB_INTERESTS_LABEL = "Interests";
+
+function normalizeMemoryGraphCategory(raw) {
+  const s = String(raw ?? "").trim();
+  if (MEMORY_GRAPH_CATEGORIES.has(s)) return s;
+  return "Other";
+}
+
+/**
+ * Ensures two canonical hubs (People/User, Interests/Interests) and an edge between them,
+ * even when the graph is non-empty — otherwise chat ingest cannot attach links to Interests.
+ */
+function ensureMemoryGraphHubAnchorsPresent(database) {
+  applyMemoryGraphMigration(database);
+  const tbl = database
+    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='memory_graph_nodes'`)
+    .get();
+  if (!tbl) return;
+  const now = new Date().toISOString();
+  const userBlob =
+    "- Anchor for Intro and self facts: attach profile details here.\n" +
+    "- Prefer linking other Intro entities to this node rather than duplicating a separate “self” person node.";
+  const interestsBlob =
+    "- Hub for themes from regular chats: store broad umbrellas first (e.g. Astronomy, Music).\n" +
+    "- Add narrower topics as children linked to these umbrellas and to this hub.";
+
+  let userRow = database
+    .prepare(`SELECT id FROM memory_graph_nodes WHERE category = ? AND label = ?`)
+    .get("People", MEMORY_GRAPH_HUB_USER_LABEL);
+  let userId = userRow?.id;
+  if (!userId) {
+    userId = crypto.randomUUID();
+    database
+      .prepare(
+        `INSERT INTO memory_graph_nodes (id, category, label, blob, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(userId, "People", MEMORY_GRAPH_HUB_USER_LABEL, userBlob, now, now);
+  }
+
+  let intRow = database
+    .prepare(`SELECT id FROM memory_graph_nodes WHERE category = ? AND label = ?`)
+    .get("Interests", MEMORY_GRAPH_HUB_INTERESTS_LABEL);
+  let interestsId = intRow?.id;
+  if (!interestsId) {
+    interestsId = crypto.randomUUID();
+    database
+      .prepare(
+        `INSERT INTO memory_graph_nodes (id, category, label, blob, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(interestsId, "Interests", MEMORY_GRAPH_HUB_INTERESTS_LABEL, interestsBlob, now, now);
+  }
+
+  const edge = database
+    .prepare(
+      `SELECT id FROM memory_graph_edges WHERE
+        (source_node_id = ? AND target_node_id = ?) OR (source_node_id = ? AND target_node_id = ?)`,
+    )
+    .get(userId, interestsId, interestsId, userId);
+  if (!edge) {
+    database
+      .prepare(
+        `INSERT INTO memory_graph_edges (id, source_node_id, target_node_id, relation, created_at) VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(crypto.randomUUID(), userId, interestsId, "profile and interests", now);
+  }
+}
+
+function memoryGraphNodeKey(category, label) {
+  return `${category}\n${normGraphLabel(label)}`;
+}
+
+/** Single normalization path for node labels in the DB (no domain heuristics). */
+function normGraphLabel(raw) {
+  return String(raw ?? "")
+    .normalize("NFC")
+    .trim()
+    .slice(0, 200);
+}
+
+function appendGraphBlob(blob, notes) {
+  const lineRaw = String(notes ?? "").trim();
+  if (!lineRaw) return String(blob ?? "").trim();
+  const line = lineRaw.startsWith("-") ? lineRaw : `- ${lineRaw}`;
+  let b = String(blob ?? "").trim();
+  b = b ? `${b}\n${line}` : line;
+  if (b.length > 32000) b = `${b.slice(0, 31997)}…`;
+  return b;
+}
+
+function getOrCreateIntroSession() {
+  applyDialogsPurposeColumn(db);
+  applyMemoryGraphMigration(db);
+  const row = db
+    .prepare(`SELECT d.id AS dialog_id, d.theme_id AS theme_id FROM dialogs d WHERE d.purpose = 'intro' LIMIT 1`)
+    .get();
+  if (row) {
+    return { themeId: row.theme_id, dialogId: row.dialog_id };
+  }
+  const themeId = crypto.randomUUID();
+  const dialogId = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const tx = db.transaction(() => {
+    db.prepare(`INSERT INTO themes (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)`).run(
+      themeId,
+      "Intro",
+      now,
+      now,
+    );
+    db.prepare(
+      `INSERT INTO dialogs (id, theme_id, title, created_at, updated_at, purpose) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(dialogId, themeId, "Self profile", now, now, "intro");
+  });
+  tx();
+  return { themeId, dialogId };
+}
+
+function memoryGraphIsProtectedHubNode(category, label) {
+  const c = normalizeMemoryGraphCategory(category);
+  const lab = normGraphLabel(label);
+  return (
+    (c === "People" && lab === MEMORY_GRAPH_HUB_USER_LABEL) ||
+    (c === "Interests" && lab === MEMORY_GRAPH_HUB_INTERESTS_LABEL)
+  );
+}
+
+function memoryGraphGetNodeRow(database, category, label) {
+  const c = normalizeMemoryGraphCategory(category);
+  const lab = normGraphLabel(label);
+  return database.prepare(`SELECT id, blob FROM memory_graph_nodes WHERE category = ? AND label = ?`).get(c, lab) ?? null;
+}
+
+function memoryGraphMergeTwoNodes(database, fromCat, fromLab, intoCat, intoLab, now) {
+  const fromRow = memoryGraphGetNodeRow(database, fromCat, fromLab);
+  const intoRow = memoryGraphGetNodeRow(database, intoCat, intoLab);
+  if (!fromRow?.id || !intoRow?.id || fromRow.id === intoRow.id) return false;
+  const fromId = fromRow.id;
+  const intoId = intoRow.id;
+  const ob = String(fromRow.blob ?? "").trim();
+  if (ob) {
+    const intoBlobRow = database.prepare(`SELECT blob FROM memory_graph_nodes WHERE id = ?`).get(intoId);
+    const merged = appendGraphBlob(
+      String(intoBlobRow?.blob ?? "").trim(),
+      `Merged from “${normGraphLabel(fromLab)}” (${normalizeMemoryGraphCategory(fromCat)}):\n${ob}`,
+    );
+    const b = merged.length > 32000 ? `${merged.slice(0, 31997)}…` : merged;
+    database.prepare(`UPDATE memory_graph_nodes SET blob = ?, updated_at = ? WHERE id = ?`).run(b, now, intoId);
+  }
+  const edges = database
+    .prepare(
+      `SELECT id, source_node_id AS src, target_node_id AS tgt, relation FROM memory_graph_edges WHERE source_node_id = ? OR target_node_id = ?`,
+    )
+    .all(fromId, fromId);
+  for (const e of edges) {
+    const ns = e.src === fromId ? intoId : e.src;
+    const nt = e.tgt === fromId ? intoId : e.tgt;
+    if (ns === nt) {
+      database.prepare(`DELETE FROM memory_graph_edges WHERE id = ?`).run(e.id);
+      continue;
+    }
+    const dup = database
+      .prepare(
+        `SELECT id FROM memory_graph_edges WHERE source_node_id = ? AND target_node_id = ? AND relation = ?`,
+      )
+      .get(ns, nt, e.relation);
+    if (dup) {
+      database.prepare(`DELETE FROM memory_graph_edges WHERE id = ?`).run(e.id);
+    } else {
+      database
+        .prepare(`UPDATE memory_graph_edges SET source_node_id = ?, target_node_id = ? WHERE id = ?`)
+        .run(ns, nt, e.id);
+    }
+  }
+  database.prepare(`DELETE FROM memory_graph_nodes WHERE id = ?`).run(fromId);
+  return true;
+}
+
+function applyMemoryGraphCommandsFromBody(database, rawCommands, now) {
+  const stats = {
+    mergeNodes: 0,
+    deleteNode: 0,
+    renameNode: 0,
+    deleteEdge: 0,
+    moveEdge: 0,
+    skipped: 0,
+  };
+  if (!Array.isArray(rawCommands) || rawCommands.length === 0) return stats;
+  for (const c of rawCommands.slice(0, 50)) {
+    if (!c || typeof c !== "object") continue;
+    const op = String(c.op ?? "").trim();
+    try {
+      if (op === "mergeNodes") {
+        const fc = normalizeMemoryGraphCategory(c.from?.category);
+        const fl = normGraphLabel(c.from?.label);
+        const tc = normalizeMemoryGraphCategory(c.into?.category);
+        const tl = normGraphLabel(c.into?.label);
+        if (!fl || !tl) {
+          stats.skipped += 1;
+          continue;
+        }
+        if (memoryGraphMergeTwoNodes(database, fc, fl, tc, tl, now)) stats.mergeNodes += 1;
+        else stats.skipped += 1;
+      } else if (op === "deleteNode") {
+        const cat = normalizeMemoryGraphCategory(c.category);
+        const lab = normGraphLabel(c.label);
+        if (!lab || memoryGraphIsProtectedHubNode(cat, lab)) {
+          stats.skipped += 1;
+          continue;
+        }
+        const row = memoryGraphGetNodeRow(database, cat, lab);
+        if (!row?.id) {
+          stats.skipped += 1;
+          continue;
+        }
+        database.prepare(`DELETE FROM memory_graph_edges WHERE source_node_id = ? OR target_node_id = ?`).run(
+          row.id,
+          row.id,
+        );
+        database.prepare(`DELETE FROM memory_graph_nodes WHERE id = ?`).run(row.id);
+        stats.deleteNode += 1;
+      } else if (op === "renameNode") {
+        const cat = normalizeMemoryGraphCategory(c.category);
+        const fromLab = normGraphLabel(c.fromLabel);
+        const toLab = normGraphLabel(c.toLabel);
+        if (!fromLab || !toLab || fromLab === toLab || memoryGraphIsProtectedHubNode(cat, fromLab)) {
+          stats.skipped += 1;
+          continue;
+        }
+        const row = memoryGraphGetNodeRow(database, cat, fromLab);
+        if (!row?.id) {
+          stats.skipped += 1;
+          continue;
+        }
+        const collision = memoryGraphGetNodeRow(database, cat, toLab);
+        if (collision?.id && collision.id !== row.id) {
+          if (memoryGraphMergeTwoNodes(database, cat, fromLab, cat, toLab, now)) stats.renameNode += 1;
+          else stats.skipped += 1;
+          continue;
+        }
+        database
+          .prepare(`UPDATE memory_graph_nodes SET label = ?, updated_at = ? WHERE id = ?`)
+          .run(toLab, now, row.id);
+        stats.renameNode += 1;
+      } else if (op === "deleteEdge") {
+        const fc = normalizeMemoryGraphCategory(c.from?.category);
+        const fl = normGraphLabel(c.from?.label);
+        const tc = normalizeMemoryGraphCategory(c.to?.category);
+        const tl = normGraphLabel(c.to?.label);
+        const relOpt = c.relation != null ? String(c.relation).trim().slice(0, 200) : "";
+        if (!fl || !tl) {
+          stats.skipped += 1;
+          continue;
+        }
+        const s = memoryGraphGetNodeRow(database, fc, fl);
+        const t = memoryGraphGetNodeRow(database, tc, tl);
+        if (!s?.id || !t?.id) {
+          stats.skipped += 1;
+          continue;
+        }
+        if (relOpt) {
+          const r = database
+            .prepare(
+              `DELETE FROM memory_graph_edges WHERE source_node_id = ? AND target_node_id = ? AND relation = ?`,
+            )
+            .run(s.id, t.id, relOpt);
+          stats.deleteEdge += r.changes;
+        } else {
+          const r = database
+            .prepare(`DELETE FROM memory_graph_edges WHERE source_node_id = ? AND target_node_id = ?`)
+            .run(s.id, t.id);
+          stats.deleteEdge += r.changes;
+        }
+      } else if (op === "moveEdge") {
+        const rel = String(c.relation ?? "").trim().slice(0, 200) || "related";
+        const ofc = normalizeMemoryGraphCategory(c.oldFrom?.category);
+        const ofl = normGraphLabel(c.oldFrom?.label);
+        const otc = normalizeMemoryGraphCategory(c.oldTo?.category);
+        const otl = normGraphLabel(c.oldTo?.label);
+        const nfc = normalizeMemoryGraphCategory(c.newFrom?.category);
+        const nfl = normGraphLabel(c.newFrom?.label);
+        const ntc = normalizeMemoryGraphCategory(c.newTo?.category);
+        const ntl = normGraphLabel(c.newTo?.label);
+        if (!ofl || !otl || !nfl || !ntl) {
+          stats.skipped += 1;
+          continue;
+        }
+        const os = memoryGraphGetNodeRow(database, ofc, ofl);
+        const ot = memoryGraphGetNodeRow(database, otc, otl);
+        const ns = memoryGraphGetNodeRow(database, nfc, nfl);
+        const nt = memoryGraphGetNodeRow(database, ntc, ntl);
+        if (!os?.id || !ot?.id || !ns?.id || !nt?.id) {
+          stats.skipped += 1;
+          continue;
+        }
+        database
+          .prepare(`DELETE FROM memory_graph_edges WHERE source_node_id = ? AND target_node_id = ? AND relation = ?`)
+          .run(os.id, ot.id, rel);
+        const dup = database
+          .prepare(
+            `SELECT id FROM memory_graph_edges WHERE source_node_id = ? AND target_node_id = ? AND relation = ?`,
+          )
+          .get(ns.id, nt.id, rel);
+        if (!dup && ns.id !== nt.id) {
+          database
+            .prepare(
+              `INSERT INTO memory_graph_edges (id, source_node_id, target_node_id, relation, created_at) VALUES (?, ?, ?, ?, ?)`,
+            )
+            .run(crypto.randomUUID(), ns.id, nt.id, rel, now);
+        }
+        stats.moveEdge += 1;
+      }
+    } catch {
+      stats.skipped += 1;
+    }
+  }
+  return stats;
+}
+
+/** Dialogs excluded from analytics (Intro / Rules / Access). */
+function analyticsDialogWhereSql(alias = "d") {
+  return `IFNULL(${alias}.purpose, '') NOT IN ('intro', 'rules', 'access')`;
+}
+
+/**
+ * @returns {{
+ *   providers: Record<string, { requestsSent: number, responsesOk: number, imageRequests: number, researchRequests: number, webRequests: number }>,
+ *   dailyUsage: Array<{ date: string, byProvider: Record<string, number> }>,
+ *   themesCount: number,
+ *   dialogsCount: number,
+ *   memoryGraph: { nodes: number, edges: number, groups: number }
+ * }}
+ */
+function getAnalyticsPayload() {
+  /** @type {Record<string, { requestsSent: number, responsesOk: number, imageRequests: number, researchRequests: number, webRequests: number }>} */
+  const providers = {};
+  for (const id of ANALYTICS_PROVIDER_IDS) {
+    providers[id] = {
+      requestsSent: 0,
+      responsesOk: 0,
+      imageRequests: 0,
+      researchRequests: 0,
+      webRequests: 0,
+    };
+  }
+
+  const aggRows = db
+    .prepare(
+      `SELECT
+         COALESCE(NULLIF(TRIM(t.responding_provider_id), ''), t.requested_provider_id) AS pid,
+         COUNT(*) AS requests_sent,
+         SUM(CASE WHEN t.assistant_message_at IS NOT NULL AND IFNULL(t.assistant_error, 0) = 0 THEN 1 ELSE 0 END) AS responses_ok,
+         SUM(CASE WHEN t.request_type = 'image' THEN 1 ELSE 0 END) AS image_requests,
+         SUM(CASE WHEN t.request_type = 'research' THEN 1 ELSE 0 END) AS research_requests,
+         SUM(CASE WHEN t.request_type = 'web' THEN 1 ELSE 0 END) AS web_requests
+       FROM conversation_turns t
+       INNER JOIN dialogs d ON d.id = t.dialog_id
+       WHERE ${analyticsDialogWhereSql("d")}
+       GROUP BY pid`,
+    )
+    .all();
+  for (const row of aggRows) {
+    const pid = String(row.pid ?? "").trim();
+    if (!providers[pid]) continue;
+    providers[pid].requestsSent = Number(row.requests_sent) || 0;
+    providers[pid].responsesOk = Number(row.responses_ok) || 0;
+    providers[pid].imageRequests = Number(row.image_requests) || 0;
+    providers[pid].researchRequests = Number(row.research_requests) || 0;
+    providers[pid].webRequests = Number(row.web_requests) || 0;
+  }
+
+  const dayRows = db
+    .prepare(
+      `SELECT
+         DATE(t.user_message_at) AS day,
+         COALESCE(NULLIF(TRIM(t.responding_provider_id), ''), t.requested_provider_id) AS pid,
+         COUNT(*) AS cnt
+       FROM conversation_turns t
+       INNER JOIN dialogs d ON d.id = t.dialog_id
+       WHERE ${analyticsDialogWhereSql("d")}
+         AND DATETIME(t.user_message_at) >= DATETIME('now', '-30 days')
+       GROUP BY day, pid
+       ORDER BY day ASC`,
+    )
+    .all();
+
+  /** @type {Map<string, Record<string, number>>} */
+  const dayMap = new Map();
+  for (const r of dayRows) {
+    const day = String(r.day ?? "").trim();
+    const pid = String(r.pid ?? "").trim();
+    if (!day || !ANALYTICS_PROVIDER_IDS.includes(pid)) continue;
+    if (!dayMap.has(day)) {
+      const o = {};
+      for (const id of ANALYTICS_PROVIDER_IDS) o[id] = 0;
+      dayMap.set(day, o);
+    }
+    dayMap.get(day)[pid] = Number(r.cnt) || 0;
+  }
+
+  const dailyUsage = [];
+  for (let i = 29; i >= 0; i -= 1) {
+    const row = db.prepare(`SELECT DATE(DATETIME('now', ?)) AS d`).get(`-${i} days`);
+    const day = String(row?.d ?? "").trim();
+    const byProvider = dayMap.get(day) ?? Object.fromEntries(ANALYTICS_PROVIDER_IDS.map((id) => [id, 0]));
+    dailyUsage.push({ date: day, byProvider: { ...byProvider } });
+  }
+
+  const themesRow = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM themes WHERE id NOT IN (
+         SELECT DISTINCT theme_id FROM dialogs WHERE IFNULL(purpose, '') = 'intro'
+       )`,
+    )
+    .get();
+  const dialogsRow = db
+    .prepare(`SELECT COUNT(*) AS n FROM dialogs d WHERE ${analyticsDialogWhereSql("d")}`)
+    .get();
+
+  let memoryGraph = { nodes: 0, edges: 0, groups: 0 };
+  const tbl = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='memory_graph_nodes'`).get();
+  if (tbl) {
+    const nodesRow = db.prepare(`SELECT COUNT(*) AS n FROM memory_graph_nodes`).get();
+    const edgesRow = db.prepare(`SELECT COUNT(*) AS n FROM memory_graph_edges`).get();
+    const groupsRow = db.prepare(`SELECT COUNT(DISTINCT category) AS n FROM memory_graph_nodes`).get();
+    memoryGraph = {
+      nodes: Number(nodesRow?.n) || 0,
+      edges: Number(edgesRow?.n) || 0,
+      groups: Number(groupsRow?.n) || 0,
+    };
+  }
+
+  return {
+    providers,
+    dailyUsage,
+    themesCount: Number(themesRow?.n) || 0,
+    dialogsCount: Number(dialogsRow?.n) || 0,
+    memoryGraph,
+  };
+}
+
+function getMemoryGraphPayload() {
+  ensureMemoryGraphHubAnchorsPresent(db);
+  const tbl = db
+    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='memory_graph_nodes'`)
+    .get();
+  if (!tbl) {
+    return { nodes: [], links: [] };
+  }
+  const nodes = db
+    .prepare(
+      `SELECT id, category, label, blob FROM memory_graph_nodes ORDER BY category ASC, label COLLATE NOCASE ASC`,
+    )
+    .all();
+  const links = db
+    .prepare(
+      `SELECT id, source_node_id AS source, target_node_id AS target, relation AS label FROM memory_graph_edges`,
+    )
+    .all();
+  return { nodes, links };
+}
+
+/**
+ * @param {unknown} body
+ * @returns {{ ok: true, upsertedEntities: number, insertedLinks: number, commandsApplied: Record<string, number> }}
+ */
+function ingestMemoryGraphFromBody(body) {
+  ensureMemoryGraphHubAnchorsPresent(db);
+  applyMemoryGraphMigration(db);
+  const entities = Array.isArray(body?.entities) ? body.entities : [];
+  const links = Array.isArray(body?.links) ? body.links : [];
+  const commands = Array.isArray(body?.commands) ? body.commands : [];
+  const now = new Date().toISOString();
+  /** @type {Map<string, string>} */
+  const keyToId = new Map();
+  let upserted = 0;
+  /** @type {Record<string, number>} */
+  let commandsApplied = {};
+
+  const tx = db.transaction(() => {
+    for (const e of entities) {
+      if (!e || typeof e !== "object") continue;
+      const category = normalizeMemoryGraphCategory(e.category);
+      const label = normGraphLabel(e.label);
+      const notes = String(e.notes ?? "").trim().slice(0, 4000);
+      if (!label) continue;
+      const nk = memoryGraphNodeKey(category, label);
+      const existing = db
+        .prepare(`SELECT id, blob FROM memory_graph_nodes WHERE category = ? AND label = ?`)
+        .get(category, label);
+      if (existing) {
+        const blob = appendGraphBlob(existing.blob, notes);
+        db.prepare(`UPDATE memory_graph_nodes SET blob = ?, updated_at = ? WHERE id = ?`).run(blob, now, existing.id);
+        keyToId.set(nk, existing.id);
+      } else {
+        const id = crypto.randomUUID();
+        const blob0 = notes ? (notes.startsWith("-") ? notes : `- ${notes}`) : "";
+        db.prepare(
+          `INSERT INTO memory_graph_nodes (id, category, label, blob, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+        ).run(id, category, label, blob0.slice(0, 32000), now, now);
+        keyToId.set(nk, id);
+      }
+      upserted += 1;
+    }
+
+    let insertedLinks = 0;
+    for (const ln of links) {
+      if (!ln || typeof ln !== "object") continue;
+      const from = ln.from;
+      const to = ln.to;
+      if (!from || !to || typeof from !== "object" || typeof to !== "object") continue;
+      const fc = normalizeMemoryGraphCategory(from.category);
+      const fl = normGraphLabel(from.label);
+      const tc = normalizeMemoryGraphCategory(to.category);
+      const tl = normGraphLabel(to.label);
+      if (!fl || !tl) continue;
+      const kf = memoryGraphNodeKey(fc, fl);
+      const kt = memoryGraphNodeKey(tc, tl);
+      let sid = keyToId.get(kf);
+      let tid = keyToId.get(kt);
+      if (!sid) {
+        const r = db.prepare(`SELECT id FROM memory_graph_nodes WHERE category = ? AND label = ?`).get(fc, fl);
+        sid = r?.id;
+      }
+      if (!tid) {
+        const r = db.prepare(`SELECT id FROM memory_graph_nodes WHERE category = ? AND label = ?`).get(tc, tl);
+        tid = r?.id;
+      }
+      if (!sid || !tid || sid === tid) continue;
+      const rel = String(ln.relation ?? "").trim().slice(0, 200) || "related";
+      db.prepare(
+        `INSERT INTO memory_graph_edges (id, source_node_id, target_node_id, relation, created_at) VALUES (?, ?, ?, ?, ?)`,
+      ).run(crypto.randomUUID(), sid, tid, rel, now);
+      insertedLinks += 1;
+    }
+    commandsApplied = applyMemoryGraphCommandsFromBody(db, commands, now);
+    return insertedLinks;
+  });
+
+  const insertedLinks = tx();
+  return { ok: true, upsertedEntities: upserted, insertedLinks, commandsApplied };
+}
+
 function normalizePathname(pathname) {
   const s = String(pathname || "/");
   const collapsed = s.replace(/\/{2,}/g, "/");
@@ -373,8 +969,8 @@ function normalizePathname(pathname) {
 }
 
 /**
- * Прокси (Apache и т.д.) часто передаёт pathname вида /mf-lab/api/... — роутер ждёт /api/...
- * Опционально: API_PATH_PREFIX=/mf-lab чтобы снять один сегмент с начала.
+ * Proxies (Apache, etc.) often pass pathnames like /mf-lab/api/... while the router expects /api/...
+ * Optional: API_PATH_PREFIX=/mf-lab strips one leading path segment.
  */
 function canonicalApiPath(pathname) {
   const normalized = normalizePathname(pathname);
@@ -404,6 +1000,29 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === "GET" && p === "/api/health") {
       return json(res, 200, { ok: true, mfLabApi: true, port: PORT });
+    }
+
+    if (req.method === "GET" && p === "/api/intro/session") {
+      const s = getOrCreateIntroSession();
+      return json(res, 200, { ok: true, themeId: s.themeId, dialogId: s.dialogId });
+    }
+
+    if (req.method === "GET" && p === "/api/memory-graph") {
+      return json(res, 200, getMemoryGraphPayload());
+    }
+
+    if (req.method === "GET" && p === "/api/analytics") {
+      return json(res, 200, { ok: true, ...getAnalyticsPayload() });
+    }
+
+    if (req.method === "POST" && p === "/api/memory-graph/ingest") {
+      const body = await readBody(req);
+      try {
+        const out = ingestMemoryGraphFromBody(body);
+        return json(res, 200, out);
+      } catch (e) {
+        return json(res, 400, { error: e instanceof Error ? e.message : String(e) });
+      }
     }
 
     if (
@@ -436,7 +1055,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { favorites });
     }
 
-    /** Избранное: короткий путь + вариант под /api/dialogs/ (дубли /api/api/ снимает canonicalApiPath). */
+    /** Favorites: short path plus /api/dialogs/ variant (canonicalApiPath strips duplicate /api/api/). */
     if (
       req.method === "POST" &&
       (p === "/api/assistant-favorite" || p === "/api/dialogs/assistant-favorite")
@@ -466,12 +1085,12 @@ const server = http.createServer(async (req, res) => {
     }
 
     /**
-     * Удаление темы: каскадом из БД уходят все dialogs этой темы, conversation_turns,
-     * а также RAG-слой по тредам — thread_messages (в т.ч. embedding), thread_summaries,
-     * memory_items с привязкой thread_id к этим диалогам. Глобальные rules и прочее без FK на тему не трогаем.
+     * Theme delete: cascades all dialogs of that theme, conversation_turns,
+     * and per-thread RAG — thread_messages (including embeddings), thread_summaries,
+     * memory_items whose thread_id points at those dialogs. Global rules and rows without FK to the theme are untouched.
      *
-     * POST — основной путь для UI (как /api/themes/new-dialog): часть прокси/старых процессов API
-     * отвечает 404 на DELETE без актуального кода. DELETE оставлен для совместимости.
+     * POST is the primary UI path (like /api/themes/new-dialog): some proxies/old API builds return 404 on DELETE.
+     * DELETE is kept for compatibility.
      */
     if (req.method === "POST" && (p === "/api/themes/delete" || p === "/api/theme-delete")) {
       const body = await readBody(req);
@@ -563,7 +1182,7 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
-    /** Плоский путь — как /api/themes/bootstrap; надёжнее при прокси и без UUID в сегменте URL. */
+    /** Flat path like /api/themes/bootstrap; safer behind proxies and without a UUID in the URL segment. */
     if (req.method === "POST" && p === "/api/themes/new-dialog") {
       const body = await readBody(req);
       const themeId = String(body.themeId ?? body.theme_id ?? "").trim();
@@ -648,6 +1267,7 @@ const server = http.createServer(async (req, res) => {
       const userMessageAt = String(body.user_message_at ?? "");
       const assistantMessageAt =
         body.assistant_message_at != null ? String(body.assistant_message_at) : null;
+      const assistantError = body.assistant_error === 1 || body.assistant_error === true ? 1 : 0;
 
       const attachRows = parseTurnUserAttachmentsJson(userAttachmentsJson);
       const hasUserChars = String(userText).trim().length > 0;
@@ -666,8 +1286,8 @@ const server = http.createServer(async (req, res) => {
         db.prepare(
           `INSERT INTO conversation_turns (
             id, dialog_id, user_text, user_attachments_json, assistant_text, requested_provider_id, responding_provider_id,
-            request_type, user_message_at, assistant_message_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            request_type, user_message_at, assistant_message_at, assistant_error
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           turnId,
           dialogId,
@@ -679,6 +1299,7 @@ const server = http.createServer(async (req, res) => {
           requestType,
           userMessageAt,
           assistantMessageAt,
+          assistantError,
         );
         db.prepare(`UPDATE dialogs SET updated_at = ? WHERE id = ?`).run(now, dialogId);
         db.prepare(`UPDATE themes SET updated_at = ? WHERE id = ?`).run(now, drow.theme_id);

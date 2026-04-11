@@ -1,6 +1,6 @@
 /**
- * Starter / Last action на карточке темы: YY-MM-DD HH:MM в локальной TZ браузера.
- * @param {string | null | undefined} value — ISO или строка из SQLite, как отдаёт API
+ * Starter / Last action on theme card: YY-MM-DD HH:MM in the browser's local timezone.
+ * @param {string | null | undefined} value — ISO or SQLite string as returned by the API
  */
 export function formatThemeMetaLocal(value) {
   if (value == null || value === "") return "";

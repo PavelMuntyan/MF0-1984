@@ -1,4 +1,4 @@
-/** Грубая оценка токенов (~4 символа на токен) для бюджета. */
+/** Rough token estimate (~4 chars per token) for budgeting. */
 export function estimateTokens(text) {
   const s = String(text ?? "");
   if (!s) return 0;

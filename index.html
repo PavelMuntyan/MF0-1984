@@ -135,15 +135,44 @@
         <div class="app-window">
           <header class="header">
             <div class="header-brand-block">
-              <h1 class="header-brand-title">MF0-1984</h1>
-              <div class="header-brand-version" id="app-version"></div>
+              <a
+                class="header-brand-logo-link"
+                href="https://mf0.me"
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="Open mf0.me"
+                title="mf0.me"
+              >
+                <img
+                  class="header-brand-logo"
+                  src="/logo-mf.png"
+                  alt=""
+                  height="55"
+                  decoding="async"
+                  aria-hidden="true"
+                />
+              </a>
+              <div class="header-brand-text">
+                <h1 class="header-brand-title">MF0-1984</h1>
+                <div class="header-brand-version" id="app-version"></div>
+              </div>
             </div>
 
             <div class="header-actions">
               <button type="button" class="btn" id="btn-new-dialogue">New chat</button>
               <div class="btn">Search</div>
-              <div class="btn">Analytics</div>
-              <button type="button" class="btn" id="btn-memory-tree">Memory tree</button>
+              <button type="button" class="btn" id="btn-analytics" aria-pressed="false">
+                Analytics
+              </button>
+              <button
+                type="button"
+                class="btn"
+                id="btn-memory-tree"
+                disabled
+                title="No graph data yet"
+              >
+                Memory tree
+              </button>
             </div>
 
             <div class="header-icons">
@@ -439,6 +468,17 @@
                       <label for="mt-charge">Repulsion</label>
                       <input id="mt-charge" type="range" min="-400" max="-20" value="-140" />
                     </div>
+                    <div class="mt-control-row">
+                      <label for="mt-camera-distance">Zoom</label>
+                      <input
+                        id="mt-camera-distance"
+                        type="range"
+                        min="80"
+                        max="2400"
+                        value="1960"
+                        step="10"
+                      />
+                    </div>
                   </div>
                   <div class="mt-buttons">
                     <button type="button" class="mt-btn" id="mt-btn-random">Focus random node</button>
@@ -544,6 +584,16 @@
                   Drag to rotate, scroll to zoom, drag background to pan. Click a node to focus and highlight
                   links.
                 </div>
+              </div>
+              <div
+                class="chat-analytics-view"
+                id="chat-analytics-view"
+                role="region"
+                aria-label="Analytics"
+                aria-hidden="true"
+                hidden
+              >
+                <div id="analytics-dashboard-root" class="analytics-dashboard-root"></div>
               </div>
               <div
                 class="messages-viewport"

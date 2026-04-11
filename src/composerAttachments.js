@@ -1,4 +1,4 @@
-/** Лимит и подготовка вложений в поле ввода чата перед отправкой в LLM. */
+/** Limit and prepare composer attachments before sending to the LLM. */
 
 export const MAX_COMPOSER_ATTACHMENTS = 10;
 

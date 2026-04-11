@@ -1,11 +1,11 @@
 /** Client for /api chat persistence (themes, dialogs, turns). */
 
-/** Учитывает `import.meta.env.BASE_URL` (приложение не в корне сайта). */
+/** Respects `import.meta.env.BASE_URL` when the app is not at the site root. */
 function apiUrl(path) {
   const p = String(path ?? "").replace(/^\//, "");
   const base = new URL(import.meta.env.BASE_URL || "/", window.location.origin);
   let href = new URL(p, base).href;
-  /* new URL('api/…', '…/api/') даёт …/api/api/… — API тогда отвечает 404 Not found */
+  /* new URL('api/…', '…/api/') can yield …/api/api/… — API then returns 404 Not found */
   while (href.includes("/api/api/")) {
     href = href.replace("/api/api/", "/api/");
   }
@@ -35,7 +35,7 @@ export async function apiHealth() {
   const res = await fetch(apiUrl("api/health"));
   if (!res.ok) return false;
   const data = await res.json().catch(() => ({}));
-  /** Отсекаем чужой сервис на том же пути (например, не наш ответ без метки). */
+  /** Reject another service on the same path (e.g. response without our marker). */
   return data.ok === true && data.mfLabApi === true;
 }
 
@@ -53,9 +53,9 @@ export async function fetchTurns(dialogId) {
 }
 
 /**
- * Пакет для сборки контекста LLM (тред = dialog id).
- * Сначала пробует GET /context-pack (rules, memory, summaries, thread_messages).
- * Если 404/старый API — собирает из уже существующих /turns и /themes, чтобы история диалога всё равно уходила в модель.
+ * Payload for building LLM context (thread = dialog id).
+ * Tries GET /context-pack first (rules, memory, summaries, thread_messages).
+ * On 404/old API, builds from existing /turns and /themes so dialog history still reaches the model.
  */
 export async function fetchContextPack(dialogId, userQuery = "") {
   const did = String(dialogId ?? "").trim();
@@ -134,7 +134,7 @@ export async function deleteTheme(themeId) {
     return Boolean(res.ok && data && data.ok === true);
   }
 
-  /** Старый процесс API без POST /api/themes/delete отдаёт 404 { error: «Not found» }. */
+  /** Old API build without POST /api/themes/delete returns 404 { error: "Not found" }. */
   function shouldTryDeleteFallback(res, data) {
     return res.status === 404 && (!data || data.error === "Not found");
   }
@@ -209,7 +209,7 @@ export async function saveConversationTurn(dialogId, payload) {
 }
 
 /**
- * Избранный ответ ассистента: снимок markdown в БД.
+ * Favorite assistant reply: markdown snapshot in the DB.
  * @param {string} turnId
  * @param {{ favorite: boolean, markdown?: string }} body
  */
@@ -239,4 +239,52 @@ export async function fetchAssistantFavorites() {
   }
   const data = await res.json();
   return data.favorites ?? [];
+}
+
+/** Ensures Intro theme and dialog exist for the Intro section. */
+export async function fetchIntroSession() {
+  const res = await fetch(apiUrl("api/intro/session"));
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Intro session ${res.status}`);
+  }
+  const data = await res.json();
+  const dialogId = String(data?.dialogId ?? "").trim();
+  if (!dialogId) throw new Error("Intro session: empty dialog id");
+  return { themeId: String(data?.themeId ?? "").trim(), dialogId };
+}
+
+/** Raw memory graph from the DB (category, short label, fact blob, edges). */
+export async function fetchMemoryGraphFromApi() {
+  const res = await fetch(apiUrl("api/memory-graph"));
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Memory graph ${res.status}`);
+  }
+  return res.json();
+}
+
+/** Aggregated usage stats (excludes Intro / Rules / Access dialogs). */
+export async function fetchAnalytics() {
+  const res = await fetch(apiUrl("api/analytics"));
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Analytics ${res.status}`);
+  }
+  return res.json();
+}
+
+/**
+ * Upserts graph nodes and edges (Intro extraction / ingest result).
+ * @param {{ entities?: unknown[], links?: unknown[] }} payload
+ */
+export async function ingestMemoryGraphPayload(payload) {
+  const res = await fetch(apiUrl("api/memory-graph/ingest"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload ?? {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || `Memory graph ingest ${res.status}`);
+  return data;
 }

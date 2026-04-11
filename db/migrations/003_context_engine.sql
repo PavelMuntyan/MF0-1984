@@ -1,5 +1,5 @@
 -- Context pipeline: rules, memory, per-dialog messages mirror, summaries.
--- thread_id = dialogs.id (тред в продукте = диалог в БД).
+-- thread_id = dialogs.id (product thread = dialog row in DB).
 
 PRAGMA foreign_keys = ON;
 

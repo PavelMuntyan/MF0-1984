@@ -1,10 +1,10 @@
 ---
-description: Не портить рабочую SQLite пользователя при отладке API
+description: Do not damage the user's working SQLite while debugging the API
 globs: server/**/*.mjs,scripts/**/*.mjs
 ---
 
-# База данных в сессии агента
+# Database during an agent session
 
-- **Не выполнять** `DELETE`/`UPDATE`/`INSERT` в `data/mf-lab.sqlite` (и аналогах) ради «проверки» без явного запроса пользователя.
-- Для проверки HTTP API использовать **отдельный файл БД** (`API_SQLITE_PATH` / копия файла) или **временный порт** и **тестовую** базу, которую пользователь не использует как основную.
-- Не запускать `curl`/скрипты удаления темы против реального `data/*.sqlite` в workspace пользователя.
+- **Do not** run `DELETE` / `UPDATE` / `INSERT` on `data/mf-lab.sqlite` (or equivalents) for “testing” without an explicit user request.
+- For HTTP API checks use a **separate DB file** (`API_SQLITE_PATH` / file copy) or a **temporary port** and a **test** database the user does not rely on as primary.
+- Do not run `curl` / theme-delete scripts against the real `data/*.sqlite` in the user's workspace.

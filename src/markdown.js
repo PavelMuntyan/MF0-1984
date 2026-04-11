@@ -43,7 +43,7 @@ const SANITIZE = {
 };
 
 /**
- * Markdown → безопасный HTML для ответа ассистента.
+ * Markdown → sanitized HTML for assistant replies.
  * @param {string} source
  * @returns {string}
  */

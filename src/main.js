@@ -6,13 +6,24 @@ import {
   completeChatMessage,
   completeChatMessageStreaming,
   completeImageGeneration,
+  extractIntroMemoryGraphForIngest,
+  extractChatInterestSketchForIngest,
+  normalizeIntroMemoryGraphForDb,
   generateThemeDialogTitle,
   PROVIDER_DISPLAY,
 } from "./chatApi.js";
 import { renderAssistantMarkdown } from "./markdown.js";
 import { getModelApiKeys, hasAnyModelApiKey } from "./modelEnv.js";
 import { setTheme } from "./theme.js";
-import { closeMemoryTree, initMemoryTree } from "./memoryTree.js";
+import {
+  closeMemoryTree,
+  enrichMemoryGraphFromApi,
+  initMemoryTree,
+  openMemoryTree,
+  setMemoryGraphData,
+} from "./memoryTree.js";
+import { detectIntroMemoryTreeCommands } from "./introMemoryTreeCommands.js";
+import { closeAnalyticsView, initAnalyticsDashboard } from "./analyticsDashboard.js";
 import {
   apiHealth,
   bootstrapThemeAndDialog,
@@ -21,8 +32,12 @@ import {
   renameTheme,
   fetchAssistantFavorites,
   fetchContextPack,
+  fetchIntroSession,
+  fetchMemoryGraphFromApi,
+  fetchAnalytics,
   fetchThemesPayload,
   fetchTurns,
+  ingestMemoryGraphPayload,
   requestTypeFromAttachMode,
   saveConversationTurn,
   setAssistantTurnFavorite,
@@ -45,26 +60,54 @@ import {
 } from "./composerAttachments.js";
 
 const MAX_LOG_LINES = 400;
-/** Верхняя граница оценки входных токенов для сборки контекста треда (до ответа модели). */
+/** Upper bound for estimated input tokens when building thread context (before the model reply). */
 const MF0_MAX_CONTEXT_INPUT_TOKENS = 12000;
 
 /** Active conversation for DB persistence (null = new chat until first send). */
 let activeThemeId = null;
 let activeDialogId = null;
 
-/** У какой темы открыт список диалогов (папка); закрывается только кнопкой папки или открытием папки у другой темы. */
+/** Intro section dialog (created by API `/api/intro/session`). */
+let introSessionDialogId = null;
+
+async function ensureIntroSessionClient() {
+  if (introSessionDialogId) return introSessionDialogId;
+  const s = await fetchIntroSession();
+  introSessionDialogId = s.dialogId;
+  return introSessionDialogId;
+}
+
+async function loadMemoryGraphIntoUi() {
+  try {
+    if (!(await apiHealth())) return;
+    const raw = await fetchMemoryGraphFromApi();
+    setMemoryGraphData(enrichMemoryGraphFromApi(raw));
+  } catch (e) {
+    appendActivityLog(`Memory graph: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+const INTRO_COACH_SYSTEM_APPEND =
+  "You are in the Intro section: the user is sharing about themselves so the project can remember them.\n" +
+  "Do not behave like a generic Q&A assistant on unrelated topics; stay with the person and their context.\n" +
+  "Tone: warm, respectful, curious — like a skilled psychologist: reflect, ask gentle follow-ups when helpful, invite them to say more.\n" +
+  "If you still know very little about them, start with basics (how they want to be addressed, what matters now, what they do) before going deep.\n" +
+  "When the user explicitly asks to **open**, **close**, or **refresh** the **Memory tree** (the 3D memory graph), the app runs that action automatically when possible: confirm briefly what happened, or say the graph is not ready yet if there is no data.\n" +
+  "**Memory tree data:** You cannot edit the stored graph yourself. The **Keeper** runs after each turn and updates the tree from **the user's message alone** (not from your reply); do **not** tell the user you merged nodes, saved the graph, or did the Keeper's job — acknowledge in natural language only; the UI will change when that pipeline succeeds.";
+
+/** Which theme has its dialog list expanded; closes only via folder button or opening another theme's folder. */
 let expandedThemeDialogListThemeId = null;
 
-/** Анти-дребезг отправки; при true второй клик игнорируется. Сбрасывается в finally отправки и при смене темы/диалога. */
+/** Send debounce: when true, ignore duplicate submits. Cleared in send `finally` and on theme/dialog change. */
 let chatComposerSending = false;
 
 /**
- * Вложения к текущему сообщению (до отправки).
+ * Attachments for the current message (before send).
  * @type {Array<{ id: string, file: File, kind: ReturnType<typeof classifyComposerAttachmentKind>, previewUrl?: string | null }>}
  */
 let composerAttachmentRows = [];
 
-/** Календарная дата везде в формате YYYY-MM-DD */
+/** Calendar dates everywhere as YYYY-MM-DD */
 function formatDateYmd(d) {
   const x = d instanceof Date ? d : new Date(d);
   const p = (n) => String(n).padStart(2, "0");
@@ -87,7 +130,36 @@ function appendActivityLog(text) {
   renderActivityLog();
 }
 
-/** Подпись режима меню «+» для журнала активности */
+/** Short graph pack summary for the activity log (Keeper). */
+function keeperPayloadSummary(pack, maxEntities = 8) {
+  const entities = Array.isArray(pack?.entities) ? pack.entities : [];
+  const links = Array.isArray(pack?.links) ? pack.links : [];
+  const parts = entities.slice(0, maxEntities).map((e) => {
+    const lab = String(e?.label ?? "").trim().slice(0, 40);
+    const cat = String(e?.category ?? "").trim().slice(0, 24);
+    return lab ? `${cat}/${lab}` : cat || "?";
+  });
+  const extra = entities.length > maxEntities ? ` (+more ${entities.length - maxEntities})` : "";
+  const cmds = Array.isArray(pack?.commands) ? pack.commands.length : 0;
+  const cmdPart = cmds ? `; cmds: ${cmds}` : "";
+  const core = `${entities.length} nodes, ${links.length} edges${cmdPart}${parts.length ? ` — ${parts.join("; ")}${extra}` : ""}`;
+  return core.length > 480 ? `${core.slice(0, 477)}...` : core;
+}
+
+/** Summary line from ingest response `commandsApplied`. */
+function keeperIngestCommandsLine(ing) {
+  const ca = ing?.commandsApplied;
+  if (!ca || typeof ca !== "object") return "";
+  const bits = ["mergeNodes", "deleteNode", "renameNode", "deleteEdge", "moveEdge", "skipped"]
+    .map((k) => {
+      const n = Number(ca[k]);
+      return Number.isFinite(n) && n > 0 ? `${k}: ${n}` : "";
+    })
+    .filter(Boolean);
+  return bits.length ? ` Commands: ${bits.join(", ")}.` : "";
+}
+
+/** "+" menu mode label for the activity log */
 function attachModeLogLabel(mode) {
   const m = String(mode ?? "");
   if (m === "web") return "web search";
@@ -96,7 +168,7 @@ function attachModeLogLabel(mode) {
   return "default text";
 }
 
-/** Первый URL или data: из markdown-картинки `![](...)` */
+/** First URL or data: from a markdown image `![](...)` */
 function extractMarkdownImageSrc(markdown) {
   const m = String(markdown ?? "").match(/!\[[^\]]*\]\(\s*([^)]+?)\s*\)/);
   if (!m) return null;
@@ -104,7 +176,7 @@ function extractMarkdownImageSrc(markdown) {
 }
 
 /**
- * Поместить растровое изображение в буфер обмена (data: или http(s)).
+ * Copy a raster image to the clipboard (data: or http(s)).
  * @returns {Promise<boolean>}
  */
 async function copyRasterImageToClipboard(src) {
@@ -123,7 +195,7 @@ async function copyRasterImageToClipboard(src) {
     await writeBlob(blob);
     return true;
   } catch {
-    /* пробуем через canvas, если хост отдаёт CORS для <img> */
+    /* try canvas path if host allows CORS for <img> */
   }
   try {
     const img = await new Promise((resolve, reject) => {
@@ -197,7 +269,7 @@ function initThemeToggle() {
   });
 }
 
-/** @param {{ log?: boolean }} [options] — log=false: только закрыть (уже есть запись в журнале, напр. Clear). */
+/** @param {{ log?: boolean }} [options] — log=false: close only (e.g. after Clear already logged). */
 function closeActivityPanel(options = {}) {
   const panel = document.getElementById("activity-log-panel");
   const toggleBtn = document.getElementById("btn-activity-toggle");
@@ -264,7 +336,7 @@ function initActivityPanel() {
   );
 }
 
-/** @param {{ log?: boolean }} [options] — log=false: не писать в журнал (напр. при переходе из записи). */
+/** @param {{ log?: boolean }} [options] — log=false: do not append to the log (e.g. when opening from a row). */
 function closeFavoritesPanel(options = {}) {
   const panel = document.getElementById("favorites-panel");
   const toggleBtn = document.getElementById("btn-favorites");
@@ -280,7 +352,7 @@ function closeFavoritesPanel(options = {}) {
 }
 
 /**
- * Прокрутка области чата к ответу ассистента с данным id хода (`data-turn-id` на `.msg-assistant`).
+ * Scroll the chat to the assistant reply with the given turn id (`data-turn-id` on `.msg-assistant`).
  * @param {string} turnId
  */
 function scrollChatToAssistantTurn(turnId) {
@@ -423,14 +495,14 @@ if (versionEl) {
   versionEl.textContent = `v${pkg.version ?? "0.0.1"}`;
 }
 
-/** Порядок выбора активного провайдера по умолчанию */
+/** Default order for picking the active provider */
 const PROVIDER_ORDER = ["openai", "perplexity", "gemini-flash", "anthropic"];
 
 function providerHasKey(keys, id) {
   return Boolean(String(keys[id] ?? "").trim());
 }
 
-/** Для режима «Поиск в сети»: Gemini → Perplexity → Claude → ChatGPT */
+/** Web search mode: Gemini → Perplexity → Claude → ChatGPT */
 const WEB_SEARCH_PROVIDER_PRIORITY = [
   "gemini-flash",
   "perplexity",
@@ -439,12 +511,12 @@ const WEB_SEARCH_PROVIDER_PRIORITY = [
 ];
 
 /**
- * Режим кнопки «+» (меню вложений). Для «web» в API уходит расширенный запрос с инструкцией искать в сети.
+ * "+" button mode (attachment menu). For `web`, the API gets an expanded prompt with web-search instructions.
  * @type {string}
  */
 let composerAttachMode = "";
 
-/** Для режима «Глубокое исследование»: Perplexity → ChatGPT → Gemini → Claude */
+/** Deep research mode: Perplexity → ChatGPT → Gemini → Claude */
 const DEEP_RESEARCH_PROVIDER_PRIORITY = [
   "perplexity",
   "openai",
@@ -452,7 +524,7 @@ const DEEP_RESEARCH_PROVIDER_PRIORITY = [
   "anthropic",
 ];
 
-/** Для режима «Создать изображение»: только провайдеры с API генерации картинок */
+/** Create image mode: only providers with image-generation API */
 const IMAGE_CREATION_PROVIDER_PRIORITY = ["openai", "gemini-flash"];
 
 function setActiveProviderBadge(providerId) {
@@ -467,7 +539,7 @@ function setActiveProviderBadge(providerId) {
   return true;
 }
 
-/** Активирует первого провайдера из приоритета, у кого есть ключ в .env */
+/** Activates the first provider in the priority list that has a key in .env */
 function activateProviderForWebSearch() {
   const keys = getModelApiKeys();
   for (const id of WEB_SEARCH_PROVIDER_PRIORITY) {
@@ -508,7 +580,7 @@ function activateProviderForImageCreation() {
   appendActivityLog("Create image: no ChatGPT or Gemini keys in .env");
 }
 
-/** В режиме «Создать изображение» недоступны провайдеры без API картинок */
+/** In Create image mode, providers without image API are unavailable */
 const IMAGE_MODE_DISABLED_PROVIDERS = new Set(["perplexity", "anthropic"]);
 
 function refreshModelBadges() {
@@ -669,7 +741,7 @@ function openThemeDeleteModal(themeTitle, onClose) {
   const t = String(themeTitle ?? "").trim();
   const nameEl = el.querySelector(".theme-delete-modal-theme-line");
   if (nameEl) {
-    nameEl.textContent = t ? `Theme: «${t}»` : "Theme: (untitled)";
+    nameEl.textContent = t ? `Theme: "${t}"` : "Theme: (untitled)";
   }
   el.hidden = false;
   document.documentElement.classList.add("theme-delete-modal-open");
@@ -827,6 +899,7 @@ function closeIrChatPanel(options = {}) {
 function openIrChatPanel(mode) {
   const cfg = IR_CHAT_PANELS.find((p) => p.mode === mode);
   if (!cfg) return;
+  closeAnalyticsView();
   closeMemoryTree();
   closeMobileThemesDropdown();
   activeThemeId = null;
@@ -851,6 +924,25 @@ function openIrChatPanel(mode) {
   document.getElementById(cfg.btnId)?.setAttribute("aria-expanded", "true");
   void renderThemesSidebar();
   refreshThemeHighlightsFromChat();
+
+  if (cfg.mode === "intro") {
+    void (async () => {
+      try {
+        const s = await fetchIntroSession();
+        introSessionDialogId = s.dialogId;
+        const list = document.getElementById("messages-list");
+        list?.replaceChildren();
+        const turns = await fetchTurns(introSessionDialogId);
+        for (const t of turns) {
+          replayTurnInChat(t);
+        }
+        scrollMessagesToEnd();
+        await loadMemoryGraphIntoUi();
+      } catch (e) {
+        appendActivityLog(`Intro: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    })();
+  }
 }
 
 function toggleIrChatPanel(mode) {
@@ -876,12 +968,12 @@ async function handleThemeRenamed(themeId, oldTitle, newTitle) {
     appendActivityLog(`Theme rename failed: ${e instanceof Error ? e.message : String(e)}`);
     return;
   }
-  appendActivityLog(`Theme renamed: «${String(oldTitle || "—").trim()}» → «${String(newTitle).trim()}»`);
+  appendActivityLog(`Theme renamed: "${String(oldTitle || "—").trim()}" → "${String(newTitle).trim()}"`);
   await renderThemesSidebar();
   refreshThemeHighlightsFromChat();
 }
 
-/** Меню темы (три полоски): Favorites, Rename, Delete. */
+/** Theme row menu (hamburger): Favorites, Rename, Delete. */
 function initThemeCardActions() {
   const root = document.getElementById("dialogue-cards");
   if (!root) return;
@@ -988,7 +1080,7 @@ function initThemeCardActions() {
   });
 }
 
-/** Свернуть списки диалогов у тем; `exceptCard` — не трогать эту карточку (открываем папку на ней). */
+/** Collapse per-theme dialog lists; `exceptCard` — leave that card alone (opening folder on it). */
 function collapseAllThemeDialogLists(exceptCard = null) {
   const root = document.getElementById("dialogue-cards");
   if (!root) return;
@@ -1007,7 +1099,7 @@ function initThemeFolderMenus() {
   const root = document.getElementById("dialogue-cards");
   if (!root) return;
 
-  /* Выбор диалога: capture — иначе всплытие не доходит до #dialogue-cards из‑за stopPropagation на панели. */
+  /* Dialog pick: use capture — otherwise events do not reach #dialogue-cards (stopPropagation on panel). */
   root.addEventListener(
     "click",
     (e) => {
@@ -1051,7 +1143,7 @@ function initThemeFolderMenus() {
   });
 }
 
-/** На узком экране закрывает выпадающий список тем (иначе он перекрывает поле ввода). Назначается в initDialoguesMenu. */
+/** On narrow screens, closes the theme dropdown (otherwise it covers the input). Set in initDialoguesMenu. */
 let closeMobileThemesDropdown = () => {};
 
 function initDialoguesMenu() {
@@ -1203,7 +1295,7 @@ function composerAttachmentIconSvg(kind) {
   return svg;
 }
 
-/** Иконка вложения в уже отправленном сообщении (без превью — только контур, как у документа/шестерни/сервера). */
+/** Attachment icon on a sent message (no preview — outline only, like document/gear/server). */
 function userMessageAttachmentGlyph(kind) {
   if (kind === "image") {
     const svg = elSvg("svg", {
@@ -1355,6 +1447,7 @@ function initNewDialogueButton() {
   btn.addEventListener("click", () => {
     chatComposerSending = false;
     closeMobileThemesDropdown();
+    closeAnalyticsView();
     closeMemoryTree();
     closeIrChatPanel();
     activeThemeId = null;
@@ -1414,7 +1507,7 @@ function initAttachMenu() {
   const resetSep = menu?.querySelector(".attach-menu-reset-sep");
   if (!btn || !menu || !visual) return;
 
-  /** «Обычный ввод» только если основная кнопка уже не плюс (показана иконка режима). */
+  /** Plain text input only when the main button is no longer "+" (mode icon shown). */
   function syncResetRow() {
     const mainIsPlus = !visual.classList.contains("btn-attach-visual--icon");
     const show = !mainIsPlus;
@@ -1554,7 +1647,7 @@ function getActiveProviderId() {
   return el.getAttribute("data-provider");
 }
 
-/** Текст для API: в режиме «Поиск в сети» добавляется инструкция искать по вводу пользователя. */
+/** API prompt text: in Web search mode, append instructions to search from the user's input. */
 function buildChatPromptForApi(userText, mode) {
   const t = String(userText ?? "").trim();
   if (!t) return t;
@@ -1594,7 +1687,7 @@ function syncChatInputHeight(ta) {
   ta.dataset.overflowY = sh > maxH + 0.5 ? "1" : "";
 }
 
-/** Двойной шеврон (как у ответа ИИ): вверх = свернуть / развёрнуто, поворот 180° = развернуть */
+/** Double chevron (like AI reply): up = collapse / expanded, 180° rotation = expand */
 function createBubbleChevronIcon() {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("class", "msg-bubble-chevron-icon");
@@ -1762,7 +1855,7 @@ function makeCopyButton(getText, labelOrOpts) {
   return btn;
 }
 
-/** Блоки кода в markdown: круглая кнопка «копировать» в правом верхнем углу */
+/** Markdown code blocks: round copy button in the top-right corner */
 function enhanceAssistantMarkdownCodeBlocks(root) {
   if (!root) return;
   root.querySelectorAll("pre").forEach((pre) => {
@@ -1801,7 +1894,7 @@ function updateUserExpandVisibility(msgEl, textEl, expandBtn) {
   msgEl.classList.toggle("msg-user--no-expand", !needs);
 }
 
-/** Иконка «Поиск в сети» (глобус), как в меню вложений */
+/** Web search icon (globe), same as in the attachment menu */
 function createWebSearchBadgeIcon() {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
@@ -1827,7 +1920,7 @@ function createWebSearchBadgeIcon() {
   return svg;
 }
 
-/** Иконка «Создать изображение» (как в меню вложений) */
+/** Create image icon (same as in the attachment menu) */
 function createImageCreationBadgeIcon() {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
@@ -1858,7 +1951,7 @@ function createImageCreationBadgeIcon() {
   return svg;
 }
 
-/** Иконка «Deep research» (как в меню вложений) */
+/** Deep research icon (same as in the attachment menu) */
 function createDeepResearchBadgeIcon() {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
@@ -2011,7 +2104,7 @@ function appendUserMessage(rawText, modelLabel, options) {
   });
 }
 
-/** Подсветка карточек тем в сайдбаре, если название темы встречается в последнем сообщении пользователя. */
+/** Highlight theme cards in the sidebar when the theme title appears in the user's latest message. */
 function refreshThemeHighlightsFromChat() {
   const cardsRoot = document.getElementById("dialogue-cards");
   if (!cardsRoot) return;
@@ -2073,7 +2166,7 @@ function appendAssistantPending() {
   return wrap;
 }
 
-/** Кнопка «копировать» у ответа ИИ только если в буфере есть хотя бы один символ (стриминг). */
+/** Copy on AI reply only when the streaming buffer has at least one character. */
 function syncAssistantCopyButtonDuringStream(wrap) {
   const body = wrap?.querySelector(".msg-assistant-body");
   if (!body) return;
@@ -2126,8 +2219,8 @@ function renderAssistantError(el, message) {
 }
 
 /**
- * После потока или целого ответа: копирование; шеврон «свернуть», если больше 4 строк
- * @param {string} [modelHintOverride] — например модель генерации изображения
+ * After stream or full reply: copy; collapse chevron when more than 4 lines
+ * @param {string} [modelHintOverride] — e.g. image generation model id
  */
 function finalizeAssistantBubble(el, fullText, providerId, modelHintOverride) {
   if (!el) return;
@@ -2251,7 +2344,7 @@ async function handleThemeDeleted(themeId, themeTitle) {
     appendActivityLog(`Theme delete failed: ${e instanceof Error ? e.message : String(e)}`);
     return;
   }
-  appendActivityLog(`Theme deleted: «${String(themeTitle || "—").trim()}»`);
+  appendActivityLog(`Theme deleted: "${String(themeTitle || "—").trim()}"`);
   removeFavoriteThemeId(tid);
   if (String(expandedThemeDialogListThemeId ?? "").trim() === tid) {
     expandedThemeDialogListThemeId = null;
@@ -2260,6 +2353,7 @@ async function handleThemeDeleted(themeId, themeTitle) {
     activeThemeId = null;
     activeDialogId = null;
     chatComposerSending = false;
+    closeAnalyticsView();
     closeMemoryTree();
     closeIrChatPanel();
     document.getElementById("messages-list")?.replaceChildren();
@@ -2319,7 +2413,7 @@ function replayTurnInChat(turn) {
   }
 }
 
-/** Выбрана тема: пустой чат; первое сообщение создаст новый диалог в теме. */
+/** Theme selected: empty chat; first message creates a new dialog in that theme. */
 async function openThemeForNewDialog(themeId) {
   const tid = String(themeId ?? "").trim();
   if (!tid) return;
@@ -2328,6 +2422,7 @@ async function openThemeForNewDialog(themeId) {
   closeMobileThemesDropdown();
   activeThemeId = tid;
   activeDialogId = null;
+  closeAnalyticsView();
   closeMemoryTree();
   closeIrChatPanel();
   const list = document.getElementById("messages-list");
@@ -2346,7 +2441,7 @@ async function openThemeForNewDialog(themeId) {
 /**
  * @param {string} dialogId
  * @param {string} [themeId]
- * @param {string} [scrollToTurnId] — после загрузки треда прокрутить к ответу с этим id хода
+ * @param {string} [scrollToTurnId] — after loading the thread, scroll to the reply with this turn id
  */
 async function openDialogById(dialogId, themeId, scrollToTurnId) {
   const did = String(dialogId ?? "").trim();
@@ -2357,6 +2452,7 @@ async function openDialogById(dialogId, themeId, scrollToTurnId) {
   const t = themeId != null ? String(themeId).trim() : "";
   activeThemeId = t || activeThemeId;
   expandedThemeDialogListThemeId = String(activeThemeId ?? "").trim() || null;
+  closeAnalyticsView();
   closeMemoryTree();
   closeIrChatPanel();
   const list = document.getElementById("messages-list");
@@ -2407,7 +2503,8 @@ function initChatComposer() {
     if (!trimmed && filesSnapshot.length === 0) return;
 
     const mainChatEl = document.getElementById("main-chat");
-    if (mainChatEl && irChatPanelIsOpen(mainChatEl)) {
+    const introChatOpen = Boolean(mainChatEl?.classList.contains("chat--intro"));
+    if (mainChatEl && irChatPanelIsOpen(mainChatEl) && !introChatOpen) {
       closeIrChatPanel();
     }
 
@@ -2444,6 +2541,14 @@ function initChatComposer() {
 
     const userMessageAt = new Date().toISOString();
     let persistDialogId = activeDialogId;
+    if (introChatOpen) {
+      try {
+        persistDialogId = await ensureIntroSessionClient();
+      } catch (e) {
+        appendActivityLog(`Intro session: ${e instanceof Error ? e.message : String(e)}`);
+        return;
+      }
+    }
 
     let pending = null;
     let fullText = "";
@@ -2453,7 +2558,7 @@ function initChatComposer() {
     try {
       if (!persistDialogId) {
         try {
-          /** Новый диалог в уже выбранной теме: без лишнего вызова LLM. Новая тема: заголовок через LLM с таймаутом. */
+          /** New dialog in the already selected theme: no extra LLM call. New theme: title via LLM with timeout. */
           const themeIdForNewDialog = String(activeThemeId ?? "").trim();
           const bootTitle = themeIdForNewDialog
             ? titleFromUserMessage(titleSeed)
@@ -2499,7 +2604,7 @@ function initChatComposer() {
         promptForApi = "(See attached images.)";
       }
 
-      /* Режим «Create image»: в API уходит только текст; прикреплённые картинки — явная подсказка в промпте. */
+      /* Create image: API gets text only; attached images become an explicit note in the prompt. */
       if (modeForSend === "image" && attApi.images.length > 0) {
         const imgNames = attachmentStripMeta
           .filter((x) => x.kind === "image")
@@ -2529,6 +2634,23 @@ function initChatComposer() {
         attachmentStrip: attachmentStripMeta.length > 0 ? attachmentStripMeta : undefined,
       });
       didAppendUserToUi = true;
+      if (introChatOpen && modeForSend !== "image") {
+        const mt = detectIntroMemoryTreeCommands(persistUserText);
+        if (mt.didTouchMemoryTreeTopic) {
+          if (mt.close) closeMemoryTree();
+          if (mt.open) openMemoryTree();
+          if (mt.refresh && (await apiHealth())) {
+            try {
+              await loadMemoryGraphIntoUi();
+            } catch {
+              /* loadMemoryGraphIntoUi logs */
+            }
+          }
+          if (mt.close || mt.open || mt.refresh) {
+            appendActivityLog("Intro: Memory tree — action from your message applied.");
+          }
+        }
+      }
       refreshThemeHighlightsFromChat();
       ta.value = "";
       syncChatInputHeight(ta);
@@ -2581,7 +2703,11 @@ function initChatComposer() {
                 modelFlags: { recentMessageCount: 10 },
               });
               const fitted = fitContextToBudget(built, MF0_MAX_CONTEXT_INPUT_TOKENS);
-              chatOpts.systemInstruction = fitted.systemInstruction;
+              let sysOut = fitted.systemInstruction;
+              if (introChatOpen) {
+                sysOut = [sysOut, INTRO_COACH_SYSTEM_APPEND].filter(Boolean).join("\n\n");
+              }
+              chatOpts.systemInstruction = sysOut;
               chatOpts.llmMessages = fitted.messagesForApi;
               if (import.meta.env.DEV) {
                 globalThis.__MF0_LAST_CONTEXT_DEBUG__ = fitted.debug;
@@ -2590,6 +2716,14 @@ function initChatComposer() {
               appendActivityLog(
                 `LLM context: single-turn fallback (${ctxErr instanceof Error ? ctxErr.message : String(ctxErr)})`,
               );
+            }
+          }
+          if (introChatOpen && modeForSend !== "image") {
+            const cur = String(chatOpts.systemInstruction ?? "").trim();
+            if (!cur) {
+              chatOpts.systemInstruction = INTRO_COACH_SYSTEM_APPEND;
+            } else if (!cur.includes("Intro section")) {
+              chatOpts.systemInstruction = `${cur}\n\n${INTRO_COACH_SYSTEM_APPEND}`;
             }
           }
           let buf = "";
@@ -2641,6 +2775,7 @@ function initChatComposer() {
           pending?.classList.contains("msg-assistant--error") && pending?.dataset?.assistantMarkdown
             ? String(pending.dataset.assistantMarkdown)
             : fullText;
+        const hadAssistantError = Boolean(pending?.classList.contains("msg-assistant--error"));
         try {
           /** @type {Record<string, unknown>} */
           const turnPayload = {
@@ -2651,12 +2786,130 @@ function initChatComposer() {
             request_type: requestTypeFromAttachMode(modeForSend),
             user_message_at: userMessageAt,
             assistant_message_at: assistantMessageAt,
+            assistant_error: hadAssistantError ? 1 : 0,
           };
           if (attachmentStripMeta.length > 0) {
             turnPayload.user_attachments_json = JSON.stringify(attachmentStripMeta);
           }
-          const saveOut = await saveConversationTurn(persistDialogId, turnPayload);
-          const tid = saveOut && typeof saveOut === "object" && saveOut.id != null ? String(saveOut.id) : "";
+          const saveRes = await saveConversationTurn(persistDialogId, turnPayload);
+          const tid =
+            saveRes && typeof saveRes === "object" && saveRes.id != null ? String(saveRes.id) : "";
+          if (introChatOpen && modeForSend !== "image" && !hadAssistantError) {
+            try {
+              appendActivityLog("Keeper (Intro): start — extracting from user text…");
+              const extracted = await extractIntroMemoryGraphForIngest(providerId, key, persistUserText);
+              appendActivityLog(`Keeper (Intro): extract — ${keeperPayloadSummary(extracted)}`);
+              let pack = extracted;
+              if (await apiHealth()) {
+                try {
+                  const existing = await fetchMemoryGraphFromApi();
+                  appendActivityLog(
+                    `Keeper (Intro): normalize to DB (${(existing.nodes ?? []).length} nodes in graph)…`,
+                  );
+                  pack = await normalizeIntroMemoryGraphForDb(
+                    providerId,
+                    key,
+                    extracted,
+                    existing.nodes ?? [],
+                    {
+                      introMode: true,
+                      userText: persistUserText,
+                    },
+                  );
+                  appendActivityLog(`Keeper (Intro): normalize — ${keeperPayloadSummary(pack)}`);
+                } catch (normErr) {
+                  appendActivityLog(
+                    `Keeper (Intro): normalize — error: ${normErr instanceof Error ? normErr.message : String(normErr)}`,
+                  );
+                  appendActivityLog(
+                    `Keeper (Intro): pack without normalize — ${keeperPayloadSummary(pack)}`,
+                  );
+                }
+              } else {
+                appendActivityLog(
+                  "Keeper (Intro): normalize skipped — local API unavailable; pack is extract-only.",
+                );
+              }
+              const cmdLen = Array.isArray(pack.commands) ? pack.commands.length : 0;
+              if (pack.entities.length > 0 || pack.links.length > 0 || cmdLen > 0) {
+                const ing = await ingestMemoryGraphPayload({
+                  entities: pack.entities ?? [],
+                  links: pack.links ?? [],
+                  commands: pack.commands ?? [],
+                });
+                const u = Number(ing?.upsertedEntities);
+                const l = Number(ing?.insertedLinks);
+                appendActivityLog(
+                  `Keeper (Intro): ingest — upserted nodes: ${Number.isFinite(u) ? u : "?"}, inserted edges: ${Number.isFinite(l) ? l : "?"}.${keeperIngestCommandsLine(ing)}`,
+                );
+              } else {
+                appendActivityLog(
+                  "Keeper (Intro): ingest skipped — empty pack after extract/normalize. The model returned no entities/links/commands for this message (or the API did not respond).",
+                );
+              }
+            } catch (ingErr) {
+              appendActivityLog(
+                `Keeper (Intro): failure — ${ingErr instanceof Error ? ingErr.message : String(ingErr)}`,
+              );
+            }
+            try {
+              await loadMemoryGraphIntoUi();
+            } catch {
+              /* loadMemoryGraphIntoUi logs */
+            }
+          } else if (!introChatOpen && modeForSend !== "image" && !hadAssistantError) {
+            try {
+              appendActivityLog("Keeper (chat): start — interest sketch from user text…");
+              const extracted = await extractChatInterestSketchForIngest(providerId, key, persistUserText);
+              appendActivityLog(`Keeper (chat): extract — ${keeperPayloadSummary(extracted)}`);
+              let pack = extracted;
+              if ((extracted.entities.length > 0 || extracted.links.length > 0) && (await apiHealth())) {
+                try {
+                  const existing = await fetchMemoryGraphFromApi();
+                  appendActivityLog(
+                    `Keeper (chat): normalize to DB (${(existing.nodes ?? []).length} nodes in graph)…`,
+                  );
+                  pack = await normalizeIntroMemoryGraphForDb(providerId, key, extracted, existing.nodes ?? []);
+                  appendActivityLog(`Keeper (chat): normalize — ${keeperPayloadSummary(pack)}`);
+                } catch (normErr) {
+                  appendActivityLog(
+                    `Keeper (chat): normalize — error: ${normErr instanceof Error ? normErr.message : String(normErr)}`,
+                  );
+                  appendActivityLog(`Keeper (chat): pack without normalize — ${keeperPayloadSummary(pack)}`);
+                }
+              } else if (extracted.entities.length > 0 || extracted.links.length > 0) {
+                appendActivityLog(
+                  "Keeper (chat): normalize skipped — local API unavailable.",
+                );
+              }
+              const chatCmdLen = Array.isArray(pack.commands) ? pack.commands.length : 0;
+              if (pack.entities.length > 0 || pack.links.length > 0 || chatCmdLen > 0) {
+                const ing = await ingestMemoryGraphPayload({
+                  entities: pack.entities ?? [],
+                  links: pack.links ?? [],
+                  commands: pack.commands ?? [],
+                });
+                const u = Number(ing?.upsertedEntities);
+                const l = Number(ing?.insertedLinks);
+                appendActivityLog(
+                  `Keeper (chat): ingest — upserted nodes: ${Number.isFinite(u) ? u : "?"}, inserted edges: ${Number.isFinite(l) ? l : "?"}.${keeperIngestCommandsLine(ing)}`,
+                );
+                try {
+                  await loadMemoryGraphIntoUi();
+                } catch {
+                  /* loadMemoryGraphIntoUi logs */
+                }
+              } else {
+                appendActivityLog(
+                  "Keeper (chat): ingest skipped — empty interest sketch for this message.",
+                );
+              }
+            } catch (skErr) {
+              appendActivityLog(
+                `Keeper (chat): failure — ${skErr instanceof Error ? skErr.message : String(skErr)}`,
+              );
+            }
+          }
           if (pending && tid) {
             pending.dataset.turnId = tid;
             syncAssistantFavoriteStarButton(pending);
@@ -2692,12 +2945,12 @@ function dataTransferHasFileList(dataTransfer) {
   }
 }
 
-/** Перетаскивание файлов на область чата — в композер, без кнопки «Добавить фото и файлы». */
+/** Drag files onto the chat area → composer (no “Add photos and files” click). */
 function initChatFileDropZone() {
   const mainChat = document.getElementById("main-chat");
   if (!mainChat) return;
 
-  /** После `drop` часть браузеров шлёт ещё `dragover` с типом Files — без этого рамка залипает. */
+  /** After `drop`, some browsers emit another `dragover` with Files — without this, the drop highlight sticks. */
   let suppressDropHighlightUntil = 0;
 
   function clearDropHighlight() {
@@ -2737,7 +2990,7 @@ function initChatFileDropZone() {
     const fl = e.dataTransfer?.files;
     if (fl?.length) {
       addComposerAttachmentsFromFileList(fl);
-      /* «Хвостовые» dragover с types: Files после сброса — иначе рамка снова включается. */
+      /* Trailing dragover with types: Files after drop — otherwise the frame turns on again. */
       suppressDropHighlightUntil = performance.now() + 600;
     }
     queueMicrotask(() => clearDropHighlight());
@@ -2747,7 +3000,7 @@ function initChatFileDropZone() {
     clearDropHighlight();
   }
 
-  /** Уход курсора за пределы документа — без следующего `dragover` рамка иначе не снимается. */
+  /** Cursor leaves the document — without a later `dragover`, the frame may not clear. */
   function onDocumentDragLeave(e) {
     if (!dataTransferHasFileList(e.dataTransfer)) return;
     const rel = e.relatedTarget;
@@ -2762,7 +3015,7 @@ function initChatFileDropZone() {
   window.addEventListener("blur", clearDropHighlight);
 }
 
-/** Клик по картинке в истории чата — полноэкранный просмотр; Esc или клик по фону — закрыть. */
+/** Click an image in chat history → fullscreen; Esc or backdrop click closes. */
 function initChatImageLightbox() {
   const root = document.getElementById("chat-image-lightbox");
   const backdrop = root?.querySelector(".chat-image-lightbox-backdrop");
@@ -2847,6 +3100,14 @@ function bootApp() {
   initDialoguesMenu();
   initThemeFolderMenus();
   initMemoryTree(appendActivityLog);
+  initAnalyticsDashboard({
+    fetchAnalytics,
+    appendActivityLog,
+    prepareChatSurface: () => {
+      closeMemoryTree();
+      closeIrChatPanel();
+    },
+  });
   initNewDialogueButton();
   initAttachMenu();
   initChatComposer();
@@ -2860,10 +3121,11 @@ function bootApp() {
     try {
       if (await apiHealth()) {
         await renderThemesSidebar();
+        await loadMemoryGraphIntoUi();
         appendActivityLog("Chat database connected.");
       } else {
         appendActivityLog(
-          "Chat database offline — запустите API и интерфейс вместе (npm run dev) или pm2:restart; порт API по умолчанию 35184.",
+          "Chat database offline — run the API and UI together (npm run dev) or restart the API process (e.g. pm2); default API port 35184.",
         );
       }
     } catch (e) {

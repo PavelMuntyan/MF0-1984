@@ -19,7 +19,7 @@ function saveFavoriteSet(set) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify([...set]));
 }
 
-/** @returns {boolean} новое состояние: true = в избранном */
+/** @returns {boolean} new state: true = now favorited */
 export function toggleFavoriteThemeId(themeId) {
   const id = normId(themeId);
   if (!id) return false;
@@ -43,7 +43,7 @@ export function removeFavoriteThemeId(themeId) {
   if (set.delete(id)) saveFavoriteSet(set);
 }
 
-/** Избранные в том же порядке, что в исходном списке API, затем остальные. */
+/** Favorites first in API list order, then the rest. */
 export function sortThemesFavoritesFirst(themes, favSet) {
   const fav = [];
   const rest = [];

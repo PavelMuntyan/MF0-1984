@@ -1,5 +1,5 @@
 /**
- * Палитра как ai-biz-os/frontend/src/index.css (@layer base :root + .dark)
+ * Palette aligned with ai-biz-os/frontend/src/index.css (@layer base :root + .dark)
  */
 :root {
   --background: 0 0% 100%;
@@ -17,7 +17,7 @@
   --border: 214.3 31.8% 91.4%;
   --input: 214.3 31.8% 91.4%;
   --ring: 221.2 83.2% 53.3%;
-  /* Избранное (звезда в чате и в темах) — должно быть на :root, не только в .dialog-card */
+  /* Favorites (star in chat and themes) — must live on :root, not only .dialog-card */
   --theme-favorite-yellow: #eab308;
 }
 
@@ -46,7 +46,7 @@
   box-sizing: border-box;
 }
 
-/* Высота = реальный innerHeight (обновляется при resize / моб. панелях), иначе 100dvh */
+/* Height = real innerHeight (updates on resize / mobile chrome); else 100dvh */
 html {
   height: var(--app-vh, 100dvh);
   max-height: var(--app-vh, 100dvh);
@@ -84,7 +84,7 @@ body {
   color: hsl(var(--foreground));
 }
 
-/* Просмотр картинки из чата: поверх интерфейса, Esc или клик по затемнению */
+/* Fullscreen image from chat: over UI; Esc or backdrop click closes */
 .chat-image-lightbox {
   position: fixed;
   inset: 0;
@@ -133,7 +133,7 @@ body {
   display: block;
   width: auto;
   height: auto;
-  /* Жёстко не шире/выше окна (с учётом padding у оверлея); object-fit: contain — длинная сторона к краю */
+  /* Never wider/taller than the window (overlay padding); object-fit: contain — long edge to edge */
   max-width: calc(100vw - 2rem - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
   max-height: calc(100vh - 2rem - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
   max-height: calc(100dvh - 2rem - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
@@ -235,7 +235,7 @@ body {
   color: hsl(var(--foreground));
 }
 
-/* Вся сетка укладывается в окно браузера: прокрутка только внутри панелей, не у body */
+/* Whole grid fits the viewport: scroll inside panels only, not on body */
 .app-frame {
   max-width: 96rem;
   margin-left: auto;
@@ -257,7 +257,7 @@ body {
   }
 }
 
-/* Окно: rounded-2xl border-2 border-border bg-card shadow-none */
+/* Window shell: rounded-2xl border-2 border-border bg-card shadow-none */
 .app-window {
   flex: 1;
   display: flex;
@@ -269,14 +269,53 @@ body {
   overflow: hidden;
 }
 
-/* Заголовок приложения — имя крупно, версия мелко снизу */
+/* App header — logo left, name and version right */
 .header-brand-block {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.65rem;
+  min-width: 0;
+  flex-shrink: 0;
+}
+
+.header-brand-logo-link {
+  display: flex;
+  flex-shrink: 0;
+  line-height: 0;
+  text-decoration: none;
+  color: inherit;
+  border-radius: 0.35rem;
+  outline-offset: 2px;
+}
+
+.header-brand-logo-link:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px hsl(var(--background)),
+    0 0 0 4px hsl(var(--ring) / 0.35);
+}
+
+.header-brand-logo {
+  display: block;
+  flex-shrink: 0;
+  height: 55px;
+  width: auto;
+  max-height: 55px;
+  object-fit: contain;
+}
+
+/* Logo is black on transparent — invert to white in dark theme */
+.dark .header-brand-logo {
+  filter: brightness(0) invert(1);
+}
+
+.header-brand-text {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   justify-content: center;
   min-width: 0;
-  flex-shrink: 0;
 }
 
 .header-brand-title {
@@ -297,7 +336,7 @@ body {
   color: hsl(var(--muted-foreground));
 }
 
-/* Шапка: один ряд — бренд | кнопки по центру | иконки справа */
+/* Header: one row — brand | center actions | icons right */
 .header {
   display: flex;
   flex-direction: row;
@@ -368,7 +407,7 @@ body {
   height: 2.25rem;
 }
 
-/* Бейджи моделей — над полем ввода сообщения (сверху и снизу линия) */
+/* Model badges — above the message field (top and bottom rules) */
 .model-badges {
   display: flex;
   flex-wrap: wrap;
@@ -382,7 +421,7 @@ body {
   background: hsl(var(--background));
 }
 
-/* BADGES — ui/badge (кнопки) */
+/* BADGES — ui/badge (buttons) */
 .badge {
   display: inline-flex;
   align-items: center;
@@ -419,7 +458,7 @@ body {
   border-color: transparent;
 }
 
-/* Нет ключа в .env */
+/* No API key in .env */
 .badge.badge--no-key {
   background: hsl(var(--muted));
   color: hsl(var(--muted-foreground));
@@ -434,7 +473,7 @@ body {
   color: hsl(var(--muted-foreground));
 }
 
-/* Режим «Создать изображение»: провайдеры без генерации картинок */
+/* Create image mode: providers without image generation */
 .badge.badge--mode-locked {
   opacity: 0.48;
   filter: grayscale(0.25);
@@ -447,7 +486,7 @@ body {
   opacity: 0.48;
 }
 
-/* Текстовые кнопки — outline */
+/* Text buttons — outline */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -484,7 +523,7 @@ button.btn {
   color: hsl(var(--foreground));
 }
 
-/* Иконки — как ThemeToggle / Activity в Human UI */
+/* Icon buttons — like ThemeToggle / Activity in Human UI */
 .btn-icon {
   display: inline-flex;
   align-items: center;
@@ -531,7 +570,7 @@ button.btn {
   background: hsl(var(--card));
 }
 
-/* Колонка как Card с Projects в Human UI */
+/* Column like Card with Projects in Human UI */
 .sidebar {
   width: 20rem;
   max-width: 100%;
@@ -573,7 +612,7 @@ button.btn {
   color: hsl(var(--foreground));
 }
 
-/* Кнопка списка диалогов — только на узком экране (см. @media ниже) */
+/* Dialog list toggle — narrow screens only (see @media below) */
 .btn-dialogues-toggle {
   display: none;
   align-items: center;
@@ -625,7 +664,7 @@ button.btn {
   gap: 0.5rem;
 }
 
-/* Карточки диалогов */
+/* Dialog cards */
 .dialog-card {
   --theme-favorite-yellow: #eab308;
   --dialog-star-active: var(--theme-favorite-yellow);
@@ -739,7 +778,7 @@ button.btn {
   color: hsl(var(--muted-foreground));
 }
 
-/* Меню темы: три полоски + выпадашка */
+/* Theme menu: hamburger + dropdown */
 .dialog-card-theme-menu-wrap {
   position: relative;
   display: flex;
@@ -930,7 +969,7 @@ button.btn {
   display: block;
 }
 
-/* Список диалогов темы: внутри бабла, под строкой заголовка (не отдельное выпадающее окно). */
+/* Theme dialog list: inside the bubble under the title row (not a separate popover). */
 .dialog-folder-menu {
   flex: 0 0 auto;
   width: 100%;
@@ -1135,7 +1174,7 @@ button.btn {
   display: block;
 }
 
-/* Intro / Rules / Access — область в колонке чата (информер в шапке) */
+/* Intro / Rules / Access — area in the chat column (informer in header) */
 .chat-ir-view {
   display: flex;
   flex-direction: column;
@@ -1148,9 +1187,291 @@ button.btn {
   display: none !important;
 }
 
-.chat--intro .messages-viewport,
+/* Analytics: full main column (no chat input) */
+.chat-analytics-view {
+  display: none;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  background: hsl(var(--background));
+}
+
+.chat-analytics-view[hidden] {
+  display: none !important;
+}
+
+.main-chat--analytics .messages-viewport,
+.main-chat--analytics .chat-footer,
+.main-chat--analytics .memory-tree-graph-host,
+.main-chat--analytics .chat-ir-view {
+  display: none !important;
+}
+
+.main-chat--analytics .chat-analytics-view {
+  display: flex !important;
+}
+
+.analytics-dashboard-root {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 1rem 1.1rem 1.25rem;
+  box-sizing: border-box;
+  /* Narrow chart: hide axis labels (threshold = 60% of .analytics-inner max-width = 72rem × 0.6) */
+  container-type: inline-size;
+  container-name: analytics-dash;
+}
+
+.analytics-inner {
+  max-width: 72rem;
+  margin: 0 auto;
+}
+
+.analytics-header {
+  margin-bottom: 1.25rem;
+}
+
+.analytics-page-title {
+  margin: 0 0 0.35rem;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: hsl(var(--foreground));
+}
+
+.analytics-sub {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: hsl(var(--muted-foreground));
+}
+
+.analytics-model-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15.5rem, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.analytics-model-card {
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.75rem;
+  padding: 0.85rem 1rem;
+  background: hsl(var(--card));
+  color: hsl(var(--card-foreground));
+}
+
+.analytics-model-title {
+  margin: 0 0 0.65rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.analytics-dl {
+  margin: 0;
+}
+
+.analytics-dl-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.28rem 0;
+  font-size: 0.8125rem;
+  border-bottom: 1px solid hsl(var(--border) / 0.5);
+}
+
+.analytics-dl-row:last-child {
+  border-bottom: none;
+}
+
+.analytics-dl-row dt {
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  font-weight: 400;
+}
+
+.analytics-dl-row dd {
+  margin: 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.analytics-chart-block {
+  margin-bottom: 1.5rem;
+}
+
+.analytics-section-title {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: hsl(var(--foreground));
+}
+
+.analytics-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem 1rem;
+  margin-bottom: 0.65rem;
+  font-size: 0.75rem;
+  color: hsl(var(--muted-foreground));
+}
+
+.analytics-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.analytics-legend-swatch {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.analytics-bars-wrap {
+  overflow-x: auto;
+  padding-bottom: 0.25rem;
+  /* Allow chart axis labels below the usual browser minimum font size */
+  -webkit-text-size-adjust: none;
+  text-size-adjust: none;
+}
+
+.analytics-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  min-height: 11rem;
+  padding-top: 0.25rem;
+}
+
+.analytics-bar-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1 0 0;
+  min-width: 1.35rem;
+  max-width: 2rem;
+}
+
+.analytics-bar-stack {
+  display: flex;
+  flex-direction: column-reverse;
+  justify-content: flex-start;
+  width: 100%;
+  height: 10rem;
+  border-radius: 0.25rem 0.25rem 0 0;
+  overflow: hidden;
+  background: hsl(var(--muted) / 0.35);
+}
+
+.analytics-bar-seg {
+  width: 100%;
+  min-height: 0;
+  flex: 0 0 auto;
+}
+
+.analytics-bar-seg--openai {
+  background: #10a37f;
+}
+.analytics-bar-seg--perplexity {
+  background: #3b82f6;
+}
+.analytics-bar-seg--gemini-flash {
+  background: #4285f4;
+}
+.analytics-bar-seg--anthropic {
+  background: #d97757;
+}
+
+.analytics-bar-day {
+  margin-top: 0.12rem;
+  line-height: 1;
+  font-size: 7px;
+  /* `rem`-only shrink often hits the browser “minimum font size”; zoom scales the painted text */
+  zoom: 0.63;
+  color: hsl(var(--muted-foreground));
+  white-space: nowrap;
+}
+
+.analytics-bar-total {
+  font-size: 0.58rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: hsl(var(--foreground));
+}
+
+@container analytics-dash (max-width: 43.2rem) {
+  .analytics-bar-day,
+  .analytics-bar-total {
+    display: none !important;
+  }
+
+  .analytics-bar-col {
+    min-width: 0;
+    max-width: none;
+  }
+
+  .analytics-bars {
+    min-height: 10.35rem;
+  }
+
+  .analytics-bars-wrap {
+    padding-bottom: 0.1rem;
+  }
+}
+
+.analytics-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.65rem;
+}
+
+.analytics-meta-card {
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.65rem;
+  padding: 0.65rem 0.75rem;
+  background: hsl(var(--muted) / 0.2);
+}
+
+.analytics-meta-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: hsl(var(--muted-foreground));
+  margin-bottom: 0.2rem;
+}
+
+.analytics-meta-value {
+  font-size: 1.35rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: hsl(var(--foreground));
+}
+
+.analytics-error {
+  margin: 0;
+  color: hsl(var(--destructive));
+  font-size: 0.875rem;
+}
+
+.btn.btn--active {
+  border-color: hsl(var(--primary));
+  color: hsl(var(--primary));
+}
+
 .chat--rules .messages-viewport,
 .chat--access .messages-viewport {
+  display: none !important;
+}
+
+/* Intro: informer on top, thread below (empty .chat-ir-body does not steal height) */
+.chat--intro #chat-intro-view.chat-ir-view {
+  flex: 0 0 auto;
+  min-height: 0;
+}
+
+.chat--intro #chat-intro-view .chat-ir-body {
   display: none !important;
 }
 
@@ -1213,7 +1534,7 @@ button.btn {
   min-width: 0;
   min-height: 0;
   background: hsl(var(--background));
-  /* Та же высота плиток вложений, что у строки ввода в подвале */
+  /* Attachment tiles same height as the footer input row */
   --input-bar-row-height: calc(1rem + 0.875rem * 1.25 + 1rem);
 }
 
@@ -1223,7 +1544,7 @@ button.btn {
   box-shadow: inset 0 0 0 9999px hsl(var(--primary) / 0.07);
 }
 
-/* Прокрутка истории: новые реплики у низа, листаем вверх к старым */
+/* Message history: newest at bottom, scroll up for older */
 .messages-viewport {
   flex: 1;
   min-height: 0;
@@ -1339,7 +1660,7 @@ button.btn {
     0 0 0 4px hsl(var(--ring) / 0.35);
 }
 
-/* Сообщения в основном окне */
+/* Messages in the main pane */
 .msg {
   border-radius: 1rem;
   max-width: 100%;
@@ -1353,7 +1674,7 @@ button.btn {
   background: hsl(var(--secondary) / 0.88);
   color: hsl(var(--secondary-foreground));
   box-shadow: none;
-  /* Как горизонтальные отступы у .msg-assistant (1.3rem), панель не у рамки */
+  /* Match .msg-assistant horizontal padding (1.3rem); panel inset from frame */
   padding: 0 1.3rem 1rem 1.3rem;
 }
 
@@ -1478,7 +1799,7 @@ button.btn {
   box-sizing: border-box;
 }
 
-/* Разделитель «копировать | шеврон», как у ответа ИИ */
+/* Divider: copy | chevron, like AI replies */
 .msg-bubble-actions:has(.msg-bubble-chevron) .msg-bubble-copy {
   border-radius: 0.28rem 0 0 0.28rem;
 }
@@ -1556,7 +1877,7 @@ button.btn {
   transition: transform 0.2s ease;
 }
 
-/* Пользователь: по умолчанию свёрнуто — шеврон «вниз»; развёрнуто — «вверх» (как у ИИ) */
+/* User bubble: collapsed by default — chevron down; expanded — up (like AI) */
 .msg-user .msg-bubble-chevron .msg-bubble-chevron-icon {
   transform: rotate(180deg);
 }
@@ -1603,7 +1924,7 @@ button.btn {
   }
 }
 
-/* По умолчанию ответ полный; свёрнут — до 4 строк (наоборот от пользовательского пузыря) */
+/* Assistant: full text by default; collapsed — up to 4 lines (inverse of user bubble) */
 .msg-assistant-body {
   position: relative;
   padding-bottom: 0.45rem;
@@ -1614,7 +1935,7 @@ button.btn {
   padding-right: 4.65rem;
 }
 
-/* Ответ ассистента: копировать и шеврон в потоке под текстом, не поверх картинки */
+/* Assistant: copy + chevron in flow under text, not over the image */
 .msg-assistant .msg-assistant-body {
   display: flex;
   flex-direction: column;
@@ -1795,7 +2116,7 @@ button.btn {
   margin: 0.5rem 0;
   border-radius: 0.5rem;
   border: 1px solid hsl(var(--border));
-  /* Не обрезать по контейнеру — только вписать по ширине; пропорции как у исходного файла */
+  /* Fit to width without hard crop; keep source aspect ratio */
   object-fit: contain;
   object-position: left top;
 }
@@ -1820,7 +2141,7 @@ button.btn {
   border-top: 1px solid hsl(var(--border));
 }
 
-/* Список источников после **Sources** (mergePlainBracketRefsWithCitationList): сетка на широком экране */
+/* Sources list after **Sources** (mergePlainBracketRefsWithCitationList): grid on wide screens */
 .msg-assistant-text.msg-assistant-text--md hr + p:has(> strong:only-child) + ol {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1850,7 +2171,7 @@ button.btn {
   overflow: hidden;
 }
 
-/* Картинки в markdown не режем по «4 строкам текста»: даём прокрутку по высоте */
+/* Markdown images: do not clamp to the text 4-line rule — allow vertical scroll */
 .msg-assistant--collapsed .msg-assistant-text.msg-assistant-text--md:has(img) {
   display: block;
   -webkit-line-clamp: unset;
@@ -1859,7 +2180,7 @@ button.btn {
   max-height: min(70vh, 32rem);
 }
 
-/* Fenced code не участвует в line-clamp родителя — в свёрнутом виде одна строка-плейсхолдер */
+/* Fenced code excluded from parent line-clamp — collapsed shows one-line placeholder */
 .msg-assistant--collapsed .msg-assistant-text .msg-md-code-block {
   position: relative;
   display: block;
@@ -1903,7 +2224,7 @@ button.btn {
   pointer-events: none;
 }
 
-/* Ответ ИИ: развёрнуто — шеврон «вверх»; свёрнуто — поворот 180° */
+/* AI reply: expanded — chevron up; collapsed — rotated 180° */
 .msg-assistant:not(.msg-assistant--collapsed) .msg-bubble-chevron .msg-bubble-chevron-icon {
   transform: rotate(0deg);
 }
@@ -1934,7 +2255,7 @@ button.btn {
   color: hsl(var(--destructive));
 }
 
-/* Колонка: ряд вложений (если есть), затем строка «+ / поле / отправка» с линией сверху */
+/* Column: attachment row (if any), then + / field / send row with top rule */
 .input-bar {
   display: flex;
   flex-direction: column;
@@ -1956,7 +2277,7 @@ button.btn {
   padding: 0.4rem;
   gap: 0.25rem;
   align-items: flex-end;
-  /* Без вложений — одна линия снизу у .model-badges; с вложениями — линия над строкой «+ / поле / отправка» */
+  /* No attachments — single rule under .model-badges; with attachments — rule above + / field / send */
   border-top: none;
 }
 
@@ -1988,7 +2309,7 @@ button.btn {
   padding: 0;
 }
 
-/* Режим Web search / Create image / Deep research — как «включённый» выбор у бейджей моделей */
+/* Web search / Create image / Deep research — like an active badge selection */
 .input-bar .btn-attach-trigger.btn-attach-trigger--mode-active {
   background: hsl(var(--primary));
   color: hsl(var(--primary-foreground));
@@ -2022,7 +2343,7 @@ button.btn {
   height: 1.25rem;
 }
 
-/* Меню «+» — те же токены, что у карточек и панелей */
+/* "+" menu — same tokens as cards and panels */
 .attach-menu {
   position: absolute;
   bottom: calc(100% + 12px);
@@ -2078,7 +2399,7 @@ button.btn {
   outline: none;
 }
 
-/* Иначе display:flex у .attach-menu-item перебивает атрибут hidden */
+/* Otherwise display:flex on .attach-menu-item overrides the hidden attribute */
 #attach-menu-reset[hidden],
 .attach-menu-item[hidden],
 .attach-menu-reset-sep[hidden] {
@@ -2164,7 +2485,7 @@ button.btn {
     0 0 0 4px hsl(var(--ring) / 0.35);
 }
 
-/* Панель Activity — как fixed-панель в Human UI */
+/* Activity panel — fixed panel pattern from Human UI */
 .activity-log-panel,
 .favorites-panel {
   position: fixed;
@@ -2321,7 +2642,7 @@ button.btn {
   color: hsl(var(--muted-foreground));
 }
 
-/* Подтверждение удаления темы и переименование */
+/* Theme delete confirm and rename */
 html.theme-delete-modal-open,
 html.theme-rename-modal-open {
   overflow: hidden;
@@ -2434,7 +2755,7 @@ html.theme-rename-modal-open {
     0 0 0 4px hsl(var(--destructive) / 0.45);
 }
 
-/* Переименование темы */
+/* Rename theme */
 .theme-rename-modal {
   position: fixed;
   inset: 0;
@@ -2554,7 +2875,7 @@ html.theme-rename-modal-open {
     0 0 0 4px hsl(var(--primary) / 0.35);
 }
 
-/* ——— Мобильная вёрстка: диалоги — выпадающий список над чатом ——— */
+/* ——— Mobile: dialogs as dropdown above chat ——— */
 @media (max-width: 767px) {
   .header {
     flex-wrap: wrap;
@@ -2565,6 +2886,7 @@ html.theme-rename-modal-open {
     flex: 1 1 auto;
     min-width: 0;
     order: 0;
+    gap: 0.5rem;
   }
 
   .header-icons {
@@ -2635,7 +2957,7 @@ html.theme-rename-modal-open {
     display: inline-flex;
   }
 
-  /* Только список диалогов — не панель Intro/Rules/Access */
+  /* Dialog list only — not Intro/Rules/Access panel */
   #dialogues-panel > .sidebar-panel-body {
     position: absolute;
     left: 0;

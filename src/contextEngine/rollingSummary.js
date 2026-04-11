@@ -1,5 +1,5 @@
 /**
- * Инкрементальное обновление rolling summary и decision_log (без полного пересчёта треда).
+ * Incremental rolling summary and decision_log updates (no full thread recompute).
  */
 
 /**
@@ -26,12 +26,13 @@ export function mergeRollingSummary(previous, userLine, assistantLine, maxChars 
  */
 export function appendDecisionLogLine(previous, userLine, assistantLine, maxChars = 4000) {
   const decisionCue =
-    /(we decided|решили|decision|it was agreed|договорились|confirmed that|подтвердили)/i.test(
+    /(we decided|\u0440\u0435\u0448\u0438\u043b\u0438|decision|it was agreed|\u0434\u043e\u0433\u043e\u0432\u043e\u0440\u0438\u043b\u0438\u0441\u044c|confirmed that|\u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u043b\u0438)/i.test(
       userLine + assistantLine,
     );
-  const constraintCue = /(must not|нельзя|forbidden|constraint|не делать|always do|никогда)/i.test(
-    userLine + assistantLine,
-  );
+  const constraintCue =
+    /(must not|\u043d\u0435\u043b\u044c\u0437\u044f|forbidden|constraint|\u043d\u0435 \u0434\u0435\u043b\u0430\u0442\u044c|always do|\u043d\u0438\u043a\u043e\u0433\u0434\u0430)/i.test(
+      userLine + assistantLine,
+    );
   if (!decisionCue && !constraintCue) {
     return String(previous ?? "").trim();
   }
@@ -43,7 +44,7 @@ export function appendDecisionLogLine(previous, userLine, assistantLine, maxChar
 }
 
 /**
- * Порог «длинного» треда по числу сообщений в mirror (user+assistant считаются отдельно).
+ * Threshold for a “long” thread by mirror message count (user and assistant counted separately).
  * @param {number} messageCount
  * @param {number} [threshold]
  */

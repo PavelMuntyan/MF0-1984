@@ -1,5 +1,5 @@
 /**
- * Fallback без embeddings: простой score по токенам запроса + приоритет типа.
+ * Fallback without embeddings: simple token overlap score + type priority.
  * @import { RetrievedChunk } from "./types.js"
  */
 

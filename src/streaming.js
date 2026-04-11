@@ -1,8 +1,8 @@
 /**
- * Разбор потоковых ответов (SSE) от LLM через fetch + прокси.
+ * Parse streaming LLM responses (SSE) from fetch + proxy.
  *
- * Gemini: в URL обязателен query `alt=sse`, иначе REST отдаёт не классический SSE — см. curl в ai.google.dev (streamGenerateContent).
- * OpenAI / Perplexity: события `data: {...}`; разбор построчно, т.к. часть прокси не вставляет пустую строку между событиями (`\n\n`).
+ * Gemini: URL must include `alt=sse` or REST returns non-classic SSE — see ai.google.dev streamGenerateContent.
+ * OpenAI / Perplexity: `data: {...}` lines; line-based parse because some proxies omit blank lines between events (`\n\n`).
  */
 
 import {
@@ -12,8 +12,8 @@ import {
 } from "./footnoteCitations.js";
 
 /**
- * OpenAI-совместимый SSE (OpenAI, Perplexity): каждая строка `data: {JSON}`.
- * Perplexity: `citations` в корне. OpenAI (web search): URL в `delta.annotations` / `message.annotations`.
+ * OpenAI-compatible SSE (OpenAI, Perplexity): each line `data: {JSON}`.
+ * Perplexity: root `citations`. OpenAI (web search): URLs in `delta.annotations` / `message.annotations`.
  * @returns {Promise<{ text: string, citations: string[] }>}
  */
 export async function streamOpenAICompatJson(res, onDelta) {
@@ -80,7 +80,7 @@ export async function streamOpenAICompatJson(res, onDelta) {
         onDelta(piece);
       }
     } catch {
-      /* неполная строка / не JSON */
+      /* incomplete line / not JSON */
     }
   }
 
@@ -108,7 +108,7 @@ export async function streamOpenAICompatJson(res, onDelta) {
   return { text: full, citations };
 }
 
-/** Anthropic messages stream (SSE, строки data: …) */
+/** Anthropic messages stream (SSE, `data:` lines) */
 export async function streamAnthropicMessages(res, onDelta) {
   if (!res.ok) {
     const t = await res.text();
@@ -157,9 +157,9 @@ export async function streamAnthropicMessages(res, onDelta) {
 }
 
 /**
- * Google Gemini streamGenerateContent при `alt=sse`: строки `data: {…}`.
- * Части с thought: true — внутренние рассуждения, в чат не показываем.
- * Собирает URL из `groundingMetadata` для сносок [1], [2] в тексте.
+ * Google Gemini streamGenerateContent with `alt=sse`: `data: {...}` lines.
+ * Parts with thought: true are internal reasoning — not shown in chat.
+ * Collects URLs from `groundingMetadata` for numeric refs [1], [2] in text.
  * @returns {Promise<{ text: string, citations: string[], citationLabels: string[] }>}
  */
 export async function streamGeminiGenerateContent(res, onDelta) {

@@ -1,17 +1,17 @@
 ---
-description: Бэкап MF0-1984 на GitHub при объявлении новой версии проекта
+description: Back up MF0-1984 to GitHub when the user declares a new project version
 alwaysApply: true
 ---
 
-# Бэкап MF0-1984 на GitHub
+# Back up MF0-1984 to GitHub
 
-Когда пользователь явно говорит, что **это новая версия проекта** (или смыслловые варианты: «новая версия», «релиз версии», «зафиксируй версию», «выложи на гитхаб», «сделай бэкап на github» в контексте версии) — **сразу выполни** в каталоге проекта `mf-lab`:
+When the user clearly says **this is a new project version** (or similar: new version, release this version, pin the version, push to GitHub, GitHub backup in a version context) — **run immediately** in the `mf-lab` project directory:
 
-1. Убедись, что есть `git` и remote `origin` → `git@github.com:PavelMuntyan/MF0-1984.git` (если нет — добавь).
-2. `git add -A` (не коммитить `.env` — он в `.gitignore`).
-3. `git commit -m "..."` — сообщение на русском или английском, **обязательно с номером версии** из `package.json` (поле `version`) или с тем номером/названием, которое назвал пользователь.
-4. Ветка по умолчанию: `main`. Если первая отправка: `git push -u origin main`, иначе `git push origin main`.
+1. Ensure `git` exists and remote `origin` is `git@github.com:PavelMuntyan/MF0-1984.git` (add if missing).
+2. `git add -A` (do not commit `.env` — it is in `.gitignore`).
+3. `git commit -m "..."` — message in Russian or English, **must include the version** from `package.json` (`version`) or the number/name the user gave.
+4. Default branch: `main`. First push: `git push -u origin main`, else `git push origin main`.
 
-Если push не прошёл (SSH, пустой репозиторий на GitHub) — кратко опиши ошибку и что проверить локально.
+If push fails (SSH, empty GitHub repo) — briefly describe the error and what to check locally.
 
-Не откладывай push «на потом» после такой фразы пользователя, если нет явного запрета.
+Do not defer push “for later” after such a phrase unless the user explicitly forbids it.

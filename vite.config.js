@@ -1,6 +1,6 @@
 import { defineConfig } from "vite";
 
-/** Переменные из `.env` с этими префиксами доступны в коде как import.meta.env.* */
+/** `.env` variables with these prefixes are exposed as import.meta.env.* */
 const MODEL_ENV_PREFIXES = [
   "VITE_",
   "ANTHROPIC_",
@@ -10,9 +10,9 @@ const MODEL_ENV_PREFIXES = [
 ];
 
 /**
- * Меньше буферизации при стриминге через dev-прокси: снимаем Content-Length,
- * чтобы ответ шёл chunked и fetch + getReader() получали куски по мере готовности.
- * (Иначе часть провайдеров визуально отдаёт ответ «одним блоком».)
+ * Less buffering for streaming via dev proxy: drop Content-Length so the response
+ * is chunked and fetch + getReader() receive chunks as they arrive.
+ * (Otherwise some providers appear to return the whole reply as one block.)
  */
 function configureLlmStreamingProxy(proxy) {
   proxy.on("proxyRes", (proxyRes, req) => {
@@ -29,7 +29,7 @@ function configureLlmStreamingProxy(proxy) {
   });
 }
 
-/** Прокси для вызовов LLM из браузера без CORS (только dev / vite preview). */
+/** Proxy LLM calls from the browser without CORS (dev / vite preview only). */
 const llmProxy = {
   "/llm/openai": {
     target: "https://api.openai.com",
@@ -65,7 +65,7 @@ export default defineConfig({
   envPrefix: MODEL_ENV_PREFIXES,
   server: {
     port: 1984,
-    /** Если 1984 занят (другой процесс / старый Vite), Vite возьмёт следующий порт — смотри URL в терминале. */
+    /** If 1984 is taken (another process / old Vite), Vite picks the next port — check the terminal URL. */
     strictPort: false,
     proxy: {
       "/api": {
