@@ -254,39 +254,47 @@ export async function fetchIntroSession() {
   return { themeId: String(data?.themeId ?? "").trim(), dialogId };
 }
 
-/** Whether a 6-digit Intro PIN is set on the server (Intro stays gated until unlock). */
-export async function fetchIntroLockState() {
-  const res = await fetch(apiUrl("api/intro/lock"));
+/** @typedef {"intro"|"rules"|"access"} IrPanelId */
+
+/** Lock state for Intro / Rules / Access (each may have its own 6-digit PIN). */
+export async function fetchIrPanelLocksAll() {
+  const res = await fetch(apiUrl("api/ir-panel-lock"));
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Intro lock ${res.status}`);
+    throw new Error(err.error || `IR panel lock ${res.status}`);
   }
   const data = await res.json();
-  return { locked: data.locked === true };
+  return {
+    intro: { locked: data.intro?.locked === true },
+    rules: { locked: data.rules?.locked === true },
+    access: { locked: data.access?.locked === true },
+  };
 }
 
-export async function postIntroLockSet(pin) {
-  const res = await fetch(apiUrl("api/intro/lock/set"), {
+/** @param {IrPanelId} panel */
+export async function postIrPanelLockSet(panel, pin) {
+  const res = await fetch(apiUrl(`api/ir-panel-lock/${encodeURIComponent(panel)}/set`), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ pin: String(pin ?? "") }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.ok !== true) {
-    throw new Error(data.error || `Set Intro PIN ${res.status}`);
+    throw new Error(data.error || `Set PIN ${res.status}`);
   }
   return data;
 }
 
-export async function postIntroLockUnlock(pin) {
-  const res = await fetch(apiUrl("api/intro/lock/unlock"), {
+/** @param {IrPanelId} panel */
+export async function postIrPanelLockUnlock(panel, pin) {
+  const res = await fetch(apiUrl(`api/ir-panel-lock/${encodeURIComponent(panel)}/unlock`), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ pin: String(pin ?? "") }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.ok !== true) {
-    throw new Error(data.error || `Unlock Intro ${res.status}`);
+    throw new Error(data.error || `Unlock PIN ${res.status}`);
   }
   return data;
 }

@@ -24,12 +24,12 @@ import {
 } from "./memoryTree.js";
 import { detectIntroMemoryTreeCommands } from "./introMemoryTreeCommands.js";
 import {
-  getIntroLockedSync,
-  initIntroPinLock,
+  getIrPanelLockedSync,
+  initIrPanelPinLock,
   openSetPinModal,
   openUnlockModal,
-  refreshIntroLockFromApi,
-} from "./introPinLock.js";
+  refreshIrPanelLockFromApi,
+} from "./irPanelPinLock.js";
 import { closeAnalyticsView, initAnalyticsDashboard } from "./analyticsDashboard.js";
 import {
   apiHealth,
@@ -101,35 +101,43 @@ async function loadIntroChatThreadIntoUi() {
   }
 }
 
-function syncIntroVaultDom() {
+function syncIrPanelVaultDom() {
   const chat = document.getElementById("main-chat");
-  const gate = document.getElementById("intro-vault-gate");
-  if (!chat || !gate) return;
-  const vault = getIntroLockedSync() && chat.classList.contains("chat--intro");
-  chat.classList.toggle("main-chat--intro-vault", vault);
-  if (vault) {
-    gate.removeAttribute("hidden");
-    gate.setAttribute("aria-hidden", "false");
-  } else {
-    gate.setAttribute("hidden", "");
-    gate.setAttribute("aria-hidden", "true");
+  if (!chat) return;
+  for (const panel of /** @type {const} */ (["intro", "rules", "access"])) {
+    const gate = document.getElementById(`${panel}-vault-gate`);
+    const vault = getIrPanelLockedSync(panel) && chat.classList.contains(`chat--${panel}`);
+    chat.classList.toggle(`main-chat--${panel}-vault`, Boolean(vault));
+    if (gate) {
+      if (vault) {
+        gate.removeAttribute("hidden");
+        gate.setAttribute("aria-hidden", "false");
+      } else {
+        gate.setAttribute("hidden", "");
+        gate.setAttribute("aria-hidden", "true");
+      }
+    }
   }
 }
 
-function handleIntroBubbleClick(e) {
-  const lockHit = e.target.closest("#btn-ir-intro .sidebar-ir-lock-icon");
+/**
+ * @param {"intro"|"rules"|"access"} panel
+ * @param {MouseEvent} e
+ */
+function handleIrPanelBubbleClick(panel, e) {
+  const lockHit = e.target.closest(`#btn-ir-${panel} .sidebar-ir-lock-icon`);
   if (lockHit) {
     e.preventDefault();
-    if (getIntroLockedSync()) openUnlockModal();
-    else openSetPinModal();
+    if (getIrPanelLockedSync(panel)) openUnlockModal(panel);
+    else openSetPinModal(panel);
     return;
   }
-  if (getIntroLockedSync()) {
+  if (getIrPanelLockedSync(panel)) {
     const chat = document.getElementById("main-chat");
-    if (chat?.classList.contains("chat--intro")) closeIrChatPanel();
-    else openIrChatPanel("intro");
+    if (chat?.classList.contains(`chat--${panel}`)) closeIrChatPanel();
+    else openIrChatPanel(panel);
   } else {
-    toggleIrChatPanel("intro");
+    toggleIrChatPanel(panel);
   }
 }
 
@@ -950,7 +958,7 @@ function closeIrChatPanel(options = {}) {
     document.getElementById(p.btnId)?.setAttribute("aria-expanded", "false");
   }
   if (focusBtnId) document.getElementById(focusBtnId)?.focus();
-  syncIntroVaultDom();
+  syncIrPanelVaultDom();
 }
 
 function openIrChatPanel(mode) {
@@ -968,7 +976,7 @@ function openIrChatPanel(mode) {
   const view = document.getElementById(cfg.viewId);
   if (!chat || !view) return;
 
-  chat.classList.remove("main-chat--intro-vault");
+  chat.classList.remove("main-chat--intro-vault", "main-chat--rules-vault", "main-chat--access-vault");
 
   for (const p of IR_CHAT_PANELS) {
     chat.classList.remove(p.className);
@@ -985,11 +993,11 @@ function openIrChatPanel(mode) {
   refreshThemeHighlightsFromChat();
 
   if (cfg.mode === "intro") {
-    if (!getIntroLockedSync()) {
+    if (!getIrPanelLockedSync("intro")) {
       void loadIntroChatThreadIntoUi();
     }
   }
-  syncIntroVaultDom();
+  syncIrPanelVaultDom();
 }
 
 function toggleIrChatPanel(mode) {
@@ -1001,9 +1009,9 @@ function toggleIrChatPanel(mode) {
 }
 
 function initIntroRulesAccessPanels() {
-  document.getElementById("btn-ir-intro")?.addEventListener("click", handleIntroBubbleClick);
-  document.getElementById("btn-ir-rules")?.addEventListener("click", () => toggleIrChatPanel("rules"));
-  document.getElementById("btn-ir-access")?.addEventListener("click", () => toggleIrChatPanel("access"));
+  document.getElementById("btn-ir-intro")?.addEventListener("click", (e) => handleIrPanelBubbleClick("intro", e));
+  document.getElementById("btn-ir-rules")?.addEventListener("click", (e) => handleIrPanelBubbleClick("rules", e));
+  document.getElementById("btn-ir-access")?.addEventListener("click", (e) => handleIrPanelBubbleClick("access", e));
 }
 
 async function handleThemeRenamed(themeId, oldTitle, newTitle) {
@@ -2551,8 +2559,18 @@ function initChatComposer() {
 
     const mainChatEl = document.getElementById("main-chat");
     const introChatOpen = Boolean(mainChatEl?.classList.contains("chat--intro"));
-    if (introChatOpen && getIntroLockedSync()) {
+    const rulesChatOpen = Boolean(mainChatEl?.classList.contains("chat--rules"));
+    const accessChatOpen = Boolean(mainChatEl?.classList.contains("chat--access"));
+    if (introChatOpen && getIrPanelLockedSync("intro")) {
       appendActivityLog("Intro is locked — unlock it to send messages.");
+      return;
+    }
+    if (rulesChatOpen && getIrPanelLockedSync("rules")) {
+      appendActivityLog("Rules is locked — unlock it to send messages.");
+      return;
+    }
+    if (accessChatOpen && getIrPanelLockedSync("access")) {
+      appendActivityLog("Access is locked — unlock it to send messages.");
       return;
     }
     if (mainChatEl && irChatPanelIsOpen(mainChatEl) && !introChatOpen) {
@@ -3151,10 +3169,10 @@ function bootApp() {
   initDialoguesMenu();
   initThemeFolderMenus();
   initMemoryTree(appendActivityLog);
-  initIntroPinLock({
+  initIrPanelPinLock({
     appendActivityLog,
     loadIntroThreadIntoUi: loadIntroChatThreadIntoUi,
-    syncIntroVaultDom,
+    syncIrPanelVaultDom,
   });
   initAnalyticsDashboard({
     fetchAnalytics,
@@ -3176,7 +3194,7 @@ function bootApp() {
   void (async () => {
     try {
       if (await apiHealth()) {
-        await refreshIntroLockFromApi();
+        await refreshIrPanelLockFromApi();
         await renderThemesSidebar();
         await loadMemoryGraphIntoUi();
         appendActivityLog("Chat database connected.");

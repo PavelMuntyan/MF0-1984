@@ -25,6 +25,7 @@ const migration003 = path.join(root, "db", "migrations", "003_context_engine.sql
 const migration004 = path.join(root, "db", "migrations", "004_memory_graph.sql");
 const migration005 = path.join(root, "db", "migrations", "005_assistant_error.sql");
 const migration006 = path.join(root, "db", "migrations", "006_intro_pin_lock.sql");
+const migration007 = path.join(root, "db", "migrations", "007_ir_panel_pin_lock.sql");
 const PORT = Number(process.env.API_PORT || 35184, 10);
 
 const ANALYTICS_PROVIDER_IDS = ["openai", "perplexity", "gemini-flash", "anthropic"];
@@ -100,6 +101,31 @@ function applyIntroPinLockMigration(database) {
   }
 }
 
+/** Intro / Rules / Access — one PIN row per panel (`ir_panel_pin_lock`). Migrates legacy `intro_pin_lock`. */
+function applyIrPanelPinLockMigration(database) {
+  const hasIr = database
+    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='ir_panel_pin_lock'`)
+    .get();
+  if (hasIr) return;
+  applyIntroPinLockMigration(database);
+  if (!fs.existsSync(migration007)) {
+    throw new Error("Missing migration 007_ir_panel_pin_lock.sql");
+  }
+  database.exec(fs.readFileSync(migration007, "utf8"));
+  const legacy = database
+    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='intro_pin_lock'`)
+    .get();
+  if (legacy) {
+    const row = database.prepare(`SELECT pin_double_hash FROM intro_pin_lock WHERE singleton = 1`).get();
+    if (row?.pin_double_hash) {
+      database
+        .prepare(`INSERT OR REPLACE INTO ir_panel_pin_lock (panel, pin_double_hash) VALUES ('intro', ?)`)
+        .run(row.pin_double_hash);
+    }
+    database.exec(`DROP TABLE intro_pin_lock`);
+  }
+}
+
 function parseTurnUserAttachmentsJson(raw) {
   if (raw == null || String(raw).trim() === "") return [];
   try {
@@ -147,7 +173,7 @@ function ensureDatabase() {
   applyDialogsPurposeColumn(database);
   applyMemoryGraphMigration(database);
   applyAssistantErrorColumn(database);
-  applyIntroPinLockMigration(database);
+  applyIrPanelPinLockMigration(database);
   return database;
 }
 
@@ -522,17 +548,22 @@ function appendGraphBlob(blob, notes) {
 }
 
 /** SHA256(hex of MD5(6-digit PIN)) — verify by recomputing; PIN is not stored. */
-function doubleHashIntroPin6(pin) {
+function doubleHashIrPanelPin6(pin) {
   const raw = String(pin ?? "").replace(/\D/g, "");
   if (!/^[0-9]{6}$/.test(raw)) return null;
   const md5hex = crypto.createHash("md5").update(raw, "utf8").digest("hex");
   return crypto.createHash("sha256").update(md5hex, "utf8").digest("hex");
 }
 
-function getIntroLockPayload() {
-  applyIntroPinLockMigration(db);
-  const row = db.prepare(`SELECT 1 AS x FROM intro_pin_lock WHERE singleton = 1 LIMIT 1`).get();
-  return { locked: Boolean(row) };
+function getIrPanelLocksPayload() {
+  applyIrPanelPinLockMigration(db);
+  const rows = db.prepare(`SELECT panel FROM ir_panel_pin_lock`).all();
+  const set = new Set(rows.map((r) => String(r.panel)));
+  return {
+    intro: { locked: set.has("intro") },
+    rules: { locked: set.has("rules") },
+    access: { locked: set.has("access") },
+  };
 }
 
 function getOrCreateIntroSession() {
@@ -1033,39 +1064,44 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, themeId: s.themeId, dialogId: s.dialogId });
     }
 
-    if (req.method === "GET" && p === "/api/intro/lock") {
-      return json(res, 200, { ok: true, ...getIntroLockPayload() });
+    if (req.method === "GET" && p === "/api/ir-panel-lock") {
+      return json(res, 200, { ok: true, ...getIrPanelLocksPayload() });
     }
 
-    if (req.method === "POST" && p === "/api/intro/lock/set") {
+    const irLockSetMatch = p.match(/^\/api\/ir-panel-lock\/(intro|rules|access)\/set$/);
+    if (req.method === "POST" && irLockSetMatch) {
+      const panel = irLockSetMatch[1];
       const body = await readBody(req);
-      const h = doubleHashIntroPin6(body.pin ?? body.PIN);
+      const h = doubleHashIrPanelPin6(body.pin ?? body.PIN);
       if (!h) {
         return json(res, 400, { ok: false, error: "PIN must be exactly 6 digits." });
       }
-      applyIntroPinLockMigration(db);
+      applyIrPanelPinLockMigration(db);
       db.prepare(
-        `INSERT INTO intro_pin_lock (singleton, pin_double_hash) VALUES (1, ?) ON CONFLICT(singleton) DO UPDATE SET pin_double_hash = excluded.pin_double_hash`,
-      ).run(h);
-      return json(res, 200, { ok: true, locked: true });
+        `INSERT INTO ir_panel_pin_lock (panel, pin_double_hash) VALUES (?, ?) ON CONFLICT(panel) DO UPDATE SET pin_double_hash = excluded.pin_double_hash`,
+      ).run(panel, h);
+      return json(res, 200, { ok: true, panel, locked: true });
     }
 
-    if (req.method === "POST" && p === "/api/intro/lock/unlock") {
+    const irLockUnlockMatch = p.match(/^\/api\/ir-panel-lock\/(intro|rules|access)\/unlock$/);
+    if (req.method === "POST" && irLockUnlockMatch) {
+      const panel = irLockUnlockMatch[1];
       const body = await readBody(req);
-      const h = doubleHashIntroPin6(body.pin ?? body.PIN);
+      const h = doubleHashIrPanelPin6(body.pin ?? body.PIN);
       if (!h) {
         return json(res, 400, { ok: false, error: "PIN must be exactly 6 digits." });
       }
-      applyIntroPinLockMigration(db);
-      const row = db.prepare(`SELECT pin_double_hash FROM intro_pin_lock WHERE singleton = 1`).get();
+      applyIrPanelPinLockMigration(db);
+      const row = db.prepare(`SELECT pin_double_hash FROM ir_panel_pin_lock WHERE panel = ?`).get(panel);
       if (!row?.pin_double_hash) {
-        return json(res, 400, { ok: false, error: "Intro is not locked." });
+        const label = panel === "intro" ? "Intro" : panel === "rules" ? "Rules" : "Access";
+        return json(res, 400, { ok: false, error: `${label} is not locked.` });
       }
       if (row.pin_double_hash !== h) {
         return json(res, 403, { ok: false, error: "Incorrect PIN." });
       }
-      db.prepare(`DELETE FROM intro_pin_lock WHERE singleton = 1`).run();
-      return json(res, 200, { ok: true, locked: false });
+      db.prepare(`DELETE FROM ir_panel_pin_lock WHERE panel = ?`).run(panel);
+      return json(res, 200, { ok: true, panel, locked: false });
     }
 
     if (req.method === "GET" && p === "/api/memory-graph") {

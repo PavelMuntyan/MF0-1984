@@ -1130,7 +1130,9 @@ button.btn {
   pointer-events: none;
 }
 
-#btn-ir-intro .sidebar-ir-lock-icon {
+#btn-ir-intro .sidebar-ir-lock-icon,
+#btn-ir-rules .sidebar-ir-lock-icon,
+#btn-ir-access .sidebar-ir-lock-icon {
   pointer-events: auto;
   cursor: pointer;
   position: relative;
@@ -1141,33 +1143,45 @@ button.btn {
 }
 
 /* One slot: open vs closed padlock (PIN locked → only closed glyph) */
-#btn-ir-intro .sidebar-ir-lock-svg {
+#btn-ir-intro .sidebar-ir-lock-svg,
+#btn-ir-rules .sidebar-ir-lock-svg,
+#btn-ir-access .sidebar-ir-lock-svg {
   position: absolute;
   left: 0;
   top: 0;
 }
 
-#btn-ir-intro.sidebar-ir-bubble--intro-locked .sidebar-ir-lock-svg--open {
+#btn-ir-intro.sidebar-ir-bubble--ir-locked .sidebar-ir-lock-svg--open,
+#btn-ir-rules.sidebar-ir-bubble--ir-locked .sidebar-ir-lock-svg--open,
+#btn-ir-access.sidebar-ir-bubble--ir-locked .sidebar-ir-lock-svg--open {
   display: none !important;
 }
 
-#btn-ir-intro.sidebar-ir-bubble--intro-locked .sidebar-ir-lock-svg--closed {
+#btn-ir-intro.sidebar-ir-bubble--ir-locked .sidebar-ir-lock-svg--closed,
+#btn-ir-rules.sidebar-ir-bubble--ir-locked .sidebar-ir-lock-svg--closed,
+#btn-ir-access.sidebar-ir-bubble--ir-locked .sidebar-ir-lock-svg--closed {
   display: block !important;
 }
 
-#btn-ir-intro:not(.sidebar-ir-bubble--intro-locked) .sidebar-ir-lock-svg--closed {
+#btn-ir-intro:not(.sidebar-ir-bubble--ir-locked) .sidebar-ir-lock-svg--closed,
+#btn-ir-rules:not(.sidebar-ir-bubble--ir-locked) .sidebar-ir-lock-svg--closed,
+#btn-ir-access:not(.sidebar-ir-bubble--ir-locked) .sidebar-ir-lock-svg--closed {
   display: none !important;
 }
 
-#btn-ir-intro:not(.sidebar-ir-bubble--intro-locked) .sidebar-ir-lock-svg--open {
+#btn-ir-intro:not(.sidebar-ir-bubble--ir-locked) .sidebar-ir-lock-svg--open,
+#btn-ir-rules:not(.sidebar-ir-bubble--ir-locked) .sidebar-ir-lock-svg--open,
+#btn-ir-access:not(.sidebar-ir-bubble--ir-locked) .sidebar-ir-lock-svg--open {
   display: block !important;
 }
 
-#btn-ir-intro .sidebar-ir-lock-icon:hover {
+#btn-ir-intro .sidebar-ir-lock-icon:hover,
+#btn-ir-rules .sidebar-ir-lock-icon:hover,
+#btn-ir-access .sidebar-ir-lock-icon:hover {
   color: hsl(var(--primary));
 }
 
-.sidebar-ir-bubble--intro-locked {
+.sidebar-ir-bubble--ir-locked {
   border-color: hsl(var(--muted-foreground) / 0.55);
 }
 
@@ -1220,10 +1234,16 @@ button.btn {
   display: none !important;
 }
 
-/* Intro locked: full-height gate instead of thread + composer */
+/* IR panel locked: full-height gate instead of section + composer */
 .main-chat--intro-vault.chat--intro #chat-intro-view,
 .main-chat--intro-vault.chat--intro .messages-viewport,
-.main-chat--intro-vault.chat--intro .chat-footer {
+.main-chat--intro-vault.chat--intro .chat-footer,
+.main-chat--rules-vault.chat--rules #chat-rules-view,
+.main-chat--rules-vault.chat--rules .messages-viewport,
+.main-chat--rules-vault.chat--rules .chat-footer,
+.main-chat--access-vault.chat--access #chat-access-view,
+.main-chat--access-vault.chat--access .messages-viewport,
+.main-chat--access-vault.chat--access .chat-footer {
   display: none !important;
 }
 
@@ -1239,7 +1259,9 @@ button.btn {
   background: hsl(var(--background));
 }
 
-.main-chat--intro-vault.chat--intro .intro-vault-gate {
+.main-chat--intro-vault.chat--intro #intro-vault-gate,
+.main-chat--rules-vault.chat--rules #rules-vault-gate,
+.main-chat--access-vault.chat--access #access-vault-gate {
   display: flex;
 }
 
