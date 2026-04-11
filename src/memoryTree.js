@@ -410,8 +410,16 @@ let dom = {
   legend: null,
 };
 
-function defaultDetailsHtml() {
-  return `<div class="mt-details-title">Node details</div><div class="mt-details-text">Click a node to see details.</div>`;
+function resetDetailsPanelToPlaceholder() {
+  if (!dom.detailsBox) return;
+  dom.detailsBox.replaceChildren();
+  const title = document.createElement("div");
+  title.className = "mt-details-title";
+  title.textContent = "Node details";
+  const text = document.createElement("div");
+  text.className = "mt-details-text";
+  text.textContent = "Click a node to see details.";
+  dom.detailsBox.append(title, text);
 }
 
 function fillLegendAndGroups() {
@@ -466,7 +474,7 @@ function clearHighlight() {
 
 function setNodeDetails(node) {
   if (!dom.detailsBox) return;
-  dom.detailsBox.innerHTML = "";
+  dom.detailsBox.replaceChildren();
   const t = document.createElement("div");
   t.className = "mt-details-title";
   t.textContent = node.name ?? "";
@@ -565,7 +573,7 @@ function applyFilters() {
   Graph.graphData(graphData);
   updateStats(graphData);
 
-  if (dom.detailsBox) dom.detailsBox.innerHTML = defaultDetailsHtml();
+  resetDetailsPanelToPlaceholder();
 }
 
 function sizeGraphToContainer() {
@@ -745,7 +753,7 @@ function mountGraph() {
 
   fillLegendAndGroups();
   updateStats(graphData);
-  if (dom.detailsBox) dom.detailsBox.innerHTML = defaultDetailsHtml();
+  resetDetailsPanelToPlaceholder();
 
   dom.searchInput?.addEventListener("input", applyFilters);
   dom.groupFilter?.addEventListener("change", applyFilters);
@@ -789,7 +797,7 @@ function mountGraph() {
     graphData = cloneGraphPayload(dataBaseline);
     Graph.graphData(graphData);
     updateStats(graphData);
-    if (dom.detailsBox) dom.detailsBox.innerHTML = defaultDetailsHtml();
+    resetDetailsPanelToPlaceholder();
     if (graphData.nodes.length > 0) {
       requestAnimationFrame(() => {
         Graph?.zoomToFit?.(500, 60);
@@ -825,7 +833,7 @@ export function setMemoryGraphData(data) {
   graphData = cloneGraphPayload(dataBaseline);
   Graph.graphData(graphData);
   updateStats(graphData);
-  if (dom.detailsBox) dom.detailsBox.innerHTML = defaultDetailsHtml();
+  resetDetailsPanelToPlaceholder();
   /** Went from 0 nodes to >0 — let onEngineStop run zoomToFit once. */
   if (!hadNodes && graphData.nodes.length > 0) {
     didMemoryTreeLayoutZoom = false;

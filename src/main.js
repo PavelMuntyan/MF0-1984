@@ -45,9 +45,6 @@ import {
   renameTheme,
   fetchAssistantFavorites,
   fetchContextPack,
-  fetchIntroSession,
-  fetchAccessSession,
-  fetchRulesSession,
   fetchRulesKeeperBundle,
   mergeRulesKeeperPatch,
   clearDialogTurnsArchive,
@@ -81,6 +78,17 @@ import {
   prepareComposerAttachmentsForApi,
   revokeComposerAttachmentPreview,
 } from "./composerAttachments.js";
+import {
+  mergeAccessExternalServiceEntries,
+  mergeRulesKeeperClientPatches,
+  rulesKeeperExistingSummaryForExtract,
+} from "./accessRulesKeeperHelpers.js";
+import {
+  createIrPanelThreadLoaders,
+  ensureIntroSessionClient,
+  ensureAccessSessionClient,
+  ensureRulesSessionClient,
+} from "./irPanelSessionThreads.js";
 
 const MAX_LOG_LINES = 400;
 /** Upper bound for estimated input tokens when building thread context (before the model reply). */
@@ -90,196 +98,16 @@ const MF0_MAX_CONTEXT_INPUT_TOKENS = 12000;
 let activeThemeId = null;
 let activeDialogId = null;
 
-/** Intro section dialog (created by API `/api/intro/session`). */
-let introSessionDialogId = null;
-
-/** Access section dialog (created by API `/api/access/session`). */
-let accessSessionDialogId = null;
-
-/** Rules section dialog (created by API `/api/rules/session`). */
-let rulesSessionDialogId = null;
-
-/**
- * @param {() => string | null} getDialogId
- * @param {(id: string) => void} setDialogId
- * @param {() => Promise<{ dialogId: string }>} fetchSession
- */
-async function ensureIrPanelSessionDialogId(getDialogId, setDialogId, fetchSession) {
-  const cur = getDialogId();
-  if (cur) return cur;
-  const s = await fetchSession();
-  setDialogId(s.dialogId);
-  return s.dialogId;
-}
-
-async function ensureIntroSessionClient() {
-  return ensureIrPanelSessionDialogId(
-    () => introSessionDialogId,
-    (id) => {
-      introSessionDialogId = id;
-    },
-    fetchIntroSession,
-  );
-}
-
-async function ensureAccessSessionClient() {
-  return ensureIrPanelSessionDialogId(
-    () => accessSessionDialogId,
-    (id) => {
-      accessSessionDialogId = id;
-    },
-    fetchAccessSession,
-  );
-}
-
-async function ensureRulesSessionClient() {
-  return ensureIrPanelSessionDialogId(
-    () => rulesSessionDialogId,
-    (id) => {
-      rulesSessionDialogId = id;
-    },
-    fetchRulesSession,
-  );
-}
-
-/**
- * @param {{
- *   fetchSession: () => Promise<{ dialogId: string }>,
- *   setDialogId: (id: string) => void,
- *   getDialogId: () => string | null,
- *   logLabel: string,
- *   afterReplay?: () => Promise<void>,
- * }} o
- */
-async function loadIrPanelChatThreadIntoUi(o) {
-  const { fetchSession, setDialogId, getDialogId, logLabel, afterReplay } = o;
-  try {
-    const s = await fetchSession();
-    setDialogId(s.dialogId);
-    const list = document.getElementById("messages-list");
-    list?.replaceChildren();
-    const turns = await fetchTurns(getDialogId());
-    replayDialogTurnsGrouped(turns);
-    scrollMessagesToEnd();
-    if (afterReplay) await afterReplay();
-  } catch (e) {
-    appendActivityLog(`${logLabel}: ${e instanceof Error ? e.message : String(e)}`);
-  }
-}
-
-async function loadIntroChatThreadIntoUi() {
-  return loadIrPanelChatThreadIntoUi({
-    fetchSession: fetchIntroSession,
-    setDialogId: (id) => {
-      introSessionDialogId = id;
-    },
-    getDialogId: () => introSessionDialogId,
-    logLabel: "Intro",
-    afterReplay: loadMemoryGraphIntoUi,
-  });
-}
-
-async function loadAccessChatThreadIntoUi() {
-  return loadIrPanelChatThreadIntoUi({
-    fetchSession: fetchAccessSession,
-    setDialogId: (id) => {
-      accessSessionDialogId = id;
-    },
-    getDialogId: () => accessSessionDialogId,
-    logLabel: "Access",
-  });
-}
-
-async function loadRulesChatThreadIntoUi() {
-  return loadIrPanelChatThreadIntoUi({
-    fetchSession: fetchRulesSession,
-    setDialogId: (id) => {
-      rulesSessionDialogId = id;
-    },
-    getDialogId: () => rulesSessionDialogId,
-    logLabel: "Rules",
-  });
-}
-
-const ACCESS_ENTRY_NOTES_MAX = 12000;
-
-/**
- * Merge Keeper 2 patches into the Access external-services list (key = normalized name).
- * @param {Array<{ id?: string, name?: string, description?: string, endpointUrl?: string, accessKey?: string, notes?: string, updatedAt?: string }>} existing
- * @param {Array<{ name?: string, description?: string, endpointUrl?: string, accessKey?: string, notes?: string }>} patch
- */
-function mergeAccessExternalServiceEntries(existing, patch) {
-  const map = new Map();
-  const keyOf = (n) => String(n ?? "").trim().toLowerCase();
-  for (const e of existing) {
-    const k = keyOf(e.name);
-    if (k) map.set(k, { ...e, notes: String(e.notes ?? "").trim() });
-  }
-  const now = new Date().toISOString();
-  for (const p of patch) {
-    const name = String(p.name ?? "").trim().slice(0, 200);
-    if (!name) continue;
-    const k = keyOf(name);
-    const prev = map.get(k) ?? {};
-    const id = String(prev.id ?? "").trim() || crypto.randomUUID();
-    const patchNotes = String(p.notes ?? "").trim();
-    const notesOut = patchNotes
-      ? patchNotes.slice(0, ACCESS_ENTRY_NOTES_MAX)
-      : String(prev.notes ?? "").trim().slice(0, ACCESS_ENTRY_NOTES_MAX);
-    map.set(k, {
-      id,
-      name,
-      description: String(p.description ?? prev.description ?? "").trim().slice(0, 2000),
-      endpointUrl: String(p.endpointUrl ?? prev.endpointUrl ?? "").trim().slice(0, 2000),
-      accessKey: String(p.accessKey ?? prev.accessKey ?? "").trim().slice(0, 2000),
-      notes: notesOut,
-      updatedAt: now,
-    });
-  }
-  return [...map.values()].slice(0, 200);
-}
-
-/**
- * Short text-only summary of saved Rules buckets for the extractor prompt.
- * @param {{
- *   core_rules: { text?: string }[],
- *   private_rules: { text?: string }[],
- *   forbidden_actions: { text?: string }[],
- *   workflow_rules: { text?: string }[],
- * }} bundle
- */
-function rulesKeeperExistingSummaryForExtract(bundle) {
-  const slice = (arr, n) =>
-    (Array.isArray(arr) ? arr : [])
-      .slice(0, n)
-      .map((x) => (x && typeof x === "object" ? String(x.text ?? "").trim() : String(x ?? "").trim()))
-      .filter((s) => s.length > 0)
-      .map((s) => s.slice(0, 120));
-  return JSON.stringify({
-    core_rules: slice(bundle.core_rules, 24),
-    private_rules: slice(bundle.private_rules, 24),
-    forbidden_actions: slice(bundle.forbidden_actions, 24),
-    workflow_rules: slice(bundle.workflow_rules, 24),
-  }).slice(0, 12000);
-}
-
-/**
- * @param {{
- *   core_rules: string[],
- *   private_rules: string[],
- *   forbidden_actions: string[],
- *   workflow_rules: string[],
- * }} a
- * @param {typeof a} b
- */
-function mergeRulesKeeperClientPatches(a, b) {
-  return {
-    core_rules: [...(a.core_rules ?? []), ...(b.core_rules ?? [])],
-    private_rules: [...(a.private_rules ?? []), ...(b.private_rules ?? [])],
-    forbidden_actions: [...(a.forbidden_actions ?? []), ...(b.forbidden_actions ?? [])],
-    workflow_rules: [...(a.workflow_rules ?? []), ...(b.workflow_rules ?? [])],
-  };
-}
+const {
+  loadIntroChatThreadIntoUi,
+  loadAccessChatThreadIntoUi,
+  loadRulesChatThreadIntoUi,
+} = createIrPanelThreadLoaders({
+  replayDialogTurnsGrouped,
+  scrollMessagesToEnd,
+  appendActivityLog,
+  loadMemoryGraphIntoUi,
+});
 
 function syncIrPanelVaultDom() {
   const chat = document.getElementById("main-chat");
