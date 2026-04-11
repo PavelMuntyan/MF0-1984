@@ -522,9 +522,9 @@ function sortEntriesForDataDumpFetchPriority(list) {
     const n = String(e?.name ?? "").toLowerCase();
     const h = `${u} ${n}`;
     let p = 0;
-    if (/air-quality|airquality|aqi|pm2|pm10|pollution|smog|чистот|воздух|качеств/i.test(h)) p += 8;
-    if (/marine|wave|морск/i.test(h)) p += 2;
-    if (/forecast|current_weather|погод|weather/i.test(h)) p += 1;
+    if (/air-quality|airquality|aqi|pm2|pm10|pollution|smog/i.test(h)) p += 8;
+    if (/marine|wave|sea state|ocean/i.test(h)) p += 2;
+    if (/forecast|current_weather|weather/i.test(h)) p += 1;
     return p;
   };
   return [...list].sort((a, b) => {

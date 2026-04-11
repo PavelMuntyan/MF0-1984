@@ -32,6 +32,10 @@ const INTRO_GRAPH_NORMALIZE_OPENAI_MAX_TOKENS = 12000;
 function oaMaxCompletionTokens(n) {
   return { max_completion_tokens: Math.max(1, Math.floor(Number(n) || 1)) };
 }
+
+/** One-line trivial acknowledgements (EN + common RU replies as Unicode escapes; ASCII-only source). */
+const TRIVIAL_ACK_LINE_RE =
+  /^(thanks|thank you|thx|ok|okay|yes|no|\u0441\u043f\u0430\u0441\u0438\u0431\u043e|\u043e\u043a|\u0434\u0430|\u043d\u0435\u0442|\u043f\u043e\u043d\u044f\u043b|\u043f\u043e\u043d\u044f\u043b\u0430|\u044f\u0441\u043d\u043e)\b[!.\s]*$/iu;
 /**
  * Chat Completions built-in web search: only dedicated search models are supported here
  * (see OpenAI “Web search” guide — e.g. gpt-5-search-api, gpt-4o-search-preview).
@@ -1148,9 +1152,6 @@ export function extractRulesListStubsFromUserText(text) {
   /** No bare `don't` — it matches style tips ("don't waffle") that belong in core, not prohibitions. */
   const forbiddenRe =
     /\b(never|must not|mustn't|do not|cannot|can't|forbidden|prohibit|no\s+\w+\s+allowed)\b/i;
-  const trivialLine =
-    /^(thanks|thank you|thx|ok|okay|yes|no|спасибо|ок|да|нет|понял|поняла|ясно)\b[!.\s]*$/i;
-
   /** @type {string[]} */
   const core = [];
   /** @type {string[]} */
@@ -1177,7 +1178,7 @@ export function extractRulesListStubsFromUserText(text) {
   for (const line0 of raw.split(/\r?\n/)) {
     let line = stripLead(line0);
     if (line.length < 6) continue;
-    if (trivialLine.test(line)) continue;
+    if (TRIVIAL_ACK_LINE_RE.test(line)) continue;
     if (forbiddenRe.test(line)) pushUnique(forbidden, line);
     else pushUnique(core, line);
     if (core.length + forbidden.length >= 36) break;
@@ -1195,7 +1196,7 @@ export function extractRulesListStubsFromUserText(text) {
   /** One short paragraph / single sentence (no bullets, no semicolons): still project conduct. */
   if (core.length === 0 && forbidden.length === 0) {
     const one = raw.replace(/\s+/g, " ").trim();
-    if (one.length >= 8 && !trivialLine.test(one)) {
+    if (one.length >= 8 && !TRIVIAL_ACK_LINE_RE.test(one)) {
       if (forbiddenRe.test(one)) pushUnique(forbidden, one);
       else pushUnique(core, one);
     }
@@ -1513,9 +1514,7 @@ export async function normalizeIntroMemoryGraphForDb(
 export function introUserNotesFallbackPack(userText) {
   const raw = String(userText ?? "").trim();
   if (raw.length < 6) return { entities: [], links: [], commands: [] };
-  const trivial =
-    /^(thanks|thank you|thx|ok|okay|yes|no|спасибо|ок|да|нет|понял|поняла|ясно)\b[!.\s]*$/iu;
-  if (trivial.test(raw)) return { entities: [], links: [], commands: [] };
+  if (TRIVIAL_ACK_LINE_RE.test(raw)) return { entities: [], links: [], commands: [] };
   return {
     entities: [{ category: "People", label: "User", notes: raw.slice(0, 4000) }],
     links: [],

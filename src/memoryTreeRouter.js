@@ -48,7 +48,7 @@ async function readErrorBody(res) {
 function queryTokens(q) {
   const s = String(q ?? "")
     .toLowerCase()
-    .replace(/[^a-z0-9а-яёії\s-]+/gi, " ");
+    .replace(/[^\p{L}\p{N}\s-]+/gu, " ");
   const parts = s.split(/\s+/).filter((w) => w.length > 1);
   return [...new Set(parts)];
 }
