@@ -1,6 +1,7 @@
 import ForceGraph3D from "3d-force-graph";
 import SpriteText from "three-spritetext";
 import { closeAnalyticsView } from "./analyticsDashboard.js";
+import { closeHelpChatPanel } from "./helpChatDom.js";
 import { notifyIrPanelLayoutSync } from "./irPanelPinLock.js";
 import "./memoryTree.css";
 let closeMemoryTreeImpl = () => {};
@@ -880,23 +881,36 @@ export function initMemoryTree(appendActivityLog) {
   function setOpen(open) {
     if (open) {
       closeAnalyticsView();
+      closeHelpChatPanel();
       const irChat = document.getElementById("main-chat");
       if (irChat) {
         const irPanels = [
-          { className: "chat--intro", viewId: "chat-intro-view", btnId: "btn-ir-intro" },
-          { className: "chat--rules", viewId: "chat-rules-view", btnId: "btn-ir-rules" },
-          { className: "chat--access", viewId: "chat-access-view", btnId: "btn-ir-access" },
+          { className: "chat--intro", viewId: "chat-intro-view", btnId: "btn-ir-intro", isHelp: false },
+          { className: "chat--rules", viewId: "chat-rules-view", btnId: "btn-ir-rules", isHelp: false },
+          { className: "chat--access", viewId: "chat-access-view", btnId: "btn-ir-access", isHelp: false },
+          { className: "chat--help", viewId: "chat-help-view", btnId: "btn-help", isHelp: true },
         ];
         const activeIr = irPanels.find((p) => irChat.classList.contains(p.className));
         irPanelStashedForMemoryTree = activeIr
-          ? { className: activeIr.className, viewId: activeIr.viewId, btnId: activeIr.btnId }
+          ? {
+              className: activeIr.className,
+              viewId: activeIr.viewId,
+              btnId: activeIr.btnId,
+              isHelp: activeIr.isHelp,
+            }
           : null;
         if (irPanels.some((p) => irChat.classList.contains(p.className))) {
           for (const p of irPanels) {
             irChat.classList.remove(p.className);
             document.getElementById(p.viewId)?.setAttribute("hidden", "");
             document.getElementById(p.viewId)?.setAttribute("aria-hidden", "true");
-            document.getElementById(p.btnId)?.setAttribute("aria-expanded", "false");
+            const b = document.getElementById(p.btnId);
+            if (p.isHelp) {
+              b?.classList.remove("btn--active");
+              b?.setAttribute("aria-pressed", "false");
+            } else {
+              b?.setAttribute("aria-expanded", "false");
+            }
           }
         }
       }
@@ -916,6 +930,7 @@ export function initMemoryTree(appendActivityLog) {
         sizeGraphToContainer();
       });
       startSpin();
+      openBtn?.classList.add("btn--active");
       appendActivityLog("Memory tree: opened");
     } else {
       if (!dom.chat.classList.contains("chat--memory-tree")) return;
@@ -931,6 +946,7 @@ export function initMemoryTree(appendActivityLog) {
       dom.dialoguesHeader?.removeAttribute("title");
 
       stopSpin();
+      openBtn?.classList.remove("btn--active");
       appendActivityLog("Memory tree: closed");
 
       if (irPanelStashedForMemoryTree) {
@@ -941,7 +957,13 @@ export function initMemoryTree(appendActivityLog) {
           irChat.classList.add(st.className);
           document.getElementById(st.viewId)?.removeAttribute("hidden");
           document.getElementById(st.viewId)?.setAttribute("aria-hidden", "false");
-          document.getElementById(st.btnId)?.setAttribute("aria-expanded", "true");
+          const b = document.getElementById(st.btnId);
+          if (st.isHelp) {
+            b?.classList.add("btn--active");
+            b?.setAttribute("aria-pressed", "true");
+          } else {
+            b?.setAttribute("aria-expanded", "true");
+          }
         }
         notifyIrPanelLayoutSync();
       }

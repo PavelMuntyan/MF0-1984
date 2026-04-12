@@ -1802,6 +1802,29 @@ button.btn {
   display: none !important;
 }
 
+/* Help: same strip layout as Intro — informer + shared message thread; no Memory graph / analytics here */
+.chat--help #chat-help-view.chat-ir-view {
+  flex: 0 0 auto;
+  min-height: 0;
+}
+
+.chat--help #chat-help-view .chat-ir-body {
+  display: none !important;
+}
+
+.chat--help .memory-tree-graph-host,
+.chat--help .chat-analytics-view {
+  display: none !important;
+}
+
+#main-chat.chat--help .input-bar-attach {
+  display: none !important;
+}
+
+#main-chat.chat--help .ir-panel-archive-btn {
+  display: inline-flex;
+}
+
 .chat-ir-head {
   flex-shrink: 0;
   padding: 0.75rem 1rem 0.85rem;

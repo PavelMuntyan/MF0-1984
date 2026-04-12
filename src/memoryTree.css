@@ -34,6 +34,10 @@
   display: none !important;
 }
 
+.chat--memory-tree #chat-help-view {
+  display: none !important;
+}
+
 .memory-tree-graph-wrap-inner,
 .memory-tree-graph-host #memory-graph-root {
   position: absolute;

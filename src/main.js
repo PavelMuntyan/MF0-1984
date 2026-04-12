@@ -101,6 +101,8 @@ import {
   ensureAccessSessionClient,
   ensureRulesSessionClient,
 } from "./irPanelSessionThreads.js";
+import { buildHelpModeSystemInstruction } from "./helpHandoffText.js";
+import { closeHelpChatPanel, openHelpChatPanelDom, isHelpChatOpen } from "./helpChatDom.js";
 
 const MAX_LOG_LINES = 400;
 /** Upper bound for estimated input tokens when building thread context (before the model reply). */
@@ -109,6 +111,9 @@ const MF0_MAX_CONTEXT_INPUT_TOKENS = 12000;
 /** Active conversation for DB persistence (null = new chat until first send). */
 let activeThemeId = null;
 let activeDialogId = null;
+
+/** Ephemeral Help chat: alternating user / assistant messages for the LLM only (not saved to SQLite). */
+let helpChatLlmSession = /** @type {Array<{ role: "user" | "assistant", content: string }>} */ ([]);
 
 /** Revoke blob URLs held by sent user-message attachment tiles (before clearing `#messages-list`). */
 function revokeSentUserAttachmentBlobUrls(listEl) {
@@ -1583,16 +1588,25 @@ function initIrClearArchiveButton() {
   if (!btn) return;
   btn.addEventListener("click", () => {
     const chat = document.getElementById("main-chat");
-    /** @type {"intro"|"rules"|"access"|null} */
+    /** @type {"intro"|"rules"|"access"|"help"|null} */
     let panel = null;
     if (chat?.classList.contains("chat--intro")) panel = "intro";
     else if (chat?.classList.contains("chat--rules")) panel = "rules";
     else if (chat?.classList.contains("chat--access")) panel = "access";
+    else if (chat?.classList.contains("chat--help")) panel = "help";
     if (!panel) return;
 
     openIrClearThreadModal(async (confirmed) => {
       if (!confirmed) return;
       try {
+        if (panel === "help") {
+          helpChatLlmSession = [];
+          clearHelpMessagesUiOnly();
+          const vp = document.getElementById("messages-viewport");
+          if (vp) vp.scrollTop = 0;
+          appendActivityLog("Help: thread cleared.");
+          return;
+        }
         let dialogId = "";
         if (panel === "intro") dialogId = await ensureIntroSessionClient();
         else if (panel === "access") dialogId = await ensureAccessSessionClient();
@@ -1763,6 +1777,7 @@ function openIrChatPanel(mode) {
   if (!cfg) return;
   closeAnalyticsView();
   closeMemoryTree();
+  closeHelpChatFullyForNavigation();
   closeMobileThemesDropdown();
   activeThemeId = null;
   activeDialogId = null;
@@ -1810,6 +1825,71 @@ function openIrChatPanel(mode) {
   syncIrPanelVaultDom();
 }
 
+function clearHelpMessagesUiOnly() {
+  const list = document.getElementById("messages-list");
+  if (list) revokeSentUserAttachmentBlobUrls(list);
+  list?.replaceChildren();
+}
+
+function closeHelpChatFullyForNavigation() {
+  if (!isHelpChatOpen()) return;
+  closeHelpChatPanel();
+  clearHelpMessagesUiOnly();
+  const viewport = document.getElementById("messages-viewport");
+  if (viewport) viewport.scrollTop = 0;
+}
+
+function rerenderHelpTranscriptFromSession() {
+  clearHelpMessagesUiOnly();
+  const pid = getActiveProviderId();
+  const modelLabel = PROVIDER_DISPLAY[pid] ?? pid ?? "?";
+  for (const m of helpChatLlmSession) {
+    if (m.role === "user" && String(m.content ?? "").trim()) {
+      appendUserMessage(String(m.content), modelLabel, {});
+    } else if (m.role === "assistant" && String(m.content ?? "").trim()) {
+      const pending = appendAssistantPending();
+      if (pending) {
+        const te = pending.querySelector(".msg-assistant-text");
+        if (te) setAssistantMessageMarkdown(te, String(m.content));
+        finalizeAssistantBubble(pending, String(m.content), pid, undefined, 1);
+      }
+    }
+  }
+}
+
+function openHelpChatPanel() {
+  const chat = document.getElementById("main-chat");
+  if (!chat) return;
+  if (isHelpChatOpen()) {
+    closeHelpChatFullyForNavigation();
+    document.getElementById("btn-help")?.focus();
+    appendActivityLog("Help: closed");
+    return;
+  }
+  closeAnalyticsView();
+  closeMemoryTree();
+  closeIrChatPanel();
+  closeMobileThemesDropdown();
+  activeThemeId = null;
+  activeDialogId = null;
+  expandedThemeDialogListThemeId = null;
+  chatComposerSending = false;
+  void renderThemesSidebar();
+  refreshThemeHighlightsFromChat();
+  resetComposerAttachUi();
+  clearHelpMessagesUiOnly();
+  rerenderHelpTranscriptFromSession();
+  openHelpChatPanelDom();
+  scrollMessagesToEnd();
+  const ta = document.getElementById("chat-input");
+  if (ta instanceof HTMLTextAreaElement) {
+    ta.disabled = false;
+    syncChatInputHeight(ta);
+    ta.focus();
+  }
+  appendActivityLog("Help: opened");
+}
+
 function toggleIrChatPanel(mode) {
   const cfg = IR_CHAT_PANELS.find((p) => p.mode === mode);
   const chat = document.getElementById("main-chat");
@@ -1822,6 +1902,9 @@ function initIntroRulesAccessPanels() {
   document.getElementById("btn-ir-intro")?.addEventListener("click", (e) => handleIrPanelBubbleClick("intro", e));
   document.getElementById("btn-ir-rules")?.addEventListener("click", (e) => handleIrPanelBubbleClick("rules", e));
   document.getElementById("btn-ir-access")?.addEventListener("click", (e) => handleIrPanelBubbleClick("access", e));
+  document.getElementById("btn-help")?.addEventListener("click", () => {
+    openHelpChatPanel();
+  });
 }
 
 async function handleThemeRenamed(themeId, oldTitle, newTitle) {
@@ -1939,6 +2022,12 @@ function initThemeCardActions() {
         }
       }
       closeIrChatPanel({ focusAfterClose: true, focusButtonId: fid });
+      return;
+    }
+    if (irChat && isHelpChatOpen()) {
+      e.preventDefault();
+      closeHelpChatFullyForNavigation();
+      document.getElementById("btn-help")?.focus();
       return;
     }
     const delModal = document.getElementById("theme-delete-modal");
@@ -2355,6 +2444,7 @@ function initNewDialogueButton() {
     closeAnalyticsView();
     closeMemoryTree();
     closeIrChatPanel();
+    closeHelpChatFullyForNavigation();
     activeThemeId = null;
     activeDialogId = null;
     expandedThemeDialogListThemeId = null;
@@ -2811,6 +2901,10 @@ function makeAssistantRetryButton(assistantWrap) {
  */
 async function retryAssistantReply(clickedAssistantWrap) {
   if (!(clickedAssistantWrap instanceof HTMLElement) || chatComposerSending) return;
+  if (document.getElementById("main-chat")?.classList.contains("chat--help")) {
+    appendActivityLog("Help: use Send for another reply (retry is for saved threads).");
+    return;
+  }
   const rootClone = String(
     clickedAssistantWrap.dataset.exchangeRootTurnId || clickedAssistantWrap.dataset.turnId || "",
   ).trim();
@@ -2935,6 +3029,7 @@ async function retryAssistantReply(clickedAssistantWrap) {
       introChatOpen,
       accessChatOpen,
       rulesChatOpen,
+      helpChatOpen: false,
     });
     let buf = "";
     try {
@@ -3689,6 +3784,7 @@ async function handleThemeDeleted(themeId, themeTitle) {
     closeAnalyticsView();
     closeMemoryTree();
     closeIrChatPanel();
+    closeHelpChatFullyForNavigation();
     {
       const ml = document.getElementById("messages-list");
       if (ml) revokeSentUserAttachmentBlobUrls(ml);
@@ -3723,6 +3819,7 @@ async function openThemeForNewDialog(themeId) {
   closeAnalyticsView();
   closeMemoryTree();
   closeIrChatPanel();
+  closeHelpChatFullyForNavigation();
   const list = document.getElementById("messages-list");
   if (list) revokeSentUserAttachmentBlobUrls(list);
   list?.replaceChildren();
@@ -3754,6 +3851,7 @@ async function openDialogById(dialogId, themeId, scrollToTurnId) {
   closeAnalyticsView();
   closeMemoryTree();
   closeIrChatPanel();
+  closeHelpChatFullyForNavigation();
   const list = document.getElementById("messages-list");
   if (list) revokeSentUserAttachmentBlobUrls(list);
   list?.replaceChildren();
@@ -3897,6 +3995,7 @@ function replayDialogTurnsGrouped(turns) {
  *   introChatOpen: boolean,
  *   accessChatOpen: boolean,
  *   rulesChatOpen: boolean,
+ *   helpChatOpen?: boolean,
  * }} p
  */
 async function buildChatOptsForModelRequest(p) {
@@ -3911,7 +4010,19 @@ async function buildChatOptsForModelRequest(p) {
     introChatOpen,
     accessChatOpen,
     rulesChatOpen,
+    helpChatOpen = false,
   } = p;
+  if (helpChatOpen) {
+    return {
+      webSearch: false,
+      deepResearch: false,
+      systemInstruction: buildHelpModeSystemInstruction(),
+      llmMessages: [
+        ...helpChatLlmSession.map((m) => ({ role: m.role, content: m.content })),
+        { role: "user", content: promptForApi },
+      ],
+    };
+  }
   const chatOpts = {
     webSearch: accessDataDumpMode ? false : modeForSend === "web",
     deepResearch: accessDataDumpMode ? false : modeForSend === "research",
@@ -4079,6 +4190,7 @@ function initChatComposer() {
     const introContextActive = introChatOpen || memoryTreeCoversIntroChat();
     const rulesChatOpen = Boolean(mainChatEl?.classList.contains("chat--rules"));
     const accessChatOpen = Boolean(mainChatEl?.classList.contains("chat--access"));
+    const helpChatOpen = Boolean(mainChatEl?.classList.contains("chat--help"));
     if (introContextActive && getIrPanelLockedSync("intro")) {
       appendActivityLog("Intro is locked — unlock it to send messages.");
       return;
@@ -4090,6 +4202,21 @@ function initChatComposer() {
     if (accessChatOpen && getIrPanelLockedSync("access")) {
       appendActivityLog("Access is locked — unlock it to send messages.");
       return;
+    }
+    if (helpChatOpen) {
+      if (filesSnapshot.length > 0) {
+        appendActivityLog("Help does not support attachments — remove files to send.");
+        return;
+      }
+      if (
+        modeForSend === "image" ||
+        modeForSend === "web" ||
+        modeForSend === "research" ||
+        modeForSend === "accessData"
+      ) {
+        appendActivityLog("Help accepts plain messages only — reset the composer to default mode.");
+        return;
+      }
     }
     if (
       mainChatEl &&
@@ -4120,6 +4247,7 @@ function initChatComposer() {
 
     const persistUserText = trimmed;
     const accessDataDumpMode =
+      !helpChatOpen &&
       modeForSend !== "image" &&
       (userMessageTriggersAccessDataDump(trimmed) || modeForSend === "accessData");
 
@@ -4172,7 +4300,9 @@ function initChatComposer() {
 
     const userMessageAt = new Date().toISOString();
     let persistDialogId = activeDialogId;
-    if (introContextActive) {
+    if (helpChatOpen) {
+      persistDialogId = null;
+    } else if (introContextActive) {
       try {
         persistDialogId = await ensureIntroSessionClient();
       } catch (e) {
@@ -4204,7 +4334,7 @@ function initChatComposer() {
     chatComposerSending = true;
     syncAllAssistantRetryButtons();
     try {
-      if (!persistDialogId) {
+      if (!persistDialogId && !helpChatOpen) {
         try {
           /** New dialog in the already selected theme: no extra LLM call. New theme: title via LLM with timeout. */
           const themeIdForNewDialog = String(activeThemeId ?? "").trim();
@@ -4352,6 +4482,7 @@ function initChatComposer() {
             introChatOpen: introContextActive,
             accessChatOpen,
             rulesChatOpen,
+            helpChatOpen,
           });
           let buf = "";
           try {
@@ -4402,6 +4533,19 @@ function initChatComposer() {
       syncComposerSendButtonState();
       syncAllAssistantRetryButtons();
       scrollMessagesToEnd();
+      if (helpChatOpen && didAppendUserToUi) {
+        const hadAssistantErr = Boolean(pending?.classList.contains("msg-assistant--error"));
+        const assistantOutHelp =
+          pending?.classList.contains("msg-assistant--error") && pending?.dataset?.assistantMarkdown
+            ? String(pending.dataset.assistantMarkdown)
+            : fullText;
+        if (!hadAssistantErr) {
+          helpChatLlmSession.push(
+            { role: "user", content: persistUserText },
+            { role: "assistant", content: String(assistantOutHelp ?? "") },
+          );
+        }
+      }
       if (persistDialogId && didAppendUserToUi) {
         const assistantMessageAt = new Date().toISOString();
         const assistantOut =
@@ -4771,7 +4915,11 @@ function initChatFileDropZone() {
       clearDropHighlight();
       return;
     }
-    if (mainChat.classList.contains("chat--rules") || mainChat.classList.contains("chat--access")) {
+    if (
+      mainChat.classList.contains("chat--rules") ||
+      mainChat.classList.contains("chat--access") ||
+      mainChat.classList.contains("chat--help")
+    ) {
       clearDropHighlight();
       return;
     }
@@ -4795,7 +4943,11 @@ function initChatFileDropZone() {
 
   function onWindowDrop(e) {
     clearDropHighlight();
-    if (mainChat.classList.contains("chat--rules") || mainChat.classList.contains("chat--access")) {
+    if (
+      mainChat.classList.contains("chat--rules") ||
+      mainChat.classList.contains("chat--access") ||
+      mainChat.classList.contains("chat--help")
+    ) {
       return;
     }
     if (!dataTransferHasFileList(e.dataTransfer)) return;
@@ -5000,6 +5152,7 @@ function bootApp() {
     prepareChatSurface: () => {
       closeMemoryTree();
       closeIrChatPanel();
+      closeHelpChatFullyForNavigation();
     },
   });
   initNewDialogueButton();
