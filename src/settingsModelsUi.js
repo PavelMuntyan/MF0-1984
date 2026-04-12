@@ -32,6 +32,51 @@ let listenersBound = false;
 /** @type {{ onSave?: () => void }} */
 let globalHooks = {};
 
+/** Serialized picker labels → compared after refresh / pick / save to enable “Save AI models”. */
+let settingsAiSavedSnapshot = "";
+
+/** Two overlapping refreshes (e.g. init + open Settings) must not interleave `await` and reset the baseline. */
+let settingsModelRefreshQueue = Promise.resolve();
+
+/**
+ * @param {HTMLElement} root
+ * @returns {string}
+ */
+function readPickerModelId(root) {
+  const trigger = root.querySelector(".settings-model-picker-trigger");
+  const ds = trigger instanceof HTMLElement ? String(trigger.dataset.value ?? "").trim() : "";
+  if (ds) return ds;
+  const span = String(root.querySelector(".settings-model-picker-value")?.textContent ?? "").trim();
+  if (span === "—") return "";
+  return span;
+}
+
+/**
+ * @returns {string}
+ */
+function collectSettingsAiPickerSnapshot() {
+  const container = document.getElementById("settings-ai-providers");
+  if (!container) return "";
+  const parts = [];
+  container.querySelectorAll(".settings-model-picker").forEach((el) => {
+    if (!(el instanceof HTMLElement)) return;
+    const prov = String(el.dataset.provider ?? "").trim();
+    const role = String(el.dataset.role ?? "").trim();
+    if (!prov || !role) return;
+    parts.push(`${prov}\t${role}\t${readPickerModelId(el)}`);
+  });
+  parts.sort((a, b) => a.localeCompare(b));
+  return parts.join("\n");
+}
+
+function syncSettingsAiSaveButtonState() {
+  const saveBtn = document.getElementById("settings-ai-save-btn");
+  if (!(saveBtn instanceof HTMLButtonElement)) return;
+  const hasPickers = Boolean(document.querySelector("#settings-ai-providers .settings-model-picker"));
+  const dirty = collectSettingsAiPickerSnapshot() !== settingsAiSavedSnapshot;
+  saveBtn.disabled = !hasPickers || !dirty;
+}
+
 /**
  * @param {AiSettingsProvider} provider
  * @param {AiModelRole} role
@@ -176,6 +221,7 @@ function pickModel(root, provider, role, id) {
     trigger.focus();
   }
   closePicker(root);
+  syncSettingsAiSaveButtonState();
 }
 
 /**
@@ -209,7 +255,14 @@ function fillPicker(root, provider, role, optionIds, current) {
     list.appendChild(btn);
   }
   if (valueEl) valueEl.textContent = active || "—";
-  if (trigger && active) trigger.dataset.value = active;
+  if (trigger instanceof HTMLElement) {
+    const s = String(active ?? "").trim();
+    if (s) {
+      trigger.dataset.value = s;
+    } else {
+      trigger.removeAttribute("data-value");
+    }
+  }
   syncSelectedState(list, active);
 }
 
@@ -217,113 +270,120 @@ function fillPicker(root, provider, role, optionIds, current) {
  * Rebuilds AI settings (only providers with a key in .env) and fills model pickers.
  */
 export async function refreshSettingsModelSelects() {
-  closeAllSettingsModelPickers();
-  document.querySelectorAll('[id^="settings-ai-"][id$="-list"]').forEach((n) => n.remove());
-  const saveWrap = document.getElementById("settings-ai-save-wrap");
-  const saveBtnEarly = document.getElementById("settings-ai-save-btn");
-  if (saveWrap) {
-    saveWrap.hidden = true;
-  }
-  if (saveBtnEarly instanceof HTMLButtonElement) {
-    saveBtnEarly.disabled = true;
-  }
+  const run = settingsModelRefreshQueue.then(() => refreshSettingsModelSelectsImpl());
+  settingsModelRefreshQueue = run.catch(() => {});
+  await run;
+}
 
-  const container = document.getElementById("settings-ai-providers");
-  if (!container) return;
-
-  const keys = getModelApiKeys();
-  container.replaceChildren();
-
-  let anyProvider = false;
-  for (const p of AI_SETTINGS_PROVIDERS) {
-    const apiKey = String(keys[p.envKey] ?? "").trim();
-    if (!apiKey) continue;
-    anyProvider = true;
-
-    const block = document.createElement("div");
-    block.className = "settings-ai-provider";
-
-    const name = document.createElement("div");
-    name.className = "settings-ai-provider-name";
-    name.textContent = p.title;
-
-    const rowsWrap = document.createElement("div");
-    rowsWrap.className = "settings-ai-provider-rows";
-
-    const rowsDef = ROLE_ROWS.filter((r) => !r.needsImages || p.images);
-    for (const r of rowsDef) {
-      const row = document.createElement("div");
-      row.className = "settings-ai-row";
-
-      const lab = document.createElement("label");
-      lab.className = "settings-ai-role";
-      lab.htmlFor = `settings-ai-${p.provider}-${r.role}-trigger`;
-      lab.textContent = r.label;
-
-      const root = document.createElement("div");
-      root.className = "settings-model-picker";
-      root.id = `settings-ai-${p.provider}-${r.role}`;
-      root.dataset.provider = p.provider;
-      root.dataset.role = r.role;
-
-      const trigger = document.createElement("button");
-      trigger.type = "button";
-      trigger.className = "settings-model-picker-trigger";
-      trigger.id = `settings-ai-${p.provider}-${r.role}-trigger`;
-      trigger.setAttribute("aria-haspopup", "listbox");
-      trigger.setAttribute("aria-expanded", "false");
-      trigger.setAttribute("aria-controls", `${root.id}-list`);
-      trigger.setAttribute(
-        "aria-label",
-        `${p.title} — ${r.label} model`,
-      );
-
-      const val = document.createElement("span");
-      val.className = "settings-model-picker-value";
-      const chev = document.createElement("span");
-      chev.className = "settings-model-picker-chevron";
-      chev.setAttribute("aria-hidden", "true");
-      trigger.append(val, chev);
-      root.appendChild(trigger);
-
-      row.append(lab, root);
-      rowsWrap.appendChild(row);
-
-      /** @type {AiModelRole} */
-      const role = /** @type {AiModelRole} */ (r.role);
-      /** @type {AiSettingsProvider} */
-      const prov = /** @type {AiSettingsProvider} */ (p.provider);
-
-      let remote = [];
-      try {
-        remote = await fetchIdsForRole(prov, role, apiKey);
-      } catch {
-        remote = [];
-      }
-      const fallback = FALLBACK_AI_MODEL_LISTS[prov]?.[role] ?? [];
-      const stored = getUserAiModel(prov, role);
-      const merged = mergeModelIdOptions(remote, fallback, stored);
-      fillPicker(root, prov, role, merged, stored);
+async function refreshSettingsModelSelectsImpl() {
+  try {
+    closeAllSettingsModelPickers();
+    document.querySelectorAll('[id^="settings-ai-"][id$="-list"]').forEach((n) => n.remove());
+    const saveWrap = document.getElementById("settings-ai-save-wrap");
+    const saveBtnEarly = document.getElementById("settings-ai-save-btn");
+    if (saveWrap) {
+      saveWrap.hidden = true;
+    }
+    if (saveBtnEarly instanceof HTMLButtonElement) {
+      saveBtnEarly.disabled = true;
     }
 
-    block.append(name, rowsWrap);
-    container.appendChild(block);
-  }
+    const container = document.getElementById("settings-ai-providers");
+    if (!container) return;
 
-  if (!anyProvider) {
-    const empty = document.createElement("p");
-    empty.className = "settings-ai-empty";
-    empty.textContent =
-      "No model API keys in the environment for this build. Add keys to .env for local development.";
-    container.appendChild(empty);
-  }
+    const keys = getModelApiKeys();
+    container.replaceChildren();
 
-  const saveBtn = document.getElementById("settings-ai-save-btn");
-  if (saveWrap && anyProvider) {
-    saveWrap.hidden = false;
-  }
-  if (saveBtn instanceof HTMLButtonElement) {
-    saveBtn.disabled = !anyProvider;
+    let anyProvider = false;
+    for (const p of AI_SETTINGS_PROVIDERS) {
+      const apiKey = String(keys[p.envKey] ?? "").trim();
+      if (!apiKey) continue;
+      anyProvider = true;
+
+      const block = document.createElement("div");
+      block.className = "settings-ai-provider";
+
+      const name = document.createElement("div");
+      name.className = "settings-ai-provider-name";
+      name.textContent = p.title;
+
+      const rowsWrap = document.createElement("div");
+      rowsWrap.className = "settings-ai-provider-rows";
+
+      const rowsDef = ROLE_ROWS.filter((r) => !r.needsImages || p.images);
+      for (const r of rowsDef) {
+        const row = document.createElement("div");
+        row.className = "settings-ai-row";
+
+        const lab = document.createElement("label");
+        lab.className = "settings-ai-role";
+        lab.htmlFor = `settings-ai-${p.provider}-${r.role}-trigger`;
+        lab.textContent = r.label;
+
+        const root = document.createElement("div");
+        root.className = "settings-model-picker";
+        root.id = `settings-ai-${p.provider}-${r.role}`;
+        root.dataset.provider = p.provider;
+        root.dataset.role = r.role;
+
+        const trigger = document.createElement("button");
+        trigger.type = "button";
+        trigger.className = "settings-model-picker-trigger";
+        trigger.id = `settings-ai-${p.provider}-${r.role}-trigger`;
+        trigger.setAttribute("aria-haspopup", "listbox");
+        trigger.setAttribute("aria-expanded", "false");
+        trigger.setAttribute("aria-controls", `${root.id}-list`);
+        trigger.setAttribute(
+          "aria-label",
+          `${p.title} — ${r.label} model`,
+        );
+
+        const val = document.createElement("span");
+        val.className = "settings-model-picker-value";
+        const chev = document.createElement("span");
+        chev.className = "settings-model-picker-chevron";
+        chev.setAttribute("aria-hidden", "true");
+        trigger.append(val, chev);
+        root.appendChild(trigger);
+
+        row.append(lab, root);
+        rowsWrap.appendChild(row);
+
+        /** @type {AiModelRole} */
+        const role = /** @type {AiModelRole} */ (r.role);
+        /** @type {AiSettingsProvider} */
+        const prov = /** @type {AiSettingsProvider} */ (p.provider);
+
+        let remote = [];
+        try {
+          remote = await fetchIdsForRole(prov, role, apiKey);
+        } catch {
+          remote = [];
+        }
+        const fallback = FALLBACK_AI_MODEL_LISTS[prov]?.[role] ?? [];
+        const stored = getUserAiModel(prov, role);
+        const merged = mergeModelIdOptions(remote, fallback, stored);
+        fillPicker(root, prov, role, merged, stored);
+      }
+
+      block.append(name, rowsWrap);
+      container.appendChild(block);
+    }
+
+    if (!anyProvider) {
+      const empty = document.createElement("p");
+      empty.className = "settings-ai-empty";
+      empty.textContent =
+        "No model API keys in the environment for this build. Add keys to .env for local development.";
+      container.appendChild(empty);
+    }
+
+    if (saveWrap && anyProvider) {
+      saveWrap.hidden = false;
+    }
+  } finally {
+    settingsAiSavedSnapshot = collectSettingsAiPickerSnapshot();
+    syncSettingsAiSaveButtonState();
   }
 }
 
@@ -338,14 +398,16 @@ export function saveSettingsAiModels() {
     if (!(el instanceof HTMLElement)) return;
     const prov = el.dataset.provider;
     const role = el.dataset.role;
-    const val = el.querySelector(".settings-model-picker-value")?.textContent?.trim();
-    if (!prov || !role || !val || val === "—") return;
+    const val = readPickerModelId(el);
+    if (!prov || !role || !val) return;
     setUserAiModel(/** @type {AiSettingsProvider} */ (prov), /** @type {AiModelRole} */ (role), val);
     count += 1;
   });
   if (count > 0) {
     globalHooks.onSave?.();
   }
+  settingsAiSavedSnapshot = collectSettingsAiPickerSnapshot();
+  syncSettingsAiSaveButtonState();
 }
 
 /**

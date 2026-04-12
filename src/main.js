@@ -719,7 +719,6 @@ function initSettingsModal() {
       appendActivityLog("AI models saved");
     },
   });
-  void refreshSettingsModelSelects();
 
   const settingsAiLoading = document.getElementById("settings-ai-loading");
 

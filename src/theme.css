@@ -3934,6 +3934,29 @@ html.theme-rename-modal-open {
   min-width: 11rem;
 }
 
+/* Looks clearly inactive while `disabled` (logic can leave it off; base .btn:hover still matched visually). */
+button.btn.settings-ai-save-btn:disabled,
+button.btn.settings-ai-save-btn[disabled] {
+  opacity: 0.52;
+  cursor: not-allowed;
+  pointer-events: none;
+  color: hsl(var(--muted-foreground));
+  background: hsl(var(--muted) / 0.38);
+  border-color: hsl(var(--border) / 0.75);
+}
+
+button.btn.settings-ai-save-btn:disabled:hover,
+button.btn.settings-ai-save-btn[disabled]:hover {
+  color: hsl(var(--muted-foreground));
+  background: hsl(var(--muted) / 0.38);
+  border-color: hsl(var(--border) / 0.75);
+}
+
+button.btn.settings-ai-save-btn:disabled:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
 .settings-ai-empty {
   margin: 0;
   font-size: 0.8125rem;
