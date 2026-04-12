@@ -98,6 +98,20 @@ const MF0_MAX_CONTEXT_INPUT_TOKENS = 12000;
 let activeThemeId = null;
 let activeDialogId = null;
 
+/** Revoke blob URLs held by sent user-message attachment tiles (before clearing `#messages-list`). */
+function revokeSentUserAttachmentBlobUrls(listEl) {
+  if (!(listEl instanceof HTMLElement)) return;
+  listEl.querySelectorAll('a.chat-attach-tile--sent-blob[href^="blob:"]').forEach((a) => {
+    const href = a.getAttribute("href");
+    if (!href) return;
+    try {
+      URL.revokeObjectURL(href);
+    } catch {
+      /* ignore */
+    }
+  });
+}
+
 const {
   loadIntroChatThreadIntoUi,
   loadAccessChatThreadIntoUi,
@@ -107,6 +121,7 @@ const {
   scrollMessagesToEnd,
   appendActivityLog,
   loadMemoryGraphIntoUi,
+  revokeSentUserAttachmentBlobUrls,
 });
 
 function syncIrPanelVaultDom() {
@@ -1563,17 +1578,20 @@ function normalizeStoredUserAttachmentKind(k) {
   return "other";
 }
 
-function buildUserMessageCopyText(rawText, attachmentStrip, extras = {}) {
+/** Safe `download` attribute value for `<a download>`. */
+function safeAttachmentDownloadBasename(name) {
+  const s = String(name ?? "file")
+    .replace(/[/\\?%*:|"<>]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 180);
+  return s || "file";
+}
+
+function buildUserMessageCopyText(rawText, _attachmentStrip, extras = {}) {
   const t = String(rawText ?? "").trim();
-  const names = (attachmentStrip ?? [])
-    .map((x) => String(x?.name ?? "").trim())
-    .filter(Boolean);
-  if (!t && extras.accessData) {
-    return names.length ? `[Access data]\n\n${names.join("\n")}` : "[Access data]";
-  }
-  if (!t) return names.join("\n");
-  if (!names.length) return t;
-  return `${t}\n\n${names.join("\n")}`;
+  if (!t && extras.accessData) return "[Access data]";
+  return t;
 }
 
 function clearComposerAttachmentRows() {
@@ -1724,6 +1742,7 @@ function initNewDialogueButton() {
     activeDialogId = null;
     expandedThemeDialogListThemeId = null;
     const list = document.getElementById("messages-list");
+    if (list) revokeSentUserAttachmentBlobUrls(list);
     list?.replaceChildren();
     document.getElementById("dialogue-cards")?.querySelectorAll(".dialog-card").forEach((c) => {
       c.classList.remove("dialog-card--selected");
@@ -2595,7 +2614,12 @@ function createDeepResearchBadgeIcon() {
  *   imageCreation?: boolean;
  *   deepResearch?: boolean;
  *   accessData?: boolean;
- *   attachmentStrip?: Array<{ name: string; kind: string }>;
+ *   attachmentStrip?: Array<{
+ *     name: string;
+ *     kind: string;
+ *     objectUrl?: string;
+ *     displayAsImage?: boolean;
+ *   }>;
  * }} [options]
  */
 function appendUserMessage(rawText, modelLabel, options) {
@@ -2663,15 +2687,61 @@ function appendUserMessage(rawText, modelLabel, options) {
     strip.className = "msg-user-attachments";
     strip.setAttribute("aria-label", "Attached files");
     for (const item of attachmentStrip) {
-      const tile = document.createElement("div");
-      tile.className = "msg-user-attach-tile";
       const nm = String(item?.name ?? "file").trim() || "file";
-      tile.title = nm;
-      const wrap = document.createElement("div");
-      wrap.className = "msg-user-attach-tile-icon-wrap";
-      wrap.appendChild(userMessageAttachmentGlyph(normalizeStoredUserAttachmentKind(item?.kind)));
-      tile.appendChild(wrap);
-      strip.appendChild(tile);
+      const kind = normalizeStoredUserAttachmentKind(item?.kind);
+      const objectUrl =
+        typeof item?.objectUrl === "string" && item.objectUrl.startsWith("blob:") ? item.objectUrl : "";
+      const displayAsImage = Boolean(item?.displayAsImage) && objectUrl;
+
+      if (objectUrl) {
+        const a = document.createElement("a");
+        a.className = "chat-attach-tile chat-attach-tile--sent-blob";
+        a.href = objectUrl;
+        a.setAttribute("download", safeAttachmentDownloadBasename(nm));
+        a.title = nm;
+        a.setAttribute("aria-label", `Download ${nm}`);
+        if (displayAsImage) {
+          const img = document.createElement("img");
+          img.className = "chat-attach-tile-preview";
+          img.alt = nm;
+          img.decoding = "async";
+          img.src = objectUrl;
+          img.addEventListener("error", () => {
+            const href = a.getAttribute("href");
+            if (href?.startsWith("blob:")) {
+              try {
+                URL.revokeObjectURL(href);
+              } catch {
+                /* ignore */
+              }
+            }
+            const div = document.createElement("div");
+            div.className = "chat-attach-tile chat-attach-tile--sent-stale chat-attach-tile--broken";
+            div.title = nm;
+            const wrap = document.createElement("div");
+            wrap.className = "chat-attach-tile-icon-wrap";
+            wrap.appendChild(userMessageAttachmentGlyph("image"));
+            div.appendChild(wrap);
+            a.replaceWith(div);
+          });
+          a.appendChild(img);
+        } else {
+          const wrap = document.createElement("div");
+          wrap.className = "chat-attach-tile-icon-wrap";
+          wrap.appendChild(composerAttachmentIconSvg(kind));
+          a.appendChild(wrap);
+        }
+        strip.appendChild(a);
+      } else {
+        const tile = document.createElement("div");
+        tile.className = "chat-attach-tile chat-attach-tile--sent-stale";
+        tile.title = nm;
+        const wrap = document.createElement("div");
+        wrap.className = "chat-attach-tile-icon-wrap";
+        wrap.appendChild(userMessageAttachmentGlyph(kind));
+        tile.appendChild(wrap);
+        strip.appendChild(tile);
+      }
     }
     content.appendChild(strip);
   }
@@ -3001,7 +3071,11 @@ async function handleThemeDeleted(themeId, themeTitle) {
     closeAnalyticsView();
     closeMemoryTree();
     closeIrChatPanel();
-    document.getElementById("messages-list")?.replaceChildren();
+    {
+      const ml = document.getElementById("messages-list");
+      if (ml) revokeSentUserAttachmentBlobUrls(ml);
+      ml?.replaceChildren();
+    }
     const viewport = document.getElementById("messages-viewport");
     if (viewport) viewport.scrollTop = 0;
     const ta = document.getElementById("chat-input");
@@ -3032,6 +3106,7 @@ async function openThemeForNewDialog(themeId) {
   closeMemoryTree();
   closeIrChatPanel();
   const list = document.getElementById("messages-list");
+  if (list) revokeSentUserAttachmentBlobUrls(list);
   list?.replaceChildren();
   const viewport = document.getElementById("messages-viewport");
   if (viewport) viewport.scrollTop = 0;
@@ -3062,6 +3137,7 @@ async function openDialogById(dialogId, themeId, scrollToTurnId) {
   closeMemoryTree();
   closeIrChatPanel();
   const list = document.getElementById("messages-list");
+  if (list) revokeSentUserAttachmentBlobUrls(list);
   list?.replaceChildren();
   const viewport = document.getElementById("messages-viewport");
   if (viewport) viewport.scrollTop = 0;
@@ -3437,6 +3513,40 @@ function initChatComposer() {
           }))
         : [];
 
+    /** Live object URLs for the user bubble (same look as composer). Revoked when `#messages-list` is cleared. */
+    const attachmentStripForUi =
+      composerAttachmentRows.length > 0
+        ? composerAttachmentRows.map((r) => {
+            const name = r.file.name || "file";
+            const kind = r.kind;
+            if (kind === "image") {
+              let objectUrl = r.previewUrl;
+              if (objectUrl) {
+                r.previewUrl = null;
+              } else {
+                try {
+                  objectUrl = URL.createObjectURL(r.file);
+                } catch {
+                  objectUrl = null;
+                }
+              }
+              return {
+                name,
+                kind,
+                objectUrl: objectUrl || undefined,
+                displayAsImage: true,
+              };
+            }
+            let objectUrl;
+            try {
+              objectUrl = URL.createObjectURL(r.file);
+            } catch {
+              objectUrl = undefined;
+            }
+            return { name, kind, objectUrl, displayAsImage: false };
+          })
+        : [];
+
     const titleSeed =
       trimmed.trim() ||
       (modeForSend === "accessData" ? "Access data" : "") ||
@@ -3551,7 +3661,7 @@ function initChatComposer() {
         imageCreation: modeForSend === "image",
         deepResearch: modeForSend === "research",
         accessData: modeForSend === "accessData",
-        attachmentStrip: attachmentStripMeta.length > 0 ? attachmentStripMeta : undefined,
+        attachmentStrip: attachmentStripForUi.length > 0 ? attachmentStripForUi : undefined,
       });
       didAppendUserToUi = true;
       if (introContextActive && modeForSend !== "image") {

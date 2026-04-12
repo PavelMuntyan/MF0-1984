@@ -58,10 +58,17 @@ export async function ensureRulesSessionClient() {
  *   scrollMessagesToEnd: () => void,
  *   appendActivityLog: (text: string) => void,
  *   loadMemoryGraphIntoUi: () => Promise<void>,
+ *   revokeSentUserAttachmentBlobUrls: (listEl: HTMLElement | null | undefined) => void,
  * }} deps
  */
 export function createIrPanelThreadLoaders(deps) {
-  const { replayDialogTurnsGrouped, scrollMessagesToEnd, appendActivityLog, loadMemoryGraphIntoUi } = deps;
+  const {
+    replayDialogTurnsGrouped,
+    scrollMessagesToEnd,
+    appendActivityLog,
+    loadMemoryGraphIntoUi,
+    revokeSentUserAttachmentBlobUrls,
+  } = deps;
 
   /**
    * @param {{
@@ -78,6 +85,7 @@ export function createIrPanelThreadLoaders(deps) {
       const s = await fetchSession();
       setDialogId(s.dialogId);
       const list = document.getElementById("messages-list");
+      if (list) revokeSentUserAttachmentBlobUrls(list);
       list?.replaceChildren();
       const turns = await fetchTurns(getDialogId());
       replayDialogTurnsGrouped(turns);

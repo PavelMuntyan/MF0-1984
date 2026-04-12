@@ -2066,6 +2066,21 @@ button.btn {
   margin: 0 0 0.45rem;
 }
 
+/* Sent user message: same tile look as composer; live blobs are clickable downloads */
+a.chat-attach-tile--sent-blob {
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+.chat-attach-tile--sent-stale {
+  cursor: default;
+}
+
+.chat-attach-tile--sent-stale.chat-attach-tile--broken {
+  opacity: 0.45;
+}
+
 .msg-user-attach-tile {
   flex-shrink: 0;
   width: var(--input-bar-row-height);
