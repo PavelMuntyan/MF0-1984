@@ -80,6 +80,7 @@ const SANITIZE = {
     "th",
     "td",
     "img",
+    "span",
   ],
   ALLOWED_ATTR: ["href", "title", "class", "src", "alt", "loading", "referrerpolicy", "decoding"],
 };

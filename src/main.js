@@ -1,4 +1,5 @@
 import "./theme.css";
+import "highlight.js/styles/github-dark.min.css";
 import pkg from "../package.json";
 import {
   apiImageGenerationModelHint,
@@ -18,6 +19,7 @@ import {
   PROVIDER_DISPLAY,
 } from "./chatApi.js";
 import { renderAssistantMarkdown } from "./markdown.js";
+import { highlightAssistantMarkdownCodeBlocks } from "./markdownCodeHighlight.js";
 import { getModelApiKeys, hasAnyModelApiKey } from "./modelEnv.js";
 import { setTheme } from "./theme.js";
 import {
@@ -2457,9 +2459,10 @@ function makeCopyButton(getText, labelOrOpts) {
   return btn;
 }
 
-/** Markdown code blocks: round copy button in the top-right corner */
+/** Markdown code blocks: syntax highlight, then round copy button in the top-right corner */
 function enhanceAssistantMarkdownCodeBlocks(root) {
   if (!root) return;
+  highlightAssistantMarkdownCodeBlocks(root);
   root.querySelectorAll("pre").forEach((pre) => {
     if (pre.closest(".msg-md-code-block")) return;
     const wrap = document.createElement("div");

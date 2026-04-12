@@ -2459,6 +2459,11 @@ a.chat-attach-tile--sent-blob {
   line-height: 1.45;
 }
 
+/* highlight.js (github-dark) inside light UI: frame the dark snippet */
+html:not(.dark) .msg-assistant-text.msg-assistant-text--md .msg-md-code-block pre {
+  border: 1px solid hsl(var(--border) / 0.65);
+}
+
 .msg-assistant-text.msg-assistant-text--md code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 0.8125rem;
