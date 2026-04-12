@@ -39,7 +39,7 @@ const SANITIZE = {
     "td",
     "img",
   ],
-  ALLOWED_ATTR: ["href", "title", "class", "src", "alt", "loading"],
+  ALLOWED_ATTR: ["href", "title", "class", "src", "alt", "loading", "referrerpolicy", "decoding"],
 };
 
 /**
@@ -58,6 +58,14 @@ export function renderAssistantMarkdown(source) {
   wrap.querySelectorAll("a[href]").forEach((a) => {
     a.setAttribute("target", "_blank");
     a.setAttribute("rel", "noopener noreferrer");
+  });
+  /* OpenAI / other CDNs often 403 hotlinked images when Referer is the app origin (see index.html referrer). */
+  wrap.querySelectorAll("img[src]").forEach((img) => {
+    const src = String(img.getAttribute("src") ?? "").trim();
+    if (/^https?:\/\//i.test(src)) {
+      img.setAttribute("referrerpolicy", "no-referrer");
+      if (!img.hasAttribute("loading")) img.setAttribute("loading", "lazy");
+    }
   });
   return wrap.innerHTML;
 }

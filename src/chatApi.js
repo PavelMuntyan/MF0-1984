@@ -42,10 +42,13 @@ const TRIVIAL_ACK_LINE_RE =
  */
 const OPENAI_MODEL_WEB = "gpt-5-search-api";
 /**
- * ChatGPT / 4o-class image generation (alias tracks what ChatGPT ships); Image API generations + edits.
- * @see https://developers.openai.com/api/docs/models/chatgpt-image-latest
+ * OpenAI Images API (`/v1/images/generations`, `/v1/images/edits`). See ImageModel enum in API reference.
+ * Default `gpt-image-1`: `chatgpt-image-latest` often requires verified organization (dashboard → Organization → Verify).
+ * Override: `OPENAI_IMAGE_MODEL` in `.env` (exposed via Vite `envPrefix` including `OPENAI_`).
+ * @see https://platform.openai.com/docs/api-reference/images
  */
-const OPENAI_IMAGE_MODEL = "chatgpt-image-latest";
+const OPENAI_IMAGE_MODEL =
+  String(import.meta.env.OPENAI_IMAGE_MODEL ?? "").trim() || "gpt-image-1";
 const ANTHROPIC_MODEL = "claude-sonnet-4-6";
 /** Chat + web search for the “Gemini” provider (Google AI API model id). */
 const GEMINI_MODEL_FLASH = "gemini-3.1-pro-preview";
@@ -76,10 +79,10 @@ function getGeminiGenerationConfigForModel(modelId) {
     };
   }
   return {
-    thinkingConfig: {
-      thinkingBudget: 0,
-    },
-  };
+  thinkingConfig: {
+    thinkingBudget: 0,
+  },
+};
 }
 
 /**
@@ -126,6 +129,29 @@ function stringifyOpenAiLikeContent(c) {
     .filter((x) => x && x.type === "text" && typeof x.text === "string")
     .map((x) => x.text)
     .join("\n");
+}
+
+/**
+ * Chat Completions `choices[0].message.content`: string or (some models) array of parts with `text`.
+ * Using `String(array)` breaks JSON parsing for Memory tree / Keeper extracts.
+ * @param {unknown} content
+ * @returns {string}
+ */
+function openAiChatCompletionMessageContentToString(content) {
+  if (content == null) return "";
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    const parts = [];
+    for (const x of content) {
+      if (!x || typeof x !== "object") continue;
+      if (typeof x.text === "string" && x.text.length > 0) parts.push(x.text);
+    }
+    return parts.join("\n");
+  }
+  if (typeof content === "object" && typeof content.text === "string") {
+    return content.text;
+  }
+  return "";
 }
 
 /**
@@ -351,8 +377,7 @@ function humanizeOpenAiImageError(raw, status) {
     const tail = s.length > 400 ? `${s.slice(0, 400)}…` : s;
     return (
       "OpenAI returned a server error while generating the image. " +
-      "A common cause is a legacy DALL·E setup; this app uses GPT Image. " +
-      "Check your OpenAI dashboard for GPT Image access and organization verification if needed. " +
+      "Check model access and organization verification in the OpenAI dashboard if needed. " +
       `API message: ${tail}`
     );
   }
@@ -380,7 +405,7 @@ function humanizeOpenAiImageError(raw, status) {
   }
   if (low.includes("must be verified") || low.includes("organization must be verified")) {
     return (
-      "GPT Image may require organization verification in the OpenAI developer dashboard. " +
+      "Image generation may require organization verification in the OpenAI developer dashboard. " +
       (s.length > 200 ? `${s.slice(0, 200)}…` : s)
     );
   }
@@ -439,8 +464,8 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
       if (!res.ok) throw new Error(await readErrorBody(res));
       const data = await res.json();
       const content = data.choices?.[0]?.message?.content;
-      if (content == null) throw new Error("Empty API response");
-      const rawText = typeof content === "string" ? content : String(content);
+      const rawText = openAiChatCompletionMessageContentToString(content);
+      if (!rawText.trim()) throw new Error("Empty API response");
       const annUrls = collectOpenAiLikeAnnotationUrls(data.choices?.[0]?.message);
       return { text: mergePlainBracketRefsWithCitationList(rawText, annUrls) };
     }
@@ -521,8 +546,8 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
       if (!res.ok) throw new Error(await readErrorBody(res));
       const data = await res.json();
       const content = data.choices?.[0]?.message?.content;
-      if (content == null) throw new Error("Empty API response");
-      const rawText = typeof content === "string" ? content : String(content);
+      const rawText = openAiChatCompletionMessageContentToString(content);
+      if (!rawText.trim()) throw new Error("Empty API response");
       const citeRaw = pickPerplexityCitationPayload(data);
       const withCites = mergePlainBracketRefsWithCitationList(rawText, citeRaw);
       return { text: withCites };
@@ -590,8 +615,8 @@ export async function generateThemeDialogTitle(providerId, userMessage, apiKey) 
         if (!res.ok) throw new Error(await readErrorBody(res));
         const data = await res.json();
         const content = data.choices?.[0]?.message?.content;
-        if (content == null) throw new Error("Empty API response");
-        text = typeof content === "string" ? content : String(content);
+        text = openAiChatCompletionMessageContentToString(content);
+        if (!text.trim()) throw new Error("Empty API response");
         break;
       }
       case "anthropic": {
@@ -649,8 +674,8 @@ export async function generateThemeDialogTitle(providerId, userMessage, apiKey) 
         if (!res.ok) throw new Error(await readErrorBody(res));
         const data = await res.json();
         const content = data.choices?.[0]?.message?.content;
-        if (content == null) throw new Error("Empty API response");
-        text = typeof content === "string" ? content : String(content);
+        text = openAiChatCompletionMessageContentToString(content);
+        if (!text.trim()) throw new Error("Empty API response");
         break;
       }
       default:
@@ -1032,8 +1057,8 @@ export async function extractAccessKeeper2EntriesFromTranscript(
       if (!res.ok) throw new Error(await readErrorBody(res));
       const data = await res.json();
       const content = data.choices?.[0]?.message?.content;
-      if (content == null) throw new Error("Empty API response");
-      const rawText = typeof content === "string" ? content : String(content);
+      const rawText = openAiChatCompletionMessageContentToString(content);
+      if (!rawText.trim()) throw new Error("Empty API response");
       return parseAccessKeeperJsonFromModelText(rawText);
     }
 
@@ -1247,8 +1272,8 @@ export async function extractRulesKeeper3FromTranscript(
       if (!res.ok) throw new Error(await readErrorBody(res));
       const data = await res.json();
       const content = data.choices?.[0]?.message?.content;
-      if (content == null) throw new Error("Empty API response");
-      const rawText = typeof content === "string" ? content : String(content);
+      const rawText = openAiChatCompletionMessageContentToString(content);
+      if (!rawText.trim()) throw new Error("Empty API response");
       return parseRulesKeeper3JsonFromModelText(rawText);
     }
 
@@ -1291,8 +1316,8 @@ export async function extractChatInterestSketchForIngest(providerId, apiKey, use
     if (!res.ok) throw new Error(await readErrorBody(res));
     const data = await res.json();
     const content = data.choices?.[0]?.message?.content;
-    if (content == null) throw new Error("Empty API response");
-    const rawText = typeof content === "string" ? content : String(content);
+    const rawText = openAiChatCompletionMessageContentToString(content);
+    if (!rawText.trim()) throw new Error("Empty API response");
     return clampGraphPayloadToInterestsOnly(parseIntroGraphJsonFromModelText(rawText));
   }
 
@@ -1485,8 +1510,8 @@ export async function normalizeIntroMemoryGraphForDb(
     if (!res.ok) throw new Error(await readErrorBody(res));
     const data = await res.json();
     const content = data.choices?.[0]?.message?.content;
-    if (content == null) throw new Error("Empty API response");
-    const rawText = typeof content === "string" ? content : String(content);
+    const rawText = openAiChatCompletionMessageContentToString(content);
+    if (!rawText.trim()) throw new Error("Empty API response");
     const normalized = parseIntroGraphJsonFromModelTextSafe(rawText, "Intro normalize");
     const n =
       normalized.entities.length + normalized.links.length + (normalized.commands?.length ?? 0);
@@ -1551,8 +1576,8 @@ export async function extractIntroMemoryGraphForIngest(providerId, apiKey, userT
     if (!res.ok) throw new Error(await readErrorBody(res));
     const data = await res.json();
     const content = data.choices?.[0]?.message?.content;
-    if (content == null) throw new Error("Empty API response");
-    const rawText = typeof content === "string" ? content : String(content);
+    const rawText = openAiChatCompletionMessageContentToString(content);
+    if (!rawText.trim()) throw new Error("Empty API response");
     return parseIntroGraphJsonFromModelTextSafe(rawText, "Intro extract");
   }
 
@@ -1777,15 +1802,28 @@ function openAiImageSizeFromPrompt(prompt) {
 }
 
 /**
+ * Decode attachment base64 to a Blob for multipart upload.
+ * Do not use `fetch(data:...;base64,...)` — large data URLs fail instantly in many browsers (TypeError / "Failed to fetch"),
+ * while the same bytes in JSON (Gemini) or in FormData blobs work fine.
  * @param {string} mimeType
  * @param {string} base64
- * @returns {Promise<Blob>}
+ * @returns {Blob}
  */
-async function base64ImageToBlob(mimeType, base64) {
+function base64ImageToBlob(mimeType, base64) {
   const mime = String(mimeType || "image/png").split(";")[0].trim() || "image/png";
-  const res = await fetch(`data:${mime};base64,${base64}`);
-  if (!res.ok) throw new Error("Could not prepare reference image for upload");
-  return res.blob();
+  let b64 = String(base64 ?? "").replace(/\s/g, "");
+  if (!b64) throw new Error("Empty reference image data");
+  while (b64.length % 4) b64 += "=";
+  let bin;
+  try {
+    bin = atob(b64);
+  } catch {
+    throw new Error("Invalid base64 in a reference image");
+  }
+  const len = bin.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i) & 0xff;
+  return new Blob([bytes], { type: mime });
 }
 
 function extensionForImageMime(mime) {
@@ -1797,6 +1835,17 @@ function extensionForImageMime(mime) {
 }
 
 /**
+ * Wrap `![]()` destination in `<>` when URL breaks markdown (e.g. `)` in query string).
+ * @param {string} url
+ */
+function markdownImageLinkDestination(url) {
+  const u = String(url ?? "").trim();
+  if (!u) return u;
+  if (/\s/.test(u) || /[()]/.test(u)) return `<${u}>`;
+  return u;
+}
+
+/**
  * @param {unknown} data
  * @returns {string} markdown
  */
@@ -1804,7 +1853,7 @@ function openAiImageDataToMarkdown(data) {
   const item = data && typeof data === "object" && Array.isArray(data.data) ? data.data[0] : null;
   if (!item) throw new Error("Empty image API response");
   if (item.url) {
-    return `![Generated image](${item.url})`;
+    return `![Generated image](${markdownImageLinkDestination(item.url)})`;
   }
   if (item.b64_json) {
     return `![Generated image](data:image/png;base64,${item.b64_json})`;
@@ -1813,7 +1862,7 @@ function openAiImageDataToMarkdown(data) {
 }
 
 /**
- * References: official `POST /v1/images/edits` + multipart (`image[]`, `prompt`, `model`, `size`).
+ * Official `POST /v1/images/edits`: multipart `image[]` for multiple reference files (API rejects repeated `image`).
  * @param {string} prompt
  * @param {string} key
  * @param {Array<{ mimeType: string, base64: string }>} images
@@ -1828,7 +1877,7 @@ async function openaiImageEditsWithReferences(prompt, key, images, preferredSize
     for (let i = 0; i < images.length; i++) {
       const im = images[i];
       const mime = im.mimeType || "image/png";
-      const blob = await base64ImageToBlob(mime, im.base64);
+      const blob = base64ImageToBlob(mime, im.base64);
       const ext = extensionForImageMime(mime);
       fd.append("image[]", blob, `reference-${i}.${ext}`);
     }
@@ -2038,6 +2087,28 @@ async function geminiImageGeneration(prompt, key, chatAtt = null) {
  * @param {{ chatAttachments?: { images?: Array<{ mimeType: string, base64: string }> } }} [options] — reference images: Gemini (parts), ChatGPT (`/images/edits` + multipart).
  * @returns {Promise<{ text: string }>} markdown with an image (![]())
  */
+/**
+ * @param {unknown} err
+ * @param {string} label
+ * @returns {never}
+ */
+function throwIfImageFetchNetworkFailed(err, label) {
+  const m = err instanceof Error ? err.message : String(err);
+  const low = m.toLowerCase();
+  /** Do not treat every `TypeError` as fetch — e.g. bad data URL / atob throws differently and must surface. */
+  const looksLikeFetchTransport =
+    low.includes("failed to fetch") ||
+    low.includes("load failed") ||
+    low.includes("networkerror") ||
+    low.includes("network request failed");
+  if (looksLikeFetchTransport) {
+    throw new Error(
+      `${label}: network error (no HTTP response). Ensure the dev server is running (Vite proxies /llm to OpenAI).`,
+    );
+  }
+  throw err;
+}
+
 export async function completeImageGeneration(providerId, prompt, apiKey, options = {}) {
   const key = String(apiKey ?? "").trim();
   if (!key) {
@@ -2050,12 +2121,20 @@ export async function completeImageGeneration(providerId, prompt, apiKey, option
 
   switch (providerId) {
     case "openai": {
-      const text = await openaiImageGeneration(trimmed, key, options.chatAttachments ?? null);
-      return { text };
+      try {
+        const text = await openaiImageGeneration(trimmed, key, options.chatAttachments ?? null);
+        return { text };
+      } catch (e) {
+        throwIfImageFetchNetworkFailed(e, "ChatGPT image");
+      }
     }
     case "gemini-flash": {
-      const text = await geminiImageGeneration(trimmed, key, options.chatAttachments ?? null);
-      return { text };
+      try {
+        const text = await geminiImageGeneration(trimmed, key, options.chatAttachments ?? null);
+        return { text };
+      } catch (e) {
+        throwIfImageFetchNetworkFailed(e, "Gemini image");
+      }
     }
     case "anthropic":
     case "perplexity":

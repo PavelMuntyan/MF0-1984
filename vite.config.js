@@ -30,12 +30,17 @@ function configureLlmStreamingProxy(proxy) {
   });
 }
 
+/** Long uploads (e.g. image multipart → OpenAI) and streaming: avoid short default proxy socket timeouts. */
+const PROXY_LONG_TIMEOUT_MS = 300000;
+
 /** Proxy LLM calls from the browser without CORS (dev / vite preview only). */
 const llmProxy = {
   "/llm/openai": {
     target: "https://api.openai.com",
     changeOrigin: true,
     secure: true,
+    timeout: PROXY_LONG_TIMEOUT_MS,
+    proxyTimeout: PROXY_LONG_TIMEOUT_MS,
     rewrite: (path) => path.replace(/^\/llm\/openai/, ""),
     configure: configureLlmStreamingProxy,
   },
@@ -43,6 +48,8 @@ const llmProxy = {
     target: "https://api.anthropic.com",
     changeOrigin: true,
     secure: true,
+    timeout: PROXY_LONG_TIMEOUT_MS,
+    proxyTimeout: PROXY_LONG_TIMEOUT_MS,
     rewrite: (path) => path.replace(/^\/llm\/anthropic/, ""),
     configure: configureLlmStreamingProxy,
   },
@@ -50,6 +57,8 @@ const llmProxy = {
     target: "https://api.perplexity.ai",
     changeOrigin: true,
     secure: true,
+    timeout: PROXY_LONG_TIMEOUT_MS,
+    proxyTimeout: PROXY_LONG_TIMEOUT_MS,
     rewrite: (path) => path.replace(/^\/llm\/perplexity/, ""),
     configure: configureLlmStreamingProxy,
   },
@@ -57,6 +66,8 @@ const llmProxy = {
     target: "https://generativelanguage.googleapis.com",
     changeOrigin: true,
     secure: true,
+    timeout: PROXY_LONG_TIMEOUT_MS,
+    proxyTimeout: PROXY_LONG_TIMEOUT_MS,
     rewrite: (path) => path.replace(/^\/llm\/gemini/, ""),
     configure: configureLlmStreamingProxy,
   },
@@ -72,6 +83,8 @@ export default defineConfig({
       "/api": {
         target: `http://127.0.0.1:${resolveApiPort(process.env.API_PORT)}`,
         changeOrigin: true,
+        timeout: PROXY_LONG_TIMEOUT_MS,
+        proxyTimeout: PROXY_LONG_TIMEOUT_MS,
       },
       ...llmProxy,
     },
@@ -83,6 +96,8 @@ export default defineConfig({
       "/api": {
         target: `http://127.0.0.1:${resolveApiPort(process.env.API_PORT)}`,
         changeOrigin: true,
+        timeout: PROXY_LONG_TIMEOUT_MS,
+        proxyTimeout: PROXY_LONG_TIMEOUT_MS,
       },
       ...llmProxy,
     },

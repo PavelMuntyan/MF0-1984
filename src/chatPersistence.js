@@ -1,7 +1,7 @@
 /** Client for /api chat persistence (themes, dialogs, turns). */
 
 /** Respects `import.meta.env.BASE_URL` when the app is not at the site root. */
-function apiUrl(path) {
+export function apiUrl(path) {
   const p = String(path ?? "").replace(/^\//, "");
   const base = new URL(import.meta.env.BASE_URL || "/", window.location.origin);
   let href = new URL(p, base).href;

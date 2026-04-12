@@ -9,7 +9,7 @@ When the user clearly says **this is a new project version** (or similar: new ve
 
 1. Ensure `git` exists and remote `origin` is `git@github.com:PavelMuntyan/MF0-1984.git` (add if missing).
 2. `git add -A` (do not commit `.env` — it is in `.gitignore`).
-3. `git commit -m "..."` — message in Russian or English, **must include the version** from `package.json` (`version`) or the number/name the user gave.
+3. `git commit -m "..."` — **English only** (GitHub-facing), **must include the version** from `package.json` (`version`) or the number/name the user gave.
 4. Default branch: `main`. First push: `git push -u origin main`, else `git push origin main`.
 
 If push fails (SSH, empty GitHub repo) — briefly describe the error and what to check locally.
