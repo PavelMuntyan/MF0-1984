@@ -21,6 +21,11 @@ import {
 import { renderAssistantMarkdown } from "./markdown.js";
 import { highlightAssistantMarkdownCodeBlocks } from "./markdownCodeHighlight.js";
 import { getModelApiKeys, hasAnyModelApiKey } from "./modelEnv.js";
+import {
+  closeAllSettingsModelPickers,
+  initSettingsModelSelects,
+  refreshSettingsModelSelects,
+} from "./settingsModelsUi.js";
 import { setTheme } from "./theme.js";
 import {
   closeMemoryTree,
@@ -31,6 +36,10 @@ import {
   setMemoryGraphData,
 } from "./memoryTree.js";
 import { detectIntroMemoryTreeCommands } from "./introMemoryTreeCommands.js";
+import { downloadMemoryTreeTarGz } from "./memoryTreeExport.js";
+import { getProjectProfilePasswordErrors } from "./projectProfileCrypto.js";
+import { runProjectProfileExportDownload } from "./projectProfileExport.js";
+import { runProjectProfileImportFromFile } from "./projectProfileImportUi.js";
 import {
   getIrPanelLockedSync,
   initIrPanelPinLock,
@@ -55,6 +64,7 @@ import {
   fetchAccessExternalServicesCatalog,
   putAccessExternalServices,
   fetchMemoryGraphFromApi,
+  importMemoryGraphReplace,
   fetchAnalytics,
   fetchThemesPayload,
   fetchTurns,
@@ -623,6 +633,612 @@ function initFavoritesPanel() {
     },
     true,
   );
+}
+
+/** @param {number} nodes @param {number} edges */
+function showMemoryTreeImportSuccessModal(nodes, edges) {
+  const wrap = document.getElementById("memory-tree-import-success-modal");
+  const msgEl = document.getElementById("memory-tree-import-success-msg");
+  const okBtn = document.getElementById("memory-tree-import-success-ok");
+  if (!(wrap instanceof HTMLElement) || !(msgEl instanceof HTMLElement) || !(okBtn instanceof HTMLButtonElement)) {
+    return;
+  }
+  const n = Number(nodes) || 0;
+  const e = Number(edges) || 0;
+  msgEl.textContent = `Memory tree import finished successfully. ${n} node(s) and ${e} edge(s) were imported from the file.`;
+  wrap.hidden = false;
+  okBtn.focus();
+
+  /** @param {KeyboardEvent} ev */
+  const swallowEscape = (ev) => {
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      ev.stopPropagation();
+    }
+  };
+  document.addEventListener("keydown", swallowEscape, true);
+
+  const close = () => {
+    wrap.hidden = true;
+    document.removeEventListener("keydown", swallowEscape, true);
+    okBtn.removeEventListener("click", close);
+  };
+  okBtn.addEventListener("click", close);
+}
+
+/** @param {File} file */
+function memoryTreeImportFileKind(file) {
+  const n = String(file.name ?? "").toLowerCase();
+  if (n.endsWith(".json")) return "json";
+  if (n.endsWith(".tar.gz") || n.endsWith(".tgz")) return "gzip";
+  return null;
+}
+
+/** One-shot: profile import may trigger a full page reload (Vite watches `.env`); reopen success on next load. */
+const PROFILE_IMPORT_SUCCESS_FLASH_STORAGE_KEY = "mf0.profileImportSuccessFlash";
+
+const PROFILE_IMPORT_SUCCESS_INFORMER_TEXT =
+  "All profile data was imported successfully (Memory tree, rules, Access, .env, AI model choices, and the Access #data enrichment snapshot).";
+
+function setProfileImportSuccessFlash() {
+  try {
+    sessionStorage.setItem(PROFILE_IMPORT_SUCCESS_FLASH_STORAGE_KEY, "1");
+  } catch {
+    /* private mode / storage disabled */
+  }
+}
+
+function clearProfileImportSuccessFlash() {
+  try {
+    sessionStorage.removeItem(PROFILE_IMPORT_SUCCESS_FLASH_STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Centered Settings dialog (UI shell only; no Escape close — unlike Activity / Favorites). */
+function initSettingsModal() {
+  const modal = document.getElementById("settings-modal");
+  const openBtn = document.getElementById("btn-settings");
+  const closeBtn = document.getElementById("settings-modal-close");
+  if (!modal || !openBtn || !closeBtn) return;
+
+  /** Cancels in-flight Memory tree export when Settings closes. */
+  let memoryTreeExportAbort = null;
+  /** Cancels in-flight Memory tree import when Settings closes. */
+  let memoryTreeImportAbort = null;
+  /** Cancels in-flight Project profile export. */
+  let projectProfileExportAbort = null;
+  /** Cancels in-flight Project profile import. */
+  let projectProfileImportAbort = null;
+  /** @type {File | null} */
+  let pendingProjectProfileImportFile = null;
+
+  initSettingsModelSelects({
+    onSave() {
+      appendActivityLog("AI models saved");
+    },
+  });
+  void refreshSettingsModelSelects();
+
+  const settingsAiLoading = document.getElementById("settings-ai-loading");
+
+  const projectProfileExportModal = document.getElementById("project-profile-export-modal");
+  const projectProfilePass1 = document.getElementById("project-profile-export-pass1");
+  const projectProfilePass2 = document.getElementById("project-profile-export-pass2");
+  const projectProfileHint = document.getElementById("project-profile-export-hint");
+  const projectProfileCancel = document.getElementById("project-profile-export-cancel");
+  const projectProfileSubmit = document.getElementById("project-profile-export-submit");
+  const projectProfileSettingsExportBtn = document.getElementById("settings-project-profile-export");
+  const projectProfileImportModal = document.getElementById("project-profile-import-modal");
+  const ppiPanelPassword = document.getElementById("ppi-panel-password");
+  const ppiPanelWrong = document.getElementById("ppi-panel-wrong");
+  const ppiPanelSuccess = document.getElementById("ppi-panel-success");
+  const ppiPassword = document.getElementById("ppi-password");
+  const ppiFileInfo = document.getElementById("ppi-file-info");
+  const ppiCancel = document.getElementById("ppi-cancel");
+  const ppiImport = document.getElementById("ppi-import");
+  const ppiWrongOk = document.getElementById("ppi-wrong-ok");
+  const ppiSuccessOk = document.getElementById("ppi-success-ok");
+  const ppiSuccessMsg = document.getElementById("ppi-success-msg");
+  const projectProfileSettingsImportBtn = document.getElementById("settings-project-profile-import");
+  const projectProfileImportInput = document.getElementById("settings-project-profile-import-input");
+
+  function showPpiPanel(which) {
+    if (ppiPanelPassword instanceof HTMLElement) {
+      ppiPanelPassword.hidden = which !== "password";
+    }
+    if (ppiPanelWrong instanceof HTMLElement) {
+      ppiPanelWrong.hidden = which !== "wrong";
+    }
+    if (ppiPanelSuccess instanceof HTMLElement) {
+      ppiPanelSuccess.hidden = which !== "success";
+    }
+    window.requestAnimationFrame(() => {
+      if (which === "success" && ppiSuccessOk instanceof HTMLButtonElement) {
+        ppiSuccessOk.focus();
+      } else if (which === "wrong" && ppiWrongOk instanceof HTMLButtonElement) {
+        ppiWrongOk.focus();
+      }
+    });
+  }
+
+  function updatePpiImportButtonState() {
+    const pw = ppiPassword instanceof HTMLInputElement ? ppiPassword.value.trim() : "";
+    const busy =
+      ppiImport instanceof HTMLButtonElement && ppiImport.classList.contains("settings-export-btn--busy");
+    if (ppiImport instanceof HTMLButtonElement) {
+      ppiImport.disabled = !pendingProjectProfileImportFile || !pw || busy;
+    }
+  }
+
+  function resetProjectProfileImportFlow() {
+    projectProfileImportAbort?.abort();
+    projectProfileImportAbort = null;
+    pendingProjectProfileImportFile = null;
+    if (!(projectProfileImportModal instanceof HTMLElement)) return;
+    projectProfileImportModal.hidden = true;
+    if (ppiPassword instanceof HTMLInputElement) {
+      ppiPassword.value = "";
+    }
+    if (ppiFileInfo instanceof HTMLElement) {
+      ppiFileInfo.textContent = "";
+    }
+    if (ppiImport instanceof HTMLButtonElement) {
+      ppiImport.classList.remove("settings-export-btn--busy");
+      ppiImport.removeAttribute("aria-busy");
+      ppiImport.disabled = true;
+    }
+    if (ppiCancel instanceof HTMLButtonElement) {
+      ppiCancel.disabled = false;
+    }
+    showPpiPanel("password");
+  }
+
+  function openProjectProfileImportFlow(file) {
+    pendingProjectProfileImportFile = file;
+    if (ppiFileInfo instanceof HTMLElement) {
+      ppiFileInfo.textContent = `Selected file: ${file.name}`;
+    }
+    showPpiPanel("password");
+    if (projectProfileImportModal instanceof HTMLElement) {
+      projectProfileImportModal.hidden = false;
+    }
+    if (ppiPassword instanceof HTMLInputElement) {
+      ppiPassword.focus();
+    }
+    updatePpiImportButtonState();
+  }
+
+  function updateProjectProfileExportFormState() {
+    if (!(projectProfileSubmit instanceof HTMLButtonElement)) return;
+    const p1 = projectProfilePass1 instanceof HTMLInputElement ? projectProfilePass1.value : "";
+    const p2 = projectProfilePass2 instanceof HTMLInputElement ? projectProfilePass2.value : "";
+    const errs = getProjectProfilePasswordErrors(p1);
+    const busy =
+      projectProfileSubmit instanceof HTMLButtonElement &&
+      projectProfileSubmit.classList.contains("settings-export-btn--busy");
+    let hint = "";
+    if (busy) {
+      hint = "Creating encrypted archive…";
+    } else if (errs.length) {
+      hint = `Password must include: ${errs.join("; ")}.`;
+    } else if (p2.length > 0 && p1 !== p2) {
+      hint = "The two passwords do not match.";
+    }
+    if (projectProfileHint instanceof HTMLElement) {
+      projectProfileHint.textContent = hint;
+    }
+    const ok = errs.length === 0 && p1.length >= 8 && p1 === p2;
+    if (projectProfileSubmit instanceof HTMLButtonElement) {
+      projectProfileSubmit.disabled = !ok || busy;
+    }
+    if (projectProfileCancel instanceof HTMLButtonElement) {
+      projectProfileCancel.disabled = busy;
+    }
+  }
+
+  function resetProjectProfileExportModalToIdle() {
+    projectProfileExportAbort?.abort();
+    projectProfileExportAbort = null;
+    if (!(projectProfileExportModal instanceof HTMLElement)) {
+      return;
+    }
+    projectProfileExportModal.hidden = true;
+    if (projectProfilePass1 instanceof HTMLInputElement) {
+      projectProfilePass1.value = "";
+    }
+    if (projectProfilePass2 instanceof HTMLInputElement) {
+      projectProfilePass2.value = "";
+    }
+    if (projectProfileSubmit instanceof HTMLButtonElement) {
+      projectProfileSubmit.classList.remove("settings-export-btn--busy");
+      projectProfileSubmit.removeAttribute("aria-busy");
+      projectProfileSubmit.disabled = true;
+    }
+    if (projectProfileCancel instanceof HTMLButtonElement) {
+      projectProfileCancel.disabled = false;
+    }
+    updateProjectProfileExportFormState();
+  }
+
+  function setOpen(open) {
+    if (open) {
+      resetProjectProfileExportModalToIdle();
+      /**
+       * Opening Settings: cancel an in-progress import (password step only).
+       * Do not reset while success / wrong-password screens are shown — those close only with OK.
+       */
+      if (projectProfileImportModal instanceof HTMLElement && !projectProfileImportModal.hidden) {
+        const onOutcomeScreen =
+          (ppiPanelWrong instanceof HTMLElement && !ppiPanelWrong.hidden) ||
+          (ppiPanelSuccess instanceof HTMLElement && !ppiPanelSuccess.hidden);
+        if (!onOutcomeScreen) {
+          resetProjectProfileImportFlow();
+        }
+      }
+    }
+    if (!open) {
+      closeAllSettingsModelPickers();
+      memoryTreeExportAbort?.abort();
+      memoryTreeExportAbort = null;
+      memoryTreeImportAbort?.abort();
+      memoryTreeImportAbort = null;
+      if (settingsAiLoading instanceof HTMLElement) {
+        settingsAiLoading.hidden = true;
+      }
+    }
+    modal.hidden = !open;
+    openBtn.setAttribute("aria-expanded", open ? "true" : "false");
+    openBtn.setAttribute("aria-label", open ? "Close settings" : "Open settings");
+  }
+
+  openBtn.addEventListener("click", () => {
+    const opening = modal.hidden;
+    setOpen(modal.hidden);
+    if (opening) {
+      if (settingsAiLoading instanceof HTMLElement) {
+        settingsAiLoading.hidden = false;
+      }
+      void refreshSettingsModelSelects().finally(() => {
+        if (!modal.hidden && settingsAiLoading instanceof HTMLElement) {
+          settingsAiLoading.hidden = true;
+        }
+      });
+    }
+  });
+
+  closeBtn.addEventListener("click", () => {
+    setOpen(false);
+  });
+
+  const memoryTreeExportBtn = document.getElementById("settings-memory-tree-export");
+  if (memoryTreeExportBtn instanceof HTMLButtonElement) {
+    memoryTreeExportBtn.addEventListener("click", async () => {
+      memoryTreeExportAbort?.abort();
+      memoryTreeExportAbort = new AbortController();
+      const { signal } = memoryTreeExportAbort;
+      memoryTreeExportBtn.classList.add("settings-export-btn--busy");
+      memoryTreeExportBtn.setAttribute("aria-busy", "true");
+      memoryTreeExportBtn.disabled = true;
+      try {
+        const fn = await downloadMemoryTreeTarGz(signal);
+        appendActivityLog(`Memory tree: exported as ${fn}.`);
+      } catch (e) {
+        const aborted = typeof e === "object" && e !== null && /** @type {{ name?: string }} */ (e).name === "AbortError";
+        if (aborted) {
+          appendActivityLog("Memory tree export: cancelled.");
+        } else {
+          appendActivityLog(
+            `Memory tree export failed: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      } finally {
+        memoryTreeExportBtn.classList.remove("settings-export-btn--busy");
+        memoryTreeExportBtn.removeAttribute("aria-busy");
+        memoryTreeExportBtn.disabled = false;
+        memoryTreeExportAbort = null;
+      }
+    });
+  }
+
+  const memoryTreeImportBtn = document.getElementById("settings-memory-tree-import");
+  const memoryTreeImportInput = document.getElementById("settings-memory-tree-import-input");
+  if (memoryTreeImportBtn instanceof HTMLButtonElement && memoryTreeImportInput instanceof HTMLInputElement) {
+    memoryTreeImportBtn.addEventListener("click", () => {
+      memoryTreeImportInput.value = "";
+      memoryTreeImportInput.click();
+    });
+    memoryTreeImportInput.addEventListener("change", () => {
+      const file = memoryTreeImportInput.files?.[0];
+      memoryTreeImportInput.value = "";
+      if (!file) return;
+      const kind = memoryTreeImportFileKind(file);
+      if (!kind) {
+        appendActivityLog("Memory tree import: choose a .json file or a .tar.gz archive from Export.");
+        return;
+      }
+      void (async () => {
+        memoryTreeImportAbort?.abort();
+        memoryTreeImportAbort = new AbortController();
+        const { signal } = memoryTreeImportAbort;
+        memoryTreeImportBtn.classList.add("settings-export-btn--busy");
+        memoryTreeImportBtn.setAttribute("aria-busy", "true");
+        memoryTreeImportBtn.disabled = true;
+        try {
+          /** @type {{ nodesImported: number, edgesImported: number }} */
+          let counts;
+          if (kind === "json") {
+            const text = await file.text();
+            counts = await importMemoryGraphReplace(text, "application/json", { signal });
+          } else {
+            const buf = await file.arrayBuffer();
+            counts = await importMemoryGraphReplace(buf, "application/gzip", { signal });
+          }
+          const raw = await fetchMemoryGraphFromApi({ signal });
+          setMemoryGraphData(enrichMemoryGraphFromApi(raw));
+          setOpen(false);
+          showMemoryTreeImportSuccessModal(counts.nodesImported, counts.edgesImported);
+        } catch (e) {
+          const aborted =
+            typeof e === "object" &&
+            e !== null &&
+            /** @type {{ name?: string }} */ (e).name === "AbortError";
+          if (aborted) {
+            appendActivityLog("Memory tree import: cancelled.");
+          } else {
+            appendActivityLog(
+              `Memory tree import failed: ${e instanceof Error ? e.message : String(e)}`,
+            );
+          }
+        } finally {
+          memoryTreeImportBtn.classList.remove("settings-export-btn--busy");
+          memoryTreeImportBtn.removeAttribute("aria-busy");
+          memoryTreeImportBtn.disabled = false;
+          memoryTreeImportAbort = null;
+        }
+      })();
+    });
+  }
+
+  if (
+    projectProfileExportModal instanceof HTMLElement &&
+    projectProfilePass1 instanceof HTMLInputElement &&
+    projectProfilePass2 instanceof HTMLInputElement &&
+    projectProfileCancel instanceof HTMLButtonElement &&
+    projectProfileSubmit instanceof HTMLButtonElement &&
+    projectProfileSettingsExportBtn instanceof HTMLButtonElement
+  ) {
+    function openProjectProfileExportModal() {
+      projectProfilePass1.value = "";
+      projectProfilePass2.value = "";
+      projectProfileExportModal.hidden = false;
+      updateProjectProfileExportFormState();
+      projectProfilePass1.focus();
+    }
+
+    projectProfileSettingsExportBtn.addEventListener("click", () => {
+      setOpen(false);
+      openProjectProfileExportModal();
+    });
+
+    projectProfilePass1.addEventListener("input", () => {
+      updateProjectProfileExportFormState();
+    });
+    projectProfilePass2.addEventListener("input", () => {
+      updateProjectProfileExportFormState();
+    });
+
+    projectProfileCancel.addEventListener("click", () => {
+      resetProjectProfileExportModalToIdle();
+    });
+
+    projectProfileSubmit.addEventListener("click", () => {
+      const p1 = projectProfilePass1.value;
+      const p2 = projectProfilePass2.value;
+      if (getProjectProfilePasswordErrors(p1).length || p1 !== p2) return;
+      projectProfileExportAbort?.abort();
+      projectProfileExportAbort = new AbortController();
+      const { signal } = projectProfileExportAbort;
+      projectProfileSubmit.classList.add("settings-export-btn--busy");
+      projectProfileSubmit.setAttribute("aria-busy", "true");
+      updateProjectProfileExportFormState();
+      void (async () => {
+        try {
+          const fn = await runProjectProfileExportDownload(p1, signal);
+          appendActivityLog(`Project profile: exported as ${fn}.`);
+          resetProjectProfileExportModalToIdle();
+        } catch (e) {
+          const aborted =
+            typeof e === "object" && e !== null && /** @type {{ name?: string }} */ (e).name === "AbortError";
+          if (aborted) {
+            appendActivityLog("Project profile export: cancelled.");
+          } else {
+            appendActivityLog(
+              `Project profile export failed: ${e instanceof Error ? e.message : String(e)}`,
+            );
+          }
+        } finally {
+          projectProfileSubmit.classList.remove("settings-export-btn--busy");
+          projectProfileSubmit.removeAttribute("aria-busy");
+          projectProfileExportAbort = null;
+          updateProjectProfileExportFormState();
+        }
+      })();
+    });
+
+    document.addEventListener(
+      "keydown",
+      (e) => {
+        if (!(projectProfileExportModal instanceof HTMLElement) || projectProfileExportModal.hidden) return;
+        if (e.key !== "Escape") return;
+        const busy = projectProfileSubmit.classList.contains("settings-export-btn--busy");
+        if (busy) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        resetProjectProfileExportModalToIdle();
+      },
+      true,
+    );
+  }
+
+  if (
+    projectProfileImportModal instanceof HTMLElement &&
+    ppiPanelPassword instanceof HTMLElement &&
+    ppiPanelWrong instanceof HTMLElement &&
+    ppiPanelSuccess instanceof HTMLElement &&
+    ppiPassword instanceof HTMLInputElement &&
+    ppiFileInfo instanceof HTMLElement &&
+    ppiCancel instanceof HTMLButtonElement &&
+    ppiImport instanceof HTMLButtonElement &&
+    ppiWrongOk instanceof HTMLButtonElement &&
+    ppiSuccessOk instanceof HTMLButtonElement &&
+    ppiSuccessMsg instanceof HTMLElement &&
+    projectProfileSettingsImportBtn instanceof HTMLButtonElement &&
+    projectProfileImportInput instanceof HTMLInputElement
+  ) {
+    projectProfileSettingsImportBtn.addEventListener("click", () => {
+      projectProfileImportInput.value = "";
+      projectProfileImportInput.click();
+    });
+    projectProfileImportInput.addEventListener("change", () => {
+      const file = projectProfileImportInput.files?.[0];
+      projectProfileImportInput.value = "";
+      if (!file) return;
+      const n = file.name.toLowerCase();
+      if (!n.endsWith(".mf")) {
+        appendActivityLog("Project profile import: choose a .mf backup file.");
+        return;
+      }
+      setOpen(false);
+      openProjectProfileImportFlow(file);
+    });
+    ppiPassword.addEventListener("input", () => {
+      updatePpiImportButtonState();
+    });
+    ppiCancel.addEventListener("click", () => {
+      resetProjectProfileImportFlow();
+    });
+    ppiWrongOk.addEventListener("click", () => {
+      resetProjectProfileImportFlow();
+    });
+    ppiSuccessOk.addEventListener("click", () => {
+      clearProfileImportSuccessFlash();
+      resetProjectProfileImportFlow();
+    });
+    ppiImport.addEventListener("click", () => {
+      if (!pendingProjectProfileImportFile || !(ppiPassword instanceof HTMLInputElement)) return;
+      const plain = ppiPassword.value.trim();
+      if (!plain) return;
+      projectProfileImportAbort?.abort();
+      projectProfileImportAbort = new AbortController();
+      const { signal } = projectProfileImportAbort;
+      ppiImport.classList.add("settings-export-btn--busy");
+      ppiImport.setAttribute("aria-busy", "true");
+      updatePpiImportButtonState();
+      if (ppiCancel instanceof HTMLButtonElement) {
+        ppiCancel.disabled = true;
+      }
+      const file = pendingProjectProfileImportFile;
+      void (async () => {
+        try {
+          const { summary } = await runProjectProfileImportFromFile(file, plain, signal);
+          setProfileImportSuccessFlash();
+          const s = summary || {};
+          ppiSuccessMsg.textContent = PROFILE_IMPORT_SUCCESS_INFORMER_TEXT;
+          showPpiPanel("success");
+          appendActivityLog(
+            `Project profile import: ${s.memoryNodes ?? "?"} nodes, ${s.memoryEdges ?? "?"} edges, ${s.accessRows ?? "?"} Access rows, ${s.rulesRows ?? "?"} rules rows.`,
+          );
+          try {
+            const raw = await fetchMemoryGraphFromApi({ signal });
+            setMemoryGraphData(enrichMemoryGraphFromApi(raw));
+            await refreshSettingsModelSelects();
+          } catch (refreshErr) {
+            const refreshAborted =
+              typeof refreshErr === "object" &&
+              refreshErr !== null &&
+              /** @type {{ name?: string }} */ (refreshErr).name === "AbortError";
+            if (!refreshAborted) {
+              appendActivityLog(
+                `Project profile: UI refresh after import failed: ${refreshErr instanceof Error ? refreshErr.message : String(refreshErr)}`,
+              );
+            }
+          }
+        } catch (e) {
+          const wrong = e instanceof Error && e.message === "WRONG_ARCHIVE_PASSWORD";
+          if (wrong) {
+            showPpiPanel("wrong");
+          } else {
+            const aborted =
+              typeof e === "object" && e !== null && /** @type {{ name?: string }} */ (e).name === "AbortError";
+            if (aborted) {
+              appendActivityLog("Project profile import: cancelled.");
+            } else {
+              appendActivityLog(
+                `Project profile import failed: ${e instanceof Error ? e.message : String(e)}`,
+              );
+            }
+            resetProjectProfileImportFlow();
+          }
+        } finally {
+          ppiImport.classList.remove("settings-export-btn--busy");
+          ppiImport.removeAttribute("aria-busy");
+          if (ppiCancel instanceof HTMLButtonElement) {
+            ppiCancel.disabled = false;
+          }
+          projectProfileImportAbort = null;
+          updatePpiImportButtonState();
+        }
+      })();
+    });
+    document.addEventListener(
+      "keydown",
+      (e) => {
+        if (!(projectProfileImportModal instanceof HTMLElement) || projectProfileImportModal.hidden) return;
+        if (e.key !== "Escape") return;
+        const busy = ppiImport.classList.contains("settings-export-btn--busy");
+        if (busy) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+        if (
+          (ppiPanelWrong instanceof HTMLElement && !ppiPanelWrong.hidden) ||
+          (ppiPanelSuccess instanceof HTMLElement && !ppiPanelSuccess.hidden)
+        ) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        resetProjectProfileImportFlow();
+      },
+      true,
+    );
+
+    try {
+      if (sessionStorage.getItem(PROFILE_IMPORT_SUCCESS_FLASH_STORAGE_KEY) === "1") {
+        ppiSuccessMsg.textContent = PROFILE_IMPORT_SUCCESS_INFORMER_TEXT;
+        projectProfileImportModal.hidden = false;
+        if (ppiPassword instanceof HTMLInputElement) {
+          ppiPassword.value = "";
+        }
+        if (ppiFileInfo instanceof HTMLElement) {
+          ppiFileInfo.textContent = "";
+        }
+        showPpiPanel("success");
+        updatePpiImportButtonState();
+      }
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 const versionEl = document.getElementById("app-version");
@@ -4367,6 +4983,7 @@ function bootApp() {
   initThemeToggle();
   initActivityPanel();
   initFavoritesPanel();
+  initSettingsModal();
   initProviderBadges();
   initThemeCardActions();
   initDialoguesMenu();

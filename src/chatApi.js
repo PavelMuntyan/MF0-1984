@@ -14,6 +14,7 @@ import {
   mergePlainBracketRefsWithCitationList,
   pickPerplexityCitationPayload,
 } from "./footnoteCitations.js";
+import { getUserAiModel } from "./userChatModels.js";
 
 export const PROVIDER_DISPLAY = {
   openai: "ChatGPT",
@@ -22,7 +23,75 @@ export const PROVIDER_DISPLAY = {
   anthropic: "Claude",
 };
 
-const OPENAI_MODEL = "gpt-5.4";
+function openAiDialogue() {
+  return getUserAiModel("openai", "dialogue");
+}
+function openAiSearch() {
+  return getUserAiModel("openai", "search");
+}
+function openAiResearch() {
+  return getUserAiModel("openai", "research");
+}
+function openAiImage() {
+  return getUserAiModel("openai", "images");
+}
+/** @param {boolean} ws @param {boolean} dr */
+function pickOpenAi(ws, dr) {
+  if (dr) return openAiResearch();
+  if (ws) return openAiSearch();
+  return openAiDialogue();
+}
+
+function anthropicDialogue() {
+  return getUserAiModel("anthropic", "dialogue");
+}
+function anthropicSearch() {
+  return getUserAiModel("anthropic", "search");
+}
+function anthropicResearch() {
+  return getUserAiModel("anthropic", "research");
+}
+/** @param {boolean} ws @param {boolean} dr */
+function pickAnthropic(ws, dr) {
+  if (dr) return anthropicResearch();
+  if (ws) return anthropicSearch();
+  return anthropicDialogue();
+}
+
+function geminiDialogue() {
+  return getUserAiModel("gemini", "dialogue");
+}
+function geminiSearch() {
+  return getUserAiModel("gemini", "search");
+}
+function geminiResearch() {
+  return getUserAiModel("gemini", "research");
+}
+function geminiImage() {
+  return getUserAiModel("gemini", "images");
+}
+/** @param {boolean} ws @param {boolean} dr */
+function pickGemini(ws, dr) {
+  if (dr) return geminiResearch();
+  if (ws) return geminiSearch();
+  return geminiDialogue();
+}
+
+function perplexityDialogue() {
+  return getUserAiModel("perplexity", "dialogue");
+}
+function perplexitySearch() {
+  return getUserAiModel("perplexity", "search");
+}
+function perplexityResearch() {
+  return getUserAiModel("perplexity", "research");
+}
+/** @param {boolean} ws @param {boolean} dr */
+function pickPerplexity(ws, dr) {
+  if (dr) return perplexityResearch();
+  if (ws) return perplexitySearch();
+  return perplexityDialogue();
+}
 
 /** Intro Keeper JSON can list many projects + links; small caps truncate mid-JSON → parse failure and nothing ingests. */
 const INTRO_GRAPH_EXTRACT_OPENAI_MAX_TOKENS = 12000;
@@ -36,32 +105,6 @@ function oaMaxCompletionTokens(n) {
 /** One-line trivial acknowledgements (EN + common RU replies as Unicode escapes; ASCII-only source). */
 const TRIVIAL_ACK_LINE_RE =
   /^(thanks|thank you|thx|ok|okay|yes|no|\u0441\u043f\u0430\u0441\u0438\u0431\u043e|\u043e\u043a|\u0434\u0430|\u043d\u0435\u0442|\u043f\u043e\u043d\u044f\u043b|\u043f\u043e\u043d\u044f\u043b\u0430|\u044f\u0441\u043d\u043e)\b[!.\s]*$/iu;
-/**
- * Chat Completions built-in web search: only dedicated search models are supported here
- * (see OpenAI “Web search” guide — e.g. gpt-5-search-api, gpt-4o-search-preview).
- */
-const OPENAI_MODEL_WEB = "gpt-5-search-api";
-/**
- * OpenAI Images API (`/v1/images/generations`, `/v1/images/edits`). See ImageModel enum in API reference.
- * Default `gpt-image-1`: `chatgpt-image-latest` often requires verified organization (dashboard → Organization → Verify).
- * Override: `OPENAI_IMAGE_MODEL` in `.env` (exposed via Vite `envPrefix` including `OPENAI_`).
- * @see https://platform.openai.com/docs/api-reference/images
- */
-const OPENAI_IMAGE_MODEL =
-  String(import.meta.env.OPENAI_IMAGE_MODEL ?? "").trim() || "gpt-image-1";
-const ANTHROPIC_MODEL = "claude-sonnet-4-6";
-/** Chat + web search for the “Gemini” provider (Google AI API model id). */
-const GEMINI_MODEL_FLASH = "gemini-3.1-pro-preview";
-/**
- * Nano Banana Pro (Gemini 3 Pro Image): studio-grade native image generation.
- * There is no separate `gemini-3.1-pro-image` id — this is Google’s Pro-tier image model for the Gemini 3 line.
- * @see https://ai.google.dev/gemini-api/docs/models/gemini-3-pro-image-preview
- */
-const GEMINI_IMAGE_MODEL = "gemini-3-pro-image-preview";
-const PERPLEXITY_MODEL = "sonar";
-/** Sonar Pro: stronger web grounding; used for Web search mode. */
-const PERPLEXITY_MODEL_SEARCH = "sonar-pro";
-
 /**
  * Gemini 3+ expects `thinkingLevel` in `thinkingConfig` (cannot use budget 0 to “turn off”).
  * Gemini 2.5 uses `thinkingBudget`; 0 disables internal thinking for lower latency.
@@ -98,7 +141,7 @@ function geminiJsonBody(text, opts = {}) {
  * @param {{ googleSearch?: boolean, modelId?: string }} [opts]
  */
 function geminiRequestBodyFromParts(parts, opts = {}) {
-  const modelId = String(opts.modelId ?? GEMINI_MODEL_FLASH);
+  const modelId = String(opts.modelId ?? geminiDialogue());
   const body = {
     contents: [{ parts }],
     generationConfig: getGeminiGenerationConfigForModel(modelId),
@@ -399,7 +442,7 @@ function humanizeOpenAiImageError(raw, status) {
     (low.includes("model") && (low.includes("not found") || low.includes("does not exist")))
   ) {
     return (
-      `Model ${OPENAI_IMAGE_MODEL} is not available for this key or region. ` +
+      `Model ${openAiImage()} is not available for this key or region. ` +
       `API response: ${s.length > 220 ? `${s.slice(0, 220)}…` : s}`
     );
   }
@@ -457,7 +500,7 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
           Authorization: `Bearer ${key}`,
         },
         body: JSON.stringify({
-          model: useWebGrounding ? OPENAI_MODEL_WEB : OPENAI_MODEL,
+          model: pickOpenAi(webSearch, deepResearch),
           messages: oaMsgs,
         }),
       });
@@ -471,7 +514,7 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
     }
     case "anthropic": {
       const anthropicBody = {
-        model: ANTHROPIC_MODEL,
+        model: pickAnthropic(webSearch, deepResearch),
         max_tokens: 4096,
         messages: applyChatAttachmentsToAnthropicMessages(
           anthropicApiMessages(trimmed, options),
@@ -514,7 +557,7 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
           : [{ role: "user", content: trimmed }];
       const combined = geminiFlattenChat(String(options.systemInstruction ?? ""), gMsgs);
       return geminiGenerateContent(
-        GEMINI_MODEL_FLASH,
+        pickGemini(webSearch, deepResearch),
         combined,
         key,
         useWebGrounding,
@@ -523,7 +566,7 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
     }
     case "perplexity": {
       const perplexityBody = {
-        model: useWebGrounding ? PERPLEXITY_MODEL_SEARCH : PERPLEXITY_MODEL,
+        model: pickPerplexity(webSearch, deepResearch),
         messages: oaMsgs,
       };
       if (useWebGrounding) {
@@ -603,7 +646,7 @@ export async function generateThemeDialogTitle(providerId, userMessage, apiKey) 
             Authorization: `Bearer ${key}`,
           },
           body: JSON.stringify({
-            model: OPENAI_MODEL,
+            model: openAiDialogue(),
             temperature: 0.2,
             ...oaMaxCompletionTokens(48),
             messages: [
@@ -629,7 +672,7 @@ export async function generateThemeDialogTitle(providerId, userMessage, apiKey) 
             ...ANTHROPIC_BROWSER_ACCESS_HEADER,
           },
           body: JSON.stringify({
-            model: ANTHROPIC_MODEL,
+            model: anthropicDialogue(),
             max_tokens: 48,
             system: THEME_TITLE_SYSTEM,
             messages: [{ role: "user", content: snippet }],
@@ -650,7 +693,7 @@ export async function generateThemeDialogTitle(providerId, userMessage, apiKey) 
       case "gemini-flash": {
         const combined =
           `${THEME_TITLE_SYSTEM}\n\nUser message:\n${snippet}`;
-        const { text: g } = await geminiGenerateContent(GEMINI_MODEL_FLASH, combined, key, false);
+        const { text: g } = await geminiGenerateContent(geminiDialogue(), combined, key, false);
         text = g;
         break;
       }
@@ -662,7 +705,7 @@ export async function generateThemeDialogTitle(providerId, userMessage, apiKey) 
             Authorization: `Bearer ${key}`,
           },
           body: JSON.stringify({
-            model: PERPLEXITY_MODEL,
+            model: perplexityDialogue(),
             temperature: 0.2,
             max_tokens: 48,
             messages: [
@@ -1044,7 +1087,7 @@ export async function extractAccessKeeper2EntriesFromTranscript(
           Authorization: `Bearer ${key}`,
         },
         body: JSON.stringify({
-          model: OPENAI_MODEL,
+          model: openAiDialogue(),
           temperature: 0.1,
           ...oaMaxCompletionTokens(12000),
           response_format: { type: "json_object" },
@@ -1259,7 +1302,7 @@ export async function extractRulesKeeper3FromTranscript(
           Authorization: `Bearer ${key}`,
         },
         body: JSON.stringify({
-          model: OPENAI_MODEL,
+          model: openAiDialogue(),
           temperature: 0.1,
           ...oaMaxCompletionTokens(8000),
           response_format: { type: "json_object" },
@@ -1303,7 +1346,7 @@ export async function extractChatInterestSketchForIngest(providerId, apiKey, use
         Authorization: `Bearer ${key}`,
       },
       body: JSON.stringify({
-        model: OPENAI_MODEL,
+        model: openAiDialogue(),
         temperature: 0.12,
         ...oaMaxCompletionTokens(900),
         response_format: { type: "json_object" },
@@ -1497,7 +1540,7 @@ export async function normalizeIntroMemoryGraphForDb(
         Authorization: `Bearer ${key}`,
       },
         body: JSON.stringify({
-          model: OPENAI_MODEL,
+          model: openAiDialogue(),
           temperature: 0,
           ...oaMaxCompletionTokens(INTRO_GRAPH_NORMALIZE_OPENAI_MAX_TOKENS),
           response_format: { type: "json_object" },
@@ -1563,7 +1606,7 @@ export async function extractIntroMemoryGraphForIngest(providerId, apiKey, userT
         Authorization: `Bearer ${key}`,
       },
         body: JSON.stringify({
-          model: OPENAI_MODEL,
+          model: openAiDialogue(),
           temperature: 0.1,
           ...oaMaxCompletionTokens(INTRO_GRAPH_EXTRACT_OPENAI_MAX_TOKENS),
           response_format: { type: "json_object" },
@@ -1624,7 +1667,7 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
           Authorization: `Bearer ${key}`,
         },
         body: JSON.stringify({
-          model: useWebGrounding ? OPENAI_MODEL_WEB : OPENAI_MODEL,
+          model: pickOpenAi(webSearch, deepResearch),
           messages: oaMsgs,
           stream: true,
         }),
@@ -1635,7 +1678,7 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
     }
     case "perplexity": {
       const pBody = {
-        model: useWebGrounding ? PERPLEXITY_MODEL_SEARCH : PERPLEXITY_MODEL,
+        model: pickPerplexity(webSearch, deepResearch),
         messages: oaMsgs,
         stream: true,
       };
@@ -1663,7 +1706,7 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
     }
     case "anthropic": {
       const aStreamBody = {
-        model: ANTHROPIC_MODEL,
+        model: pickAnthropic(webSearch, deepResearch),
         max_tokens: 4096,
         messages: applyChatAttachmentsToAnthropicMessages(
           anthropicApiMessages(trimmed, options),
@@ -1711,7 +1754,8 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
         });
       }
       // Without alt=sse, Google returns non-classic SSE (see ai.google.dev streamGenerateContent) — parser does not get data: chunks incrementally.
-      const url = `/llm/gemini/v1beta/models/${GEMINI_MODEL_FLASH}:streamGenerateContent?key=${encodeURIComponent(key)}&alt=sse`;
+      const gModel = pickGemini(webSearch, deepResearch);
+      const url = `/llm/gemini/v1beta/models/${gModel}:streamGenerateContent?key=${encodeURIComponent(key)}&alt=sse`;
       const res = await fetch(url, {
         method: "POST",
         headers: {
@@ -1721,7 +1765,7 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
         body: JSON.stringify(
           geminiRequestBodyFromParts(gParts, {
             googleSearch: useWebGrounding,
-            modelId: GEMINI_MODEL_FLASH,
+            modelId: gModel,
           }),
         ),
       });
@@ -1751,17 +1795,17 @@ export function apiModelHint(providerId, extras = {}) {
   const suffixDr = dr ? " · deep research" : "";
   switch (providerId) {
     case "openai":
-      if (dr) return `${OPENAI_MODEL_WEB}${suffixDr}`;
-      return ws ? OPENAI_MODEL_WEB : OPENAI_MODEL;
+      if (dr) return `${openAiResearch()}${suffixDr}`;
+      return ws ? openAiSearch() : openAiDialogue();
     case "anthropic":
-      if (dr) return `${ANTHROPIC_MODEL} · deep research`;
-      return ws ? `${ANTHROPIC_MODEL} · web search` : ANTHROPIC_MODEL;
+      if (dr) return `${anthropicResearch()} · deep research`;
+      return ws ? `${anthropicSearch()} · web search` : anthropicDialogue();
     case "gemini-flash":
-      if (dr) return `${GEMINI_MODEL_FLASH} · deep research`;
-      return ws ? `${GEMINI_MODEL_FLASH} · Google search` : GEMINI_MODEL_FLASH;
+      if (dr) return `${geminiResearch()} · deep research`;
+      return ws ? `${geminiSearch()} · Google search` : geminiDialogue();
     case "perplexity":
-      if (dr) return `${PERPLEXITY_MODEL_SEARCH}${suffixDr}`;
-      return ws ? PERPLEXITY_MODEL_SEARCH : PERPLEXITY_MODEL;
+      if (dr) return `${perplexityResearch()}${suffixDr}`;
+      return ws ? perplexitySearch() : perplexityDialogue();
     default:
       return "";
   }
@@ -1771,9 +1815,9 @@ export function apiModelHint(providerId, extras = {}) {
 export function apiImageGenerationModelHint(providerId) {
   switch (providerId) {
     case "openai":
-      return OPENAI_IMAGE_MODEL;
+      return openAiImage();
     case "gemini-flash":
-      return GEMINI_IMAGE_MODEL;
+      return geminiImage();
     default:
       return "";
   }
@@ -1871,7 +1915,7 @@ function openAiImageDataToMarkdown(data) {
 async function openaiImageEditsWithReferences(prompt, key, images, preferredSize) {
   async function postEdits(size) {
     const fd = new FormData();
-    fd.append("model", OPENAI_IMAGE_MODEL);
+    fd.append("model", openAiImage());
     fd.append("prompt", prompt);
     fd.append("size", size);
     for (let i = 0; i < images.length; i++) {
@@ -1921,7 +1965,7 @@ async function openaiImageGeneration(prompt, key, chatAtt = null) {
   }
 
   const payload = {
-    model: OPENAI_IMAGE_MODEL,
+    model: openAiImage(),
     prompt,
     n: 1,
     size: preferredSize,
@@ -2009,7 +2053,7 @@ async function geminiImageGeneration(prompt, key, chatAtt = null) {
     });
   }
 
-  const url = `/llm/gemini/v1beta/models/${GEMINI_IMAGE_MODEL}:generateContent?key=${encodeURIComponent(key)}`;
+  const url = `/llm/gemini/v1beta/models/${geminiImage()}:generateContent?key=${encodeURIComponent(key)}`;
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2017,6 +2061,7 @@ async function geminiImageGeneration(prompt, key, chatAtt = null) {
       contents: [{ role: "user", parts }],
       /* Without explicit modalities the API often returns text only; the image arrives in parts as inlineData. */
       generationConfig: {
+        ...getGeminiGenerationConfigForModel(geminiImage()),
         responseModalities: ["TEXT", "IMAGE"],
       },
     }),

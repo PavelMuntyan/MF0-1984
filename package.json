@@ -1,9 +1,10 @@
 {
   "name": "mf-lab",
-  "version": "1.7.5",
+  "version": "1.7.6",
   "private": true,
   "type": "module",
   "scripts": {
+    "postinstall": "node -e \"const fs=require('fs');try{const p=require('7zip-bin').path7za;fs.chmodSync(p,0o755)}catch(e){}\"",
     "api": "node server/api.mjs",
     "dev": "concurrently -k -n api,vite -c cyan,magenta \"npm run api\" \"vite\"",
     "pm2:start": "pm2 start ecosystem.config.cjs",
@@ -25,6 +26,7 @@
   },
   "dependencies": {
     "3d-force-graph": "^1.80.0",
+    "7zip-bin": "^5.2.0",
     "better-sqlite3": "^11.8.1",
     "dompurify": "^3.3.3",
     "highlight.js": "^11.11.1",

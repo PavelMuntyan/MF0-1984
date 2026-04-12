@@ -99,6 +99,219 @@
         </div>
       </div>
 
+      <div
+        id="settings-modal"
+        class="settings-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-modal-title"
+        hidden
+      >
+        <div class="settings-modal-overlay" aria-hidden="true"></div>
+        <div class="settings-modal-dialog">
+          <div class="settings-modal-head activity-log-head">
+            <span class="activity-log-title" id="settings-modal-title">Settings</span>
+            <div class="activity-log-actions">
+              <button
+                type="button"
+                class="btn-ghost btn-ghost-icon"
+                id="settings-modal-close"
+                aria-label="Close settings"
+              >
+                <svg
+                  class="btn-icon-svg"
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M18 6 6 18" />
+                  <path d="m6 6 12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="settings-modal-body">
+            <section class="settings-modal-section" aria-labelledby="settings-heading-memory-tree">
+              <h3 class="settings-modal-section-title" id="settings-heading-memory-tree">Memory tree</h3>
+              <div class="settings-modal-row-btns">
+                <button type="button" class="btn settings-modal-action" id="settings-memory-tree-export">
+                  Export
+                </button>
+                <button type="button" class="btn settings-modal-action" id="settings-memory-tree-import">
+                  Import
+                </button>
+              </div>
+              <input
+                type="file"
+                id="settings-memory-tree-import-input"
+                hidden
+                accept=".json,application/json,.tar.gz,.tgz,application/gzip"
+              />
+            </section>
+            <section class="settings-modal-section" aria-labelledby="settings-heading-project-profile">
+              <h3 class="settings-modal-section-title" id="settings-heading-project-profile">Project profile</h3>
+              <div class="settings-modal-row-btns">
+                <button type="button" class="btn settings-modal-action" id="settings-project-profile-export">
+                  Export
+                </button>
+                <button type="button" class="btn settings-modal-action" id="settings-project-profile-import">
+                  Import
+                </button>
+              </div>
+              <input type="file" id="settings-project-profile-import-input" hidden accept=".mf" />
+            </section>
+            <section class="settings-modal-section" aria-labelledby="settings-heading-ai-settings">
+              <div class="settings-ai-section-head">
+                <h3 class="settings-modal-section-title settings-ai-section-title" id="settings-heading-ai-settings">
+                  AI settings
+                </h3>
+                <span
+                  id="settings-ai-loading"
+                  class="settings-ai-loading"
+                  hidden
+                  role="status"
+                  aria-live="polite"
+                  aria-label="Loading AI settings"
+                ></span>
+              </div>
+              <div id="settings-ai-providers" class="settings-ai-providers"></div>
+              <div id="settings-ai-save-wrap" class="settings-ai-save-wrap" hidden>
+                <button type="button" class="btn settings-ai-save-btn" id="settings-ai-save-btn" disabled>
+                  Save AI models
+                </button>
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+
+      <div id="project-profile-export-modal" class="project-profile-export-modal" hidden>
+        <div class="project-profile-export-backdrop" aria-hidden="true"></div>
+        <div
+          class="project-profile-export-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="project-profile-export-title"
+        >
+          <h2 class="project-profile-export-title" id="project-profile-export-title">Export project profile</h2>
+          <p class="project-profile-export-informer">
+            This file will contain your personal data, API keys from <code class="project-profile-export-code">.env</code>,
+            Access credentials, Memory tree, rules, and saved AI model choices. Store it only where you trust, and use
+            a strong password you do not reuse elsewhere.
+          </p>
+          <div class="project-profile-export-fields">
+            <label class="project-profile-export-label">
+              <span class="project-profile-export-label-text">Password</span>
+              <input
+                type="password"
+                class="project-profile-export-input"
+                id="project-profile-export-pass1"
+                autocomplete="new-password"
+                spellcheck="false"
+              />
+            </label>
+            <label class="project-profile-export-label">
+              <span class="project-profile-export-label-text">Confirm password</span>
+              <input
+                type="password"
+                class="project-profile-export-input"
+                id="project-profile-export-pass2"
+                autocomplete="new-password"
+                spellcheck="false"
+              />
+            </label>
+          </div>
+          <p class="project-profile-export-hint" id="project-profile-export-hint" aria-live="polite"></p>
+          <div class="project-profile-export-actions">
+            <button type="button" class="btn btn-ghost" id="project-profile-export-cancel">Cancel</button>
+            <button type="button" class="btn" id="project-profile-export-submit" disabled>Export</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="project-profile-import-modal" class="project-profile-export-modal" hidden>
+        <div class="project-profile-export-backdrop" aria-hidden="true"></div>
+        <div
+          id="ppi-panel-password"
+          class="project-profile-export-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="ppi-title-password"
+        >
+          <h2 class="project-profile-export-title" id="ppi-title-password">Import project profile</h2>
+          <p class="project-profile-export-informer">
+            Restores Memory tree, rules, Access, <code class="project-profile-export-code">.env</code>, saved AI model
+            choices, and the Access #data enrichment snapshot from a <code class="project-profile-export-code">.mf</code>
+            backup. Enter the password you used when this file was exported.
+          </p>
+          <p class="project-profile-export-hint" id="ppi-file-info" aria-live="polite"></p>
+          <label class="project-profile-export-label">
+            <span class="project-profile-export-label-text">Password</span>
+            <input
+              type="password"
+              class="project-profile-export-input"
+              id="ppi-password"
+              autocomplete="current-password"
+              spellcheck="false"
+            />
+          </label>
+          <div class="project-profile-export-actions">
+            <button type="button" class="btn btn-ghost" id="ppi-cancel">Cancel</button>
+            <button type="button" class="btn" id="ppi-import" disabled>Import</button>
+          </div>
+        </div>
+        <div
+          id="ppi-panel-wrong"
+          class="project-profile-export-dialog"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="ppi-wrong-msg"
+          hidden
+        >
+          <p class="project-profile-export-informer" id="ppi-wrong-msg">
+            The password is incorrect, or the file is not a valid encrypted profile backup.
+          </p>
+          <div class="project-profile-export-actions">
+            <button type="button" class="btn" id="ppi-wrong-ok">OK</button>
+          </div>
+        </div>
+        <div
+          id="ppi-panel-success"
+          class="project-profile-export-dialog"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="ppi-success-msg"
+          hidden
+        >
+          <p class="project-profile-export-informer" id="ppi-success-msg"></p>
+          <div class="project-profile-export-actions">
+            <button type="button" class="btn" id="ppi-success-ok">OK</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="memory-tree-import-success-modal" class="memory-tree-import-success-modal" hidden>
+        <div class="memory-tree-import-success-backdrop" aria-hidden="true"></div>
+        <div
+          class="memory-tree-import-success-dialog"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="memory-tree-import-success-msg"
+        >
+          <p class="memory-tree-import-success-msg" id="memory-tree-import-success-msg"></p>
+          <div class="memory-tree-import-success-actions">
+            <button type="button" class="btn" id="memory-tree-import-success-ok">OK</button>
+          </div>
+        </div>
+      </div>
+
       <div class="app-frame">
         <div class="app-window">
           <header class="header">
@@ -164,6 +377,31 @@
                   <path
                     class="header-favorites-star-path"
                     d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"
+                  />
+                </svg>
+              </button>
+              <button
+                type="button"
+                class="btn-icon"
+                id="btn-settings"
+                aria-label="Open settings"
+                aria-expanded="false"
+                title="Settings"
+              >
+                <svg
+                  class="btn-icon-svg"
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <circle cx="12" cy="12" r="3" />
+                  <path
+                    d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
                   />
                 </svg>
               </button>

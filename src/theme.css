@@ -3463,3 +3463,631 @@ html.theme-rename-modal-open {
     order: 1;
   }
 }
+
+/* Settings modal (centered); open/close via header gear + close only — no Escape handler in JS */
+.settings-modal[hidden] {
+  display: none !important;
+}
+
+.settings-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  box-sizing: border-box;
+}
+
+.settings-modal-overlay {
+  position: absolute;
+  inset: 0;
+  background: hsl(0 0% 0% / 0.42);
+  /* Absorb clicks (no close handler — only the X closes). */
+  pointer-events: auto;
+}
+
+.settings-modal-dialog {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  width: min(100%, 31.2rem);
+  max-height: min(88vh, 36rem);
+  overflow: hidden;
+  border-radius: 1rem;
+  border: 2px solid hsl(var(--border));
+  background: hsl(var(--card));
+  box-shadow:
+    0 10px 15px -3px rgb(0 0 0 / 0.12),
+    0 4px 6px -4px rgb(0 0 0 / 0.08);
+}
+
+.dark .settings-modal-dialog {
+  box-shadow:
+    0 10px 40px rgb(0 0 0 / 0.4),
+    0 4px 12px rgb(0 0 0 / 0.25);
+}
+
+.settings-modal-head {
+  flex-shrink: 0;
+}
+
+.settings-modal-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1rem 1.1rem 1.15rem;
+}
+
+.settings-modal-section + .settings-modal-section {
+  margin-top: 1.1rem;
+  padding-top: 1rem;
+  border-top: 1px solid hsl(var(--border) / 0.55);
+}
+
+.settings-modal-section-title {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  margin: 0 0 0.55rem;
+  color: hsl(var(--foreground));
+}
+
+.settings-modal-row-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.settings-modal-action {
+  flex: 1 1 8rem;
+  min-width: 0;
+}
+
+/* Memory tree Export: spinner while archive is building */
+#settings-memory-tree-export.settings-export-btn--busy {
+  position: relative;
+  pointer-events: none;
+  padding-left: 2.1rem;
+}
+
+#settings-memory-tree-export.settings-export-btn--busy::before {
+  content: "";
+  position: absolute;
+  left: 0.65rem;
+  top: 50%;
+  width: 0.95rem;
+  height: 0.95rem;
+  box-sizing: border-box;
+  border: 2px solid hsl(var(--border));
+  border-top-color: hsl(var(--ring));
+  border-radius: 50%;
+  animation: settings-export-spin 0.65s linear infinite;
+}
+
+@keyframes settings-export-spin {
+  from {
+    transform: translateY(-50%) rotate(0deg);
+  }
+
+  to {
+    transform: translateY(-50%) rotate(360deg);
+  }
+}
+
+#settings-memory-tree-import.settings-export-btn--busy {
+  position: relative;
+  pointer-events: none;
+  padding-left: 2.1rem;
+}
+
+#settings-memory-tree-import.settings-export-btn--busy::before {
+  content: "";
+  position: absolute;
+  left: 0.65rem;
+  top: 50%;
+  width: 0.95rem;
+  height: 0.95rem;
+  box-sizing: border-box;
+  border: 2px solid hsl(var(--border));
+  border-top-color: hsl(var(--ring));
+  border-radius: 50%;
+  animation: settings-export-spin 0.65s linear infinite;
+}
+
+/* Post-import confirmation (above Settings); dismiss with OK only — Escape is swallowed while open */
+.memory-tree-import-success-modal[hidden] {
+  display: none !important;
+}
+
+.memory-tree-import-success-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 160;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  box-sizing: border-box;
+}
+
+.memory-tree-import-success-backdrop {
+  position: absolute;
+  inset: 0;
+  background: hsl(0 0% 0% / 0.45);
+  pointer-events: auto;
+}
+
+.memory-tree-import-success-dialog {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 26rem);
+  padding: 1.15rem 1.2rem;
+  border-radius: 1rem;
+  border: 2px solid hsl(var(--border));
+  background: hsl(var(--card));
+  box-shadow:
+    0 10px 15px -3px rgb(0 0 0 / 0.12),
+    0 4px 6px -4px rgb(0 0 0 / 0.08);
+}
+
+.dark .memory-tree-import-success-dialog {
+  box-shadow:
+    0 10px 40px rgb(0 0 0 / 0.4),
+    0 4px 12px rgb(0 0 0 / 0.25);
+}
+
+.memory-tree-import-success-msg {
+  margin: 0 0 1rem;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  color: hsl(var(--foreground));
+}
+
+.memory-tree-import-success-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Project profile export: password dialog (above Settings) */
+.project-profile-export-modal[hidden] {
+  display: none !important;
+}
+
+.project-profile-export-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 165;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  box-sizing: border-box;
+}
+
+.project-profile-export-backdrop {
+  position: absolute;
+  inset: 0;
+  background: hsl(0 0% 0% / 0.45);
+  pointer-events: auto;
+}
+
+.project-profile-export-dialog {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 28rem);
+  max-height: min(90vh, 34rem);
+  overflow-y: auto;
+  padding: 1.15rem 1.2rem 1.2rem;
+  border-radius: 1rem;
+  border: 2px solid hsl(var(--border));
+  background: hsl(var(--card));
+  box-shadow:
+    0 10px 15px -3px rgb(0 0 0 / 0.12),
+    0 4px 6px -4px rgb(0 0 0 / 0.08);
+}
+
+.dark .project-profile-export-dialog {
+  box-shadow:
+    0 10px 40px rgb(0 0 0 / 0.4),
+    0 4px 12px rgb(0 0 0 / 0.25);
+}
+
+.project-profile-export-title {
+  margin: 0 0 0.65rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: hsl(var(--foreground));
+}
+
+.project-profile-export-informer {
+  margin: 0 0 1rem;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: hsl(var(--muted-foreground));
+}
+
+.project-profile-export-code {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85em;
+}
+
+.project-profile-export-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  margin-bottom: 0.5rem;
+}
+
+.project-profile-export-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+}
+
+.project-profile-export-label-text {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: hsl(var(--foreground));
+}
+
+.project-profile-export-input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 0.45rem 0.55rem;
+  font-size: 0.875rem;
+  border-radius: 0.5rem;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+}
+
+.project-profile-export-hint {
+  min-height: 2.6rem;
+  margin: 0 0 0.75rem;
+  font-size: 0.75rem;
+  line-height: 1.35;
+  color: hsl(var(--muted-foreground));
+}
+
+.project-profile-export-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+#project-profile-export-submit.settings-export-btn--busy {
+  position: relative;
+  pointer-events: none;
+  padding-left: 2.1rem;
+}
+
+#project-profile-export-submit.settings-export-btn--busy::before {
+  content: "";
+  position: absolute;
+  left: 0.65rem;
+  top: 50%;
+  width: 0.95rem;
+  height: 0.95rem;
+  box-sizing: border-box;
+  border: 2px solid hsl(var(--border));
+  border-top-color: hsl(var(--ring));
+  border-radius: 50%;
+  animation: settings-export-spin 0.65s linear infinite;
+}
+
+#ppi-import.settings-export-btn--busy {
+  position: relative;
+  pointer-events: none;
+  padding-left: 2.1rem;
+}
+
+#ppi-import.settings-export-btn--busy::before {
+  content: "";
+  position: absolute;
+  left: 0.65rem;
+  top: 50%;
+  width: 0.95rem;
+  height: 0.95rem;
+  box-sizing: border-box;
+  border: 2px solid hsl(var(--border));
+  border-top-color: hsl(var(--ring));
+  border-radius: 50%;
+  animation: settings-export-spin 0.65s linear infinite;
+}
+
+/* Import profile: `hidden` must win over layout — do not set display on [hidden] or it stays visible */
+#ppi-panel-password[hidden],
+#ppi-panel-wrong[hidden],
+#ppi-panel-success[hidden] {
+  display: none !important;
+}
+
+/* Import profile: avoid flex shrink overlap (buttons on password field) inside scrollable dialog */
+#ppi-panel-password.project-profile-export-dialog:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.75rem;
+  min-height: 0;
+}
+
+#ppi-panel-password .project-profile-export-title,
+#ppi-panel-password .project-profile-export-informer,
+#ppi-panel-password .project-profile-export-hint,
+#ppi-panel-password .project-profile-export-label,
+#ppi-panel-password .project-profile-export-actions {
+  flex-shrink: 0;
+}
+
+#ppi-panel-password .project-profile-export-actions {
+  margin-top: 0.35rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid hsl(var(--border) / 0.4);
+}
+
+.settings-ai-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.55rem;
+}
+
+.settings-ai-section-title {
+  margin: 0;
+}
+
+.settings-ai-loading {
+  box-sizing: border-box;
+  width: 0.95rem;
+  height: 0.95rem;
+  flex-shrink: 0;
+  border: 2px solid hsl(var(--border));
+  border-top-color: hsl(var(--ring));
+  border-radius: 50%;
+  animation: settings-ai-heading-spin 0.65s linear infinite;
+}
+
+.settings-ai-loading[hidden] {
+  display: none !important;
+}
+
+@keyframes settings-ai-heading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.settings-ai-providers {
+  min-height: 0;
+  /* Align provider names and role labels across all blocks. */
+  --settings-ai-provider-col: 7rem;
+  --settings-ai-role-col: 6.25rem;
+}
+
+.settings-ai-provider {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem 0.85rem;
+  align-items: flex-start;
+  margin-bottom: 0.95rem;
+}
+
+.settings-ai-provider:last-child {
+  margin-bottom: 0;
+}
+
+.settings-ai-provider-name {
+  box-sizing: border-box;
+  flex: 0 0 var(--settings-ai-provider-col);
+  width: var(--settings-ai-provider-col);
+  max-width: var(--settings-ai-provider-col);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: hsl(var(--foreground));
+  padding-top: 0.38rem;
+  line-height: 1.25;
+}
+
+.settings-ai-provider-rows {
+  flex: 1 1 12rem;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.settings-ai-row {
+  display: grid;
+  grid-template-columns: var(--settings-ai-role-col) minmax(0, 1fr);
+  gap: 0.45rem 0.55rem;
+  align-items: center;
+}
+
+.settings-ai-role {
+  box-sizing: border-box;
+  width: var(--settings-ai-role-col);
+  margin: 0;
+  padding: 0;
+  font-size: 0.75rem;
+  color: hsl(var(--muted-foreground));
+  line-height: 1.25;
+  align-self: center;
+}
+
+.settings-ai-save-wrap {
+  display: flex;
+  justify-content: center;
+  margin-top: 1rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid hsl(var(--border) / 0.45);
+}
+
+.settings-ai-save-wrap[hidden] {
+  display: none !important;
+}
+
+.settings-ai-save-btn {
+  min-width: 11rem;
+}
+
+.settings-ai-empty {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: hsl(var(--muted-foreground));
+  line-height: 1.4;
+}
+
+/* Custom model pickers (native <select> list cannot be themed). */
+.settings-model-picker {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+.settings-model-picker-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  font-size: 0.8125rem;
+  padding: 0.4rem 0.55rem;
+  border-radius: 0.375rem;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease,
+    background 0.12s ease;
+}
+
+.dark .settings-model-picker-trigger {
+  background: hsl(var(--muted) / 0.35);
+}
+
+.settings-model-picker-trigger:hover {
+  border-color: hsl(var(--ring) / 0.45);
+}
+
+.settings-model-picker-trigger:focus-visible {
+  outline: none;
+  border-color: hsl(var(--ring) / 0.65);
+  box-shadow: 0 0 0 2px hsl(var(--background)), 0 0 0 4px hsl(var(--ring) / 0.35);
+}
+
+.settings-model-picker-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-model-picker-chevron {
+  display: inline-flex;
+  flex-shrink: 0;
+  width: 0.65rem;
+  height: 0.65rem;
+  align-items: center;
+  justify-content: center;
+  color: hsl(var(--muted-foreground));
+  opacity: 0.9;
+}
+
+.settings-model-picker-chevron::after {
+  content: "";
+  display: block;
+  width: 0.32rem;
+  height: 0.32rem;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg) translate(-0.04rem, -0.06rem);
+  transition: transform 0.15s ease;
+}
+
+.settings-model-picker-trigger--open .settings-model-picker-chevron::after {
+  transform: rotate(-135deg) translate(0.06rem, -0.04rem);
+}
+
+.settings-model-picker-list {
+  position: fixed;
+  z-index: 160;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0.25rem;
+  overflow-x: hidden;
+  overflow-y: auto;
+  list-style: none;
+  border-radius: 0.5rem;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+  color: hsl(var(--foreground));
+  font-family: inherit;
+  font-size: 0.8125rem;
+  box-shadow:
+    0 10px 24px rgb(0 0 0 / 0.18),
+    0 4px 8px rgb(0 0 0 / 0.1);
+  scrollbar-gutter: stable;
+}
+
+.dark .settings-model-picker-list {
+  box-shadow:
+    0 12px 40px rgb(0 0 0 / 0.45),
+    0 4px 12px rgb(0 0 0 / 0.3);
+}
+
+.settings-model-picker-option {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0.4rem 0.5rem;
+  border: none;
+  border-radius: 0.3rem;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.settings-model-picker-option:hover,
+.settings-model-picker-option:focus-visible {
+  outline: none;
+  background: hsl(var(--muted) / 0.45);
+}
+
+.settings-model-picker-option[aria-selected="true"] {
+  background: hsl(var(--primary) / 0.2);
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 0 hsl(var(--ring));
+}
+
+.settings-model-picker-option[aria-selected="true"]:hover,
+.settings-model-picker-option[aria-selected="true"]:focus-visible {
+  outline: none;
+  background: hsl(var(--primary) / 0.3);
+}
+
+.dark .settings-model-picker-option[aria-selected="true"] {
+  background: hsl(var(--primary) / 0.32);
+  box-shadow: inset 3px 0 0 0 hsl(var(--ring));
+}
+
+.dark .settings-model-picker-option[aria-selected="true"]:hover,
+.dark .settings-model-picker-option[aria-selected="true"]:focus-visible {
+  background: hsl(var(--primary) / 0.42);
+}

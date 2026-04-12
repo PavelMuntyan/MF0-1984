@@ -16,6 +16,21 @@ import {
   shouldUpdateRollingSummary,
 } from "../src/contextEngine/rollingSummary.js";
 import { extractMemoryItemsFromMessages } from "../src/contextEngine/memoryExtraction.js";
+import {
+  decodeImportBodyFromBuffer,
+  normalizeImportPayload,
+  replaceMemoryGraphInDatabase,
+} from "./memoryGraphImport.mjs";
+import { buildProjectProfileMf7zBuffer, projectProfileMfFilename } from "./projectProfileExport.mjs";
+import { importProjectProfileFromMfBuffer } from "./projectProfileImport.mjs";
+import {
+  sanitizeAccessExternalEntries,
+  replaceAccessExternalServicesInDatabase,
+} from "./accessExternalServicesDb.mjs";
+import {
+  readAccessDataDumpEnrichmentImportCacheIfPresent,
+  clearAccessDataDumpEnrichmentImportCache,
+} from "./accessDataDumpImportCache.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "..");
@@ -47,8 +62,6 @@ function getApiMaxBodyBytes() {
   return n;
 }
 
-/** Max length for Access `notes` field (DB + JSON import). */
-const ACCESS_ENTRY_NOTES_MAX = 12000;
 
 const ANALYTICS_PROVIDER_IDS = ["openai", "perplexity", "gemini-flash", "anthropic"];
 
@@ -361,33 +374,49 @@ function readBody(req) {
   });
 }
 
+/** Raw request body as a single Buffer (gzip / binary import). Same size cap as {@link readBody}. */
+function readBodyBuffer(req) {
+  const maxBytes = getApiMaxBodyBytes();
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    let settled = false;
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
+    const ok = (val) => {
+      if (settled) return;
+      settled = true;
+      resolve(val);
+    };
+    req.on("data", (chunk) => {
+      if (settled) return;
+      total += chunk.length;
+      if (total > maxBytes) {
+        fail(new BodyTooLargeError(maxBytes));
+        try {
+          req.destroy();
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (settled) return;
+      ok(Buffer.concat(chunks));
+    });
+    req.on("error", fail);
+  });
+}
+
 /** Raw timestamp string from SQLite for the client — YY-MM-DD HH:MM is interpreted in the browser (local time). */
 function rawDbTimestamp(value) {
   if (value == null || value === "") return "";
   return String(value);
-}
-
-function sanitizeAccessExternalEntries(entries) {
-  const now = new Date().toISOString();
-  /** @type {Array<{ id: string, name: string, description: string, endpointUrl: string, accessKey: string, notes: string, updatedAt: string }>} */
-  const out = [];
-  const arr = Array.isArray(entries) ? entries : [];
-  for (const e of arr.slice(0, 200)) {
-    if (!e || typeof e !== "object") continue;
-    const id = String(e.id ?? "").trim() || crypto.randomUUID();
-    const name = String(e.name ?? "").trim().slice(0, 200);
-    if (!name) continue;
-    out.push({
-      id,
-      name,
-      description: String(e.description ?? "").trim().slice(0, 2000),
-      endpointUrl: String(e.endpointUrl ?? e.endpoint_or_url ?? "").trim().slice(0, 2000),
-      accessKey: String(e.accessKey ?? e.access_key ?? "").trim().slice(0, 2000),
-      notes: String(e.notes ?? "").trim().slice(0, ACCESS_ENTRY_NOTES_MAX),
-      updatedAt: String(e.updatedAt ?? e.updated_at ?? now).slice(0, 40),
-    });
-  }
-  return out;
 }
 
 function readAccessExternalServicesPayload() {
@@ -411,6 +440,8 @@ function readAccessExternalServicesPayload() {
 }
 
 async function getAccessDataDumpEnrichmentPayload() {
+  const cached = readAccessDataDumpEnrichmentImportCacheIfPresent(root);
+  if (cached) return cached;
   const { entries: entriesRaw } = readAccessExternalServicesPayload();
   return buildAccessDataDumpEnrichmentFromEntries(entriesRaw);
 }
@@ -430,28 +461,9 @@ function readAccessExternalServicesCatalogPayload() {
 }
 
 function writeAccessExternalServicesPayload(body) {
-  const entries = sanitizeAccessExternalEntries(body?.entries);
-  const del = db.prepare(`DELETE FROM access_external_services`);
-  const ins = db.prepare(
-    `INSERT INTO access_external_services (id, name, description, endpoint_url, access_key, notes, updated_at)
-     VALUES (@id, @name, @description, @endpointUrl, @accessKey, @notes, @updatedAt)`,
-  );
-  const tx = db.transaction((rows) => {
-    del.run();
-    for (const e of rows) {
-      ins.run({
-        id: e.id,
-        name: e.name,
-        description: e.description,
-        endpointUrl: e.endpointUrl,
-        accessKey: e.accessKey,
-        notes: e.notes,
-        updatedAt: e.updatedAt,
-      });
-    }
-  });
-  tx(entries);
-  return { entries };
+  replaceAccessExternalServicesInDatabase(db, body?.entries);
+  clearAccessDataDumpEnrichmentImportCache(root);
+  return { entries: readAccessExternalServicesPayload().entries };
 }
 
 function listThemesWithDialogs() {
@@ -1807,6 +1819,127 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && p === "/api/memory-graph") {
       return json(res, 200, getMemoryGraphPayload());
+    }
+
+    if (req.method === "POST" && p === "/api/project-profile/export") {
+      const body = await readBody(req);
+      const hex = String(body.archivePassphraseHex ?? "")
+        .trim()
+        .toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(hex)) {
+        return json(res, 400, apiErrorBody("Invalid archive passphrase encoding."));
+      }
+      const snap = body.aiModelsSnapshot;
+      if (!snap || typeof snap !== "object") {
+        return json(res, 400, apiErrorBody("aiModelsSnapshot object is required."));
+      }
+      try {
+        ensureMemoryGraphHubAnchorsPresent(db);
+        const memoryGraph = getMemoryGraphPayload();
+        const accessExternal = readAccessExternalServicesPayload();
+        let accessEnrichment = {};
+        try {
+          accessEnrichment = await getAccessDataDumpEnrichmentPayload();
+        } catch {
+          accessEnrichment = { ok: false, error: "enrichment_unavailable" };
+        }
+        const buf = await buildProjectProfileMf7zBuffer({
+          database: db,
+          projectRoot: root,
+          archivePassphraseHex: hex,
+          aiModelsSnapshot: snap,
+          memoryGraph,
+          accessExternal,
+          accessEnrichment,
+        });
+        const fn = projectProfileMfFilename();
+        res.writeHead(200, {
+          "Content-Type": "application/octet-stream",
+          "Content-Disposition": `attachment; filename="${fn}"`,
+          "Content-Length": String(buf.length),
+        });
+        res.end(buf);
+        return;
+      } catch (e) {
+        console.error("[mf-lab-api] project-profile/export:", e);
+        return json(res, 500, apiErrorBody(e instanceof Error ? e.message : String(e)));
+      }
+    }
+
+    if (req.method === "POST" && p === "/api/project-profile/import") {
+      const hex = String(req.headers["x-mf0-archive-passphrase-hex"] ?? "")
+        .trim()
+        .toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(hex)) {
+        return json(res, 400, apiErrorBody("Invalid archive passphrase encoding."));
+      }
+      let buf;
+      try {
+        buf = await readBodyBuffer(req);
+      } catch (e) {
+        const status = e instanceof BodyTooLargeError ? 413 : 400;
+        return json(res, status, apiErrorBody(e instanceof Error ? e.message : String(e)));
+      }
+      if (buf.length < 64) {
+        return json(res, 400, apiErrorBody("Request body is too small to be a profile archive."));
+      }
+      try {
+        const out = await importProjectProfileFromMfBuffer({
+          projectRoot: root,
+          database: db,
+          buffer: buf,
+          archivePassphraseHex: hex,
+          normalizeCategory: normalizeMemoryGraphCategory,
+          normLabel: normGraphLabel,
+          ensureMemoryGraphHubAnchorsPresent: () => ensureMemoryGraphHubAnchorsPresent(db),
+        });
+        return json(res, 200, { ok: true, ...out });
+      } catch (e) {
+        const code = e && typeof e === "object" && "code" in e ? String(/** @type {{ code?: string }} */ (e).code) : "";
+        const msg = e instanceof Error ? e.message : String(e);
+        if (code === "WRONG_ARCHIVE_PASSWORD" || msg === "WRONG_ARCHIVE_PASSWORD") {
+          return json(res, 401, { ok: false, error: "WRONG_ARCHIVE_PASSWORD" });
+        }
+        console.error("[mf-lab-api] project-profile/import:", e);
+        return json(res, 400, apiErrorBody(msg));
+      }
+    }
+
+    if (req.method === "POST" && p === "/api/memory-graph/import") {
+      const ct = String(req.headers["content-type"] ?? "")
+        .split(";")[0]
+        .trim()
+        .toLowerCase();
+      try {
+        let parsed;
+        if (ct === "application/json" || ct === "text/json") {
+          parsed = await readBody(req);
+        } else if (
+          ct === "application/gzip" ||
+          ct === "application/x-gzip" ||
+          ct === "application/octet-stream"
+        ) {
+          const buf = await readBodyBuffer(req);
+          parsed = decodeImportBodyFromBuffer(buf);
+        } else {
+          return json(
+            res,
+            415,
+            apiErrorBody(
+              "Content-Type must be application/json, application/gzip, or application/octet-stream.",
+            ),
+          );
+        }
+        const payload = normalizeImportPayload(parsed, normalizeMemoryGraphCategory, normGraphLabel);
+        const counts = replaceMemoryGraphInDatabase(db, payload, () =>
+          ensureMemoryGraphHubAnchorsPresent(db),
+        );
+        return json(res, 200, { ok: true, ...counts });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        const status = e instanceof BodyTooLargeError ? 413 : 400;
+        return json(res, status, apiErrorBody(msg));
+      }
     }
 
     if (req.method === "GET" && p === "/api/analytics") {

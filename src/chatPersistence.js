@@ -415,10 +415,100 @@ export async function postIrPanelLockUnlock(panel, pin) {
   return data;
 }
 
-/** Raw memory graph from the DB (category, short label, fact blob, edges). */
-export async function fetchMemoryGraphFromApi() {
-  const res = await fetch(apiUrl("api/memory-graph"));
+/**
+ * Raw memory graph from the DB (category, short label, fact blob, edges).
+ * @param {{ signal?: AbortSignal }} [opts]
+ */
+export async function fetchMemoryGraphFromApi(opts = {}) {
+  const { signal } = opts;
+  const res = await fetch(apiUrl("api/memory-graph"), { signal });
   return assertOkOrThrow(res, "Memory graph");
+}
+
+/**
+ * Full replace import (JSON or gzip+tar from export). Server wipes existing graph then inserts file data.
+ * @param {string | Blob | ArrayBuffer | ArrayBufferView} body
+ * @param {string} contentType e.g. `application/json` or `application/gzip`
+ * @param {{ signal?: AbortSignal }} [opts]
+ * @returns {Promise<{ nodesImported: number, edgesImported: number }>}
+ */
+/**
+ * @param {string} archivePassphraseHex 64 hex chars (SHA256(SHA384(utf8 password)) chain)
+ * @param {Record<string, unknown>} aiModelsSnapshot
+ * @param {{ signal?: AbortSignal }} [opts]
+ * @returns {Promise<Blob>}
+ */
+/**
+ * @param {ArrayBuffer | ArrayBufferView} buffer
+ * @param {string} archivePassphraseHex
+ * @param {{ signal?: AbortSignal }} [opts]
+ */
+export async function importProjectProfileMf(buffer, archivePassphraseHex, opts = {}) {
+  const { signal } = opts;
+  const body =
+    buffer instanceof ArrayBuffer
+      ? buffer
+      : new Uint8Array(
+          /** @type {ArrayBuffer} */ (buffer.buffer),
+          buffer.byteOffset,
+          buffer.byteLength,
+        );
+  const res = await fetch(apiUrl("api/project-profile/import"), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/octet-stream",
+      "X-Mf0-Archive-Passphrase-Hex": String(archivePassphraseHex ?? "")
+        .trim()
+        .toLowerCase(),
+    },
+    body,
+    signal,
+  });
+  const data = await readJsonSafe(res);
+  if (res.status === 401 && data.error === "WRONG_ARCHIVE_PASSWORD") {
+    const err = new Error("WRONG_ARCHIVE_PASSWORD");
+    throw err;
+  }
+  if (!res.ok || data.ok !== true) {
+    throw new Error(apiErrMessage(data, `Project profile import ${res.status}`));
+  }
+  return data;
+}
+
+export async function exportProjectProfileMf(archivePassphraseHex, aiModelsSnapshot, opts = {}) {
+  const { signal } = opts;
+  const res = await fetch(apiUrl("api/project-profile/export"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      archivePassphraseHex: String(archivePassphraseHex ?? "").trim().toLowerCase(),
+      aiModelsSnapshot: aiModelsSnapshot && typeof aiModelsSnapshot === "object" ? aiModelsSnapshot : { keys: {} },
+    }),
+    signal,
+  });
+  if (!res.ok) {
+    const data = await readJsonSafe(res);
+    throw new Error(apiErrMessage(data, `Project profile export ${res.status}`));
+  }
+  return res.blob();
+}
+
+export async function importMemoryGraphReplace(body, contentType, opts = {}) {
+  const { signal } = opts;
+  const res = await fetch(apiUrl("api/memory-graph/import"), {
+    method: "POST",
+    headers: { "Content-Type": String(contentType || "application/octet-stream") },
+    body,
+    signal,
+  });
+  const data = await readJsonSafe(res);
+  if (!res.ok || data.ok !== true) {
+    throw new Error(apiErrMessage(data, `Memory graph import ${res.status}`));
+  }
+  return {
+    nodesImported: Number(data.nodesImported) || 0,
+    edgesImported: Number(data.edgesImported) || 0,
+  };
 }
 
 /** Aggregated usage stats: live regular chats plus archived rows from cleared IR threads and deleted themes. */
