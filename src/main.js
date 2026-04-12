@@ -4330,6 +4330,8 @@ function initChatComposer() {
     let pending = null;
     let fullText = "";
     let didAppendUserToUi = false;
+    /** Caption or synthesized brief for DB / bubble (set after `promptForApi` is built). */
+    let turnUserTextForUiAndDb = persistUserText;
 
     chatComposerSending = true;
     syncAllAssistantRetryButtons();
@@ -4395,6 +4397,12 @@ function initChatComposer() {
           : note;
       }
 
+      turnUserTextForUiAndDb =
+        persistUserText.trim() ||
+        (modeForSend === "image" && attApi.images.length > 0 && String(promptForApi ?? "").trim()
+          ? String(promptForApi).trim()
+          : persistUserText);
+
       /** @type {{ images: Array<{ mimeType: string, base64: string }> } | undefined} */
       const chatAttachments = attApi.images.length > 0 ? { images: attApi.images } : undefined;
 
@@ -4404,7 +4412,7 @@ function initChatComposer() {
         `Chat → request: ${attachModeLogLabel(modeForSend)}, model ${modelLabel}, input chars: ${trimmed.length}, attachments: ${filesSnapshot.length}`,
       );
 
-      appendUserMessage(persistUserText, modelLabel, {
+      appendUserMessage(turnUserTextForUiAndDb, modelLabel, {
         webSearch: modeForSend === "web",
         imageCreation: modeForSend === "image",
         deepResearch: modeForSend === "research",
@@ -4541,7 +4549,7 @@ function initChatComposer() {
             : fullText;
         if (!hadAssistantErr) {
           helpChatLlmSession.push(
-            { role: "user", content: persistUserText },
+            { role: "user", content: turnUserTextForUiAndDb },
             { role: "assistant", content: String(assistantOutHelp ?? "") },
           );
         }
@@ -4557,7 +4565,7 @@ function initChatComposer() {
         try {
           /** @type {Record<string, unknown>} */
           const turnPayload = {
-            user_text: persistUserText,
+            user_text: turnUserTextForUiAndDb,
             assistant_text: assistantOut || null,
             requested_provider_id: providerId,
             responding_provider_id: providerId,

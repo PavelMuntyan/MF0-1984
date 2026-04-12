@@ -114,6 +114,10 @@ const TRIVIAL_ACK_LINE_RE =
  */
 function getGeminiGenerationConfigForModel(modelId) {
   const id = String(modelId ?? "").toLowerCase();
+  /* Image / Imagen generateContent surfaces reject thinkingLevel and often thinkingBudget. */
+  if (/\bimagen\b|image-preview|-image|flash-image/.test(id)) {
+    return {};
+  }
   if (id.includes("gemini-3")) {
     return {
       thinkingConfig: {
@@ -122,10 +126,10 @@ function getGeminiGenerationConfigForModel(modelId) {
     };
   }
   return {
-  thinkingConfig: {
-    thinkingBudget: 0,
-  },
-};
+    thinkingConfig: {
+      thinkingBudget: 0,
+    },
+  };
 }
 
 /**
