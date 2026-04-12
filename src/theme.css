@@ -189,6 +189,62 @@ body {
 .msg-assistant-text.msg-assistant-text--md img,
 .msg-user-text img {
   cursor: zoom-in;
+  max-width: min(100%, 600px);
+  max-height: 600px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+
+/* Assistant markdown: generated / inline images + download control (see markdown.js) */
+.msg-md-inline-image-wrap {
+  position: relative;
+  display: inline-block;
+  max-width: min(100%, 600px);
+  vertical-align: top;
+  margin: 0.5rem 0;
+}
+
+.msg-md-inline-image-wrap img {
+  margin: 0;
+  cursor: zoom-in;
+}
+
+.msg-md-image-download {
+  position: absolute;
+  right: 0.35rem;
+  bottom: 0.35rem;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  margin: 0;
+  border: none;
+  border-radius: 0.4rem;
+  cursor: pointer;
+  color: hsl(var(--foreground));
+  background: hsl(var(--background) / 0.88);
+  box-shadow:
+    0 0 0 1px hsl(var(--border) / 0.55),
+    0 2px 8px hsl(0 0% 0% / 0.12);
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.msg-md-image-download:hover {
+  background: hsl(var(--muted));
+  color: hsl(var(--foreground));
+}
+
+.msg-md-image-download:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px hsl(var(--background)),
+    0 0 0 4px hsl(var(--ring) / 0.4);
 }
 
 /* Full-screen notice when dev has no model API keys in `.env` */
@@ -2414,15 +2470,14 @@ button.btn {
 .msg-assistant-text.msg-assistant-text--md img {
   display: block;
   box-sizing: border-box;
-  max-width: 100%;
-  width: auto;
-  height: auto;
   margin: 0.5rem 0;
   border-radius: 0.5rem;
   border: 1px solid hsl(var(--border));
-  /* Fit to width without hard crop; keep source aspect ratio */
-  object-fit: contain;
   object-position: left top;
+}
+
+.msg-assistant-text.msg-assistant-text--md .msg-md-inline-image-wrap img {
+  margin: 0;
 }
 
 .msg-assistant-text.msg-assistant-text--md table {

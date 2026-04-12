@@ -4103,6 +4103,66 @@ function initChatFileDropZone() {
   window.addEventListener("blur", clearDropHighlight);
 }
 
+/**
+ * @param {HTMLImageElement} img
+ * @returns {string}
+ */
+function downloadFilenameForChatImage(img) {
+  const src = img.currentSrc || img.src || "";
+  const dm = /^data:image\/(\w+);/i.exec(src);
+  const extFromData = dm ? (dm[1].toLowerCase() === "jpeg" ? "jpg" : dm[1].toLowerCase()) : "";
+  const ext = extFromData || "png";
+  const raw = String(img.getAttribute("alt") ?? "image")
+    .trim()
+    .replace(/[/\\?%*:|"<>]/g, "-")
+    .replace(/\s+/g, " ")
+    .slice(0, 72);
+  const base = raw || "image";
+  return /\.[a-z0-9]{2,4}$/i.test(base) ? base : `${base}.${ext}`;
+}
+
+/**
+ * @param {HTMLImageElement} img
+ */
+async function downloadChatMessageImage(img) {
+  const src = img.currentSrc || img.src;
+  if (!src) return;
+  const name = downloadFilenameForChatImage(img);
+  try {
+    if (src.startsWith("data:")) {
+      const a = document.createElement("a");
+      a.href = src;
+      a.download = name;
+      a.rel = "noopener";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      return;
+    }
+    const res = await fetch(src, { mode: "cors", referrerPolicy: "no-referrer" });
+    if (!res.ok) throw new Error("fetch failed");
+    const blob = await res.blob();
+    const obj = URL.createObjectURL(blob);
+    try {
+      const a = document.createElement("a");
+      a.href = obj;
+      a.download = name;
+      a.rel = "noopener";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } finally {
+      URL.revokeObjectURL(obj);
+    }
+  } catch {
+    try {
+      window.open(src, "_blank", "noopener,noreferrer");
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 /** Click an image in chat history → fullscreen; Esc or backdrop click closes. */
 function initChatImageLightbox() {
   const root = document.getElementById("chat-image-lightbox");
@@ -4162,6 +4222,17 @@ function initChatImageLightbox() {
   }
 
   list.addEventListener("click", (e) => {
+    const dl = e.target instanceof Element ? e.target.closest(".msg-md-image-download") : null;
+    if (dl instanceof HTMLButtonElement) {
+      const wrap = dl.closest(".msg-md-inline-image-wrap");
+      const img = wrap?.querySelector("img");
+      if (img instanceof HTMLImageElement) {
+        e.preventDefault();
+        e.stopPropagation();
+        void downloadChatMessageImage(img);
+      }
+      return;
+    }
     const t = e.target;
     if (!(t instanceof HTMLImageElement)) return;
     if (!t.closest(".msg")) return;
