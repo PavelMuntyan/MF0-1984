@@ -282,6 +282,10 @@ body {
   color: hsl(var(--foreground));
 }
 
+.env-keys-blocker-card > .env-keys-blocker-text + .env-keys-blocker-text {
+  margin-top: 0.85rem;
+}
+
 .env-keys-blocker-code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 0.875em;
