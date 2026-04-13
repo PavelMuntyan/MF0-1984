@@ -46,6 +46,7 @@ const migration007 = path.join(root, "db", "migrations", "007_ir_panel_pin_lock.
 const migration008 = path.join(root, "db", "migrations", "008_access_external_services.sql");
 const migration009 = path.join(root, "db", "migrations", "009_analytics_usage_archive.sql");
 const migration010 = path.join(root, "db", "migrations", "010_llm_token_usage.sql");
+const migration011 = path.join(root, "db", "migrations", "011_analytics_aux_llm_usage.sql");
 const PORT = resolveApiPort(process.env.API_PORT);
 
 /** Default max JSON body size for POST/PUT (bytes). Override with API_MAX_BODY_BYTES. */
@@ -65,6 +66,14 @@ function getApiMaxBodyBytes() {
 
 
 const ANALYTICS_PROVIDER_IDS = ["openai", "perplexity", "gemini-flash", "anthropic"];
+
+/** Allowed `request_kind` values for POST /api/analytics/aux-llm-usage */
+const AUX_LLM_USAGE_KINDS = new Set([
+  "memory_tree_router",
+  "interests_sketch",
+  "memory_graph_normalize",
+  "intro_graph_extract",
+]);
 
 function applyContextEngineMigration(database) {
   const row = database.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='rules'`).get();
@@ -288,7 +297,18 @@ function ensureDatabase() {
   migrateAccessExternalServicesFromJsonIfNeeded(database);
   applyAnalyticsUsageArchiveMigration(database);
   applyLlmTokenUsageMigration(database);
+  applyAnalyticsAuxLlmUsageMigration(database);
   return database;
+}
+
+function applyAnalyticsAuxLlmUsageMigration(database) {
+  const row = database
+    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='analytics_aux_llm_usage'`)
+    .get();
+  if (row) return;
+  if (fs.existsSync(migration011)) {
+    database.exec(fs.readFileSync(migration011, "utf8"));
+  }
 }
 
 function applyLlmTokenUsageMigration(database) {
@@ -1405,6 +1425,7 @@ function analyticsDialogWhereSql(alias = "d") {
 function getAnalyticsPayload() {
   applyAnalyticsUsageArchiveMigration(db);
   applyLlmTokenUsageMigration(db);
+  applyAnalyticsAuxLlmUsageMigration(db);
   /** @type {Record<string, { requestsSent: number, responsesOk: number, imageRequests: number, researchRequests: number, webRequests: number, accessRequests: number, tokensPrompt: number, tokensCompletion: number, tokensTotal: number }>} */
   const providers = {};
   for (const id of ANALYTICS_PROVIDER_IDS) {
@@ -1504,6 +1525,29 @@ function getAnalyticsPayload() {
     }
   }
 
+  const auxTbl = db
+    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='analytics_aux_llm_usage'`)
+    .get();
+  if (auxTbl) {
+    const auxTokAgg = db
+      .prepare(
+        `SELECT provider_id AS pid,
+            SUM(COALESCE(llm_prompt_tokens, 0)) AS tokens_prompt,
+            SUM(COALESCE(llm_completion_tokens, 0)) AS tokens_completion,
+            SUM(COALESCE(llm_total_tokens, 0)) AS tokens_total
+          FROM analytics_aux_llm_usage
+          GROUP BY provider_id`,
+      )
+      .all();
+    for (const row of auxTokAgg) {
+      const pid = String(row.pid ?? "").trim();
+      if (!providers[pid]) continue;
+      providers[pid].tokensPrompt += Number(row.tokens_prompt) || 0;
+      providers[pid].tokensCompletion += Number(row.tokens_completion) || 0;
+      providers[pid].tokensTotal += Number(row.tokens_total) || 0;
+    }
+  }
+
   const dayRows = db
     .prepare(
       `SELECT
@@ -1600,6 +1644,30 @@ function getAnalyticsPayload() {
       )
       .all();
     for (const r of archTokDays) {
+      const day = String(r.day ?? "").trim();
+      const pid = String(r.pid ?? "").trim();
+      if (!day || !ANALYTICS_PROVIDER_IDS.includes(pid)) continue;
+      if (!dayTokenMap.has(day)) {
+        const o = {};
+        for (const id of ANALYTICS_PROVIDER_IDS) o[id] = 0;
+        dayTokenMap.set(day, o);
+      }
+      const cur = dayTokenMap.get(day)[pid] || 0;
+      dayTokenMap.get(day)[pid] = cur + (Number(r.cnt) || 0);
+    }
+  }
+
+  if (auxTbl) {
+    const auxTokDays = db
+      .prepare(
+        `SELECT DATE(created_at) AS day, provider_id AS pid,
+            SUM(COALESCE(llm_total_tokens, 0)) AS cnt
+          FROM analytics_aux_llm_usage
+          WHERE datetime(created_at) >= datetime('now', '-30 days')
+          GROUP BY day, pid`,
+      )
+      .all();
+    for (const r of auxTokDays) {
       const day = String(r.day ?? "").trim();
       const pid = String(r.pid ?? "").trim();
       if (!day || !ANALYTICS_PROVIDER_IDS.includes(pid)) continue;
@@ -2056,6 +2124,39 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && p === "/api/analytics") {
       return json(res, 200, { ok: true, ...getAnalyticsPayload() });
+    }
+
+    if (req.method === "POST" && p === "/api/analytics/aux-llm-usage") {
+      try {
+        const body = await readBody(req);
+        const pid = String(body.provider_id ?? body.providerId ?? "").trim();
+        const kind = String(body.request_kind ?? body.requestKind ?? "").trim();
+        if (!ANALYTICS_PROVIDER_IDS.includes(pid)) {
+          return json(res, 400, apiErrorBody("Unknown or missing provider_id"));
+        }
+        if (!AUX_LLM_USAGE_KINDS.has(kind)) {
+          return json(res, 400, apiErrorBody("Unknown or missing request_kind"));
+        }
+        const optTok = (v) => {
+          const n = parseInt(String(v ?? ""), 10);
+          if (!Number.isFinite(n) || n < 0) return 0;
+          return n;
+        };
+        const pp = optTok(body.llm_prompt_tokens);
+        const pc = optTok(body.llm_completion_tokens);
+        const pt = optTok(body.llm_total_tokens);
+        if (pp === 0 && pc === 0 && pt === 0) {
+          return json(res, 400, apiErrorBody("At least one non-zero token field is required"));
+        }
+        applyAnalyticsAuxLlmUsageMigration(db);
+        db.prepare(
+          `INSERT INTO analytics_aux_llm_usage (id, provider_id, request_kind, llm_prompt_tokens, llm_completion_tokens, llm_total_tokens)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        ).run(crypto.randomUUID(), pid, kind, pp, pc, pt);
+        return json(res, 200, { ok: true });
+      } catch (e) {
+        return json(res, 400, apiErrorBody(e instanceof Error ? e.message : String(e)));
+      }
     }
 
     if (req.method === "POST" && p === "/api/memory-graph/ingest") {

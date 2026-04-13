@@ -3,6 +3,13 @@
  * Injected into the main chat as a marked supplement (alongside existing RAG).
  */
 
+import {
+  usageFromAnthropicResponse,
+  usageFromGeminiResponse,
+  usageFromOpenAiStyleUsage,
+} from "./chatApi.js";
+import { recordAuxLlmUsage } from "./chatPersistence.js";
+
 /** First line of the supplement user message — must match fitContextToBudget detection. */
 export const MF0_MEMORY_TREE_SUPPLEMENT_PREFIX =
   "<<< MF0_MEMORY_TREE_SUPPLEMENT (personal Memory tree excerpts for this request; not the user's literal message)";
@@ -157,6 +164,7 @@ function pickRouterKey(allKeys, activeProviderId, activeApiKey) {
  * @param {string} key
  * @param {string} treeDump
  * @param {string} userQuery
+ * @returns {Promise<{ text: string, usage: { promptTokens: number, completionTokens: number, totalTokens: number } | null }>}
  */
 async function runRouterModel(providerId, key, treeDump, userQuery) {
   const userBlock =
@@ -184,7 +192,8 @@ async function runRouterModel(providerId, key, treeDump, userQuery) {
       if (!res.ok) throw new Error(await readErrorBody(res));
       const data = await res.json();
       const content = data.choices?.[0]?.message?.content;
-      return typeof content === "string" ? content : String(content ?? "");
+      const text = typeof content === "string" ? content : String(content ?? "");
+      return { text, usage: usageFromOpenAiStyleUsage(data.usage) };
     }
     case "anthropic": {
       const body = {
@@ -207,11 +216,12 @@ async function runRouterModel(providerId, key, treeDump, userQuery) {
       const data = await res.json();
       const blocks = data.content;
       if (!Array.isArray(blocks)) throw new Error("Unexpected Anthropic response");
-      return blocks
+      const text = blocks
         .filter((b) => b.type === "text" && b.text)
         .map((b) => b.text)
         .join("\n")
         .trim();
+      return { text, usage: usageFromAnthropicResponse(data) };
     }
     case "gemini-flash": {
       const url = `/llm/gemini/v1beta/models/${ROUTER_MODEL["gemini-flash"]}:generateContent?key=${encodeURIComponent(key)}`;
@@ -235,11 +245,12 @@ async function runRouterModel(providerId, key, treeDump, userQuery) {
       const data = await res.json();
       const cand = data.candidates?.[0]?.content?.parts;
       if (!Array.isArray(cand)) throw new Error("Empty Gemini router response");
-      return cand
+      const text = cand
         .filter((p) => p && p.thought !== true && p.text)
         .map((p) => String(p.text))
         .join("\n")
         .trim();
+      return { text, usage: usageFromGeminiResponse(data) };
     }
     case "perplexity": {
       const res = await fetch("/llm/perplexity/chat/completions", {
@@ -262,7 +273,8 @@ async function runRouterModel(providerId, key, treeDump, userQuery) {
       if (!res.ok) throw new Error(await readErrorBody(res));
       const data = await res.json();
       const content = data.choices?.[0]?.message?.content;
-      return typeof content === "string" ? content : String(content ?? "");
+      const text = typeof content === "string" ? content : String(content ?? "");
+      return { text, usage: usageFromOpenAiStyleUsage(data.usage) };
     }
     default:
       throw new Error(`Memory tree router: unsupported provider ${providerId}`);
@@ -291,8 +303,17 @@ export async function fetchMemoryTreeSupplementForPrompt(args) {
   const treeDump = serializeMemoryGraphForRouter(graph, userQuery);
   if (!treeDump.trim()) return "";
 
-  const raw = await runRouterModel(providerId, key, treeDump, userQuery);
-  const out = String(raw ?? "").trim();
+  const { text: rawText, usage } = await runRouterModel(providerId, key, treeDump, userQuery);
+  if (usage) {
+    void recordAuxLlmUsage({
+      provider_id: providerId,
+      request_kind: "memory_tree_router",
+      llm_prompt_tokens: usage.promptTokens,
+      llm_completion_tokens: usage.completionTokens,
+      llm_total_tokens: usage.totalTokens,
+    }).catch(() => {});
+  }
+  const out = String(rawText ?? "").trim();
   if (!out || /^NONE\.?$/i.test(out) || /^\(none\)$/i.test(out)) return "";
   return out;
 }

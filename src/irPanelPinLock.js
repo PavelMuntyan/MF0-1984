@@ -223,7 +223,7 @@ export function initIrPanelPinLock(deps) {
   document.getElementById("ir-set-pin-cancel")?.addEventListener("click", () => closeSet());
   document.getElementById("ir-unlock-pin-cancel")?.addEventListener("click", () => closeUnlock());
 
-  document.getElementById("ir-set-pin-save")?.addEventListener("click", async () => {
+  async function commitSetPin() {
     clearSetErrors();
     const panel = activePanel;
     if (!panel) return;
@@ -259,9 +259,9 @@ export function initIrPanelPinLock(deps) {
       }
       appendActivityLog?.(`${PANEL_LABEL[panel]} PIN: ${msg}`);
     }
-  });
+  }
 
-  document.getElementById("ir-unlock-pin-open")?.addEventListener("click", async () => {
+  async function commitUnlockPin() {
     clearUnlockErrors();
     const panel = activePanel;
     if (!panel) return;
@@ -296,7 +296,35 @@ export function initIrPanelPinLock(deps) {
       }
       appendActivityLog?.(`${PANEL_LABEL[panel]} unlock: ${msg}`);
     }
-  });
+  }
+
+  document.getElementById("ir-set-pin-save")?.addEventListener("click", () => void commitSetPin());
+  document.getElementById("ir-unlock-pin-open")?.addEventListener("click", () => void commitUnlockPin());
+
+  /**
+   * Enter from PIN fields (or anywhere in the modal except the primary button) submits the default action.
+   * @param {HTMLElement} modal
+   * @param {string} primaryId
+   * @param {() => void} submit
+   */
+  function wireEnterSubmitsModal(modal, primaryId, submit) {
+    modal.addEventListener(
+      "keydown",
+      (e) => {
+        if (e.key !== "Enter" || e.isComposing) return;
+        if (e.target instanceof HTMLTextAreaElement) return;
+        const primary = document.getElementById(primaryId);
+        if (!primary || primary.disabled) return;
+        if (e.target === primary) return;
+        e.preventDefault();
+        submit();
+      },
+      true,
+    );
+  }
+
+  wireEnterSubmitsModal(setModal, "ir-set-pin-save", () => void commitSetPin());
+  wireEnterSubmitsModal(unlockModal, "ir-unlock-pin-open", () => void commitUnlockPin());
 
   openSetPinModalImpl = (panel) => {
     activePanel = panel;

@@ -7,7 +7,7 @@ import {
   streamGeminiGenerateContent,
   streamOpenAICompatJson,
 } from "./streaming.js";
-import { titleFromUserMessage } from "./chatPersistence.js";
+import { recordAuxLlmUsage, titleFromUserMessage } from "./chatPersistence.js";
 import {
   collectGeminiGroundingEntries,
   collectOpenAiLikeAnnotationUrls,
@@ -28,8 +28,26 @@ export const PROVIDER_DISPLAY = {
  * @typedef {{ promptTokens: number, completionTokens: number, totalTokens: number }} LlmUsageTotals
  */
 
+/**
+ * @param {string} providerId
+ * @param {"memory_tree_router" | "interests_sketch" | "memory_graph_normalize" | "intro_graph_extract"} requestKind
+ * @param {LlmUsageTotals | null | undefined} usage
+ */
+function reportAuxLlmUsage(providerId, requestKind, usage) {
+  if (!usage || typeof usage !== "object") return;
+  const pid = String(providerId ?? "").trim();
+  if (!pid) return;
+  void recordAuxLlmUsage({
+    provider_id: pid,
+    request_kind: requestKind,
+    llm_prompt_tokens: usage.promptTokens,
+    llm_completion_tokens: usage.completionTokens,
+    llm_total_tokens: usage.totalTokens,
+  }).catch(() => {});
+}
+
 /** @param {unknown} u */
-function usageFromOpenAiStyleUsage(u) {
+export function usageFromOpenAiStyleUsage(u) {
   if (!u || typeof u !== "object") return null;
   const o = /** @type {Record<string, unknown>} */ (u);
   const p = Number(o.prompt_tokens);
@@ -45,7 +63,7 @@ function usageFromOpenAiStyleUsage(u) {
 }
 
 /** @param {unknown} data — top-level Anthropic Messages API JSON */
-function usageFromAnthropicResponse(data) {
+export function usageFromAnthropicResponse(data) {
   const u = data && typeof data === "object" ? /** @type {Record<string, unknown>} */ (data).usage : null;
   if (!u || typeof u !== "object") return null;
   const o = /** @type {Record<string, unknown>} */ (u);
@@ -75,7 +93,7 @@ function usageFromOpenAiImageResponse(data) {
 }
 
 /** @param {unknown} data — top-level Gemini generateContent JSON */
-function usageFromGeminiResponse(data) {
+export function usageFromGeminiResponse(data) {
   const um = data && typeof data === "object" ? /** @type {Record<string, unknown>} */ (data).usageMetadata : null;
   if (!um || typeof um !== "object") return null;
   const o = /** @type {Record<string, unknown>} */ (um);
@@ -1437,12 +1455,14 @@ export async function extractChatInterestSketchForIngest(providerId, apiKey, use
     const content = data.choices?.[0]?.message?.content;
     const rawText = openAiChatCompletionMessageContentToString(content);
     if (!rawText.trim()) throw new Error("Empty API response");
+    reportAuxLlmUsage(providerId, "interests_sketch", usageFromOpenAiStyleUsage(data.usage));
     return clampGraphPayloadToInterestsOnly(parseIntroGraphJsonFromModelText(rawText));
   }
 
-  const { text } = await completeChatMessage(providerId, userBlock, key, {
+  const { text, usage } = await completeChatMessage(providerId, userBlock, key, {
     systemInstruction: `${CHAT_INTEREST_SKETCH_EXTRACT_SYSTEM}\nRespond with a single JSON object only, no markdown fences.`,
   });
+  reportAuxLlmUsage(providerId, "interests_sketch", usage);
   return clampGraphPayloadToInterestsOnly(parseIntroGraphJsonFromModelText(text));
 }
 
@@ -1631,6 +1651,7 @@ export async function normalizeIntroMemoryGraphForDb(
     const content = data.choices?.[0]?.message?.content;
     const rawText = openAiChatCompletionMessageContentToString(content);
     if (!rawText.trim()) throw new Error("Empty API response");
+    reportAuxLlmUsage(providerId, "memory_graph_normalize", usageFromOpenAiStyleUsage(data.usage));
     const normalized = parseIntroGraphJsonFromModelTextSafe(rawText, "Intro normalize");
     const n =
       normalized.entities.length + normalized.links.length + (normalized.commands?.length ?? 0);
@@ -1638,9 +1659,10 @@ export async function normalizeIntroMemoryGraphForDb(
     return { ...base, commands: fromExtract };
   }
 
-  const { text } = await completeChatMessage(providerId, userJson, key, {
+  const { text, usage } = await completeChatMessage(providerId, userJson, key, {
     systemInstruction: `${INTRO_GRAPH_NORMALIZE_SYSTEM}\nRespond with one JSON object only, no markdown fences.`,
   });
+  reportAuxLlmUsage(providerId, "memory_graph_normalize", usage);
   const normalized = parseIntroGraphJsonFromModelTextSafe(text, "Intro normalize");
   const n =
     normalized.entities.length + normalized.links.length + (normalized.commands?.length ?? 0);
@@ -1697,12 +1719,14 @@ export async function extractIntroMemoryGraphForIngest(providerId, apiKey, userT
     const content = data.choices?.[0]?.message?.content;
     const rawText = openAiChatCompletionMessageContentToString(content);
     if (!rawText.trim()) throw new Error("Empty API response");
+    reportAuxLlmUsage(providerId, "intro_graph_extract", usageFromOpenAiStyleUsage(data.usage));
     return parseIntroGraphJsonFromModelTextSafe(rawText, "Intro extract");
   }
 
-  const { text } = await completeChatMessage(providerId, userBlock, key, {
+  const { text, usage } = await completeChatMessage(providerId, userBlock, key, {
     systemInstruction: `${INTRO_GRAPH_EXTRACT_SYSTEM}\nRespond with a single JSON object only, no markdown fences.`,
   });
+  reportAuxLlmUsage(providerId, "intro_graph_extract", usage);
   return parseIntroGraphJsonFromModelTextSafe(text, "Intro extract");
 }
 

@@ -73,9 +73,9 @@ function renderAnalytics(root, raw) {
           <div class="analytics-dl-row"><dt>Deep research</dt><dd>${dr}</dd></div>
           <div class="analytics-dl-row"><dt>Web search</dt><dd>${wb}</dd></div>
           <div class="analytics-dl-row"><dt>Access requests</dt><dd>${ar}</dd></div>
-          <div class="analytics-dl-row"><dt>Prompt tokens (reported)</dt><dd>${tp.toLocaleString()}</dd></div>
-          <div class="analytics-dl-row"><dt>Completion tokens (reported)</dt><dd>${tc.toLocaleString()}</dd></div>
-          <div class="analytics-dl-row"><dt>Total tokens (reported)</dt><dd>${tt.toLocaleString()}</dd></div>
+          <div class="analytics-dl-row"><dt>Prompt tokens</dt><dd>${tp.toLocaleString()}</dd></div>
+          <div class="analytics-dl-row"><dt>Completion tokens</dt><dd>${tc.toLocaleString()}</dd></div>
+          <div class="analytics-dl-row"><dt>Total tokens</dt><dd>${tt.toLocaleString()}</dd></div>
         </dl>
       </section>`;
   }).join("");
@@ -132,7 +132,7 @@ function renderAnalytics(root, raw) {
       </section>
       <section class="analytics-chart-block">
         <h3 class="analytics-section-title">Last 30 days — reported total tokens per day</h3>
-        <p class="analytics-tokens-note">Stack height is the sum of total tokens the provider reported for that day (per model). Days or models with no usage metadata count as zero.</p>
+        <p class="analytics-tokens-note">Includes chat replies, image generation when reported, plus background calls (Memory tree router, chat interest sketch, graph normalize, Intro graph extract) when the provider returns usage. Days or models with no usage metadata count as zero.</p>
         <div class="analytics-legend">
           ${PROVIDER_IDS.map(
             (id) =>

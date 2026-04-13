@@ -239,6 +239,26 @@ export async function saveConversationTurn(dialogId, payload) {
 }
 
 /**
+ * Record token usage for background LLM calls (Memory tree router, interest sketch, graph extract/normalize).
+ * @param {{ provider_id: string, request_kind: string, llm_prompt_tokens?: number, llm_completion_tokens?: number, llm_total_tokens?: number }} payload
+ */
+export async function recordAuxLlmUsage(payload) {
+  const res = await fetch(apiUrl("api/analytics/aux-llm-usage"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await readJsonSafe(res);
+    throw new Error(apiErrMessage(err, `Aux LLM usage ${res.status}`));
+  }
+  const data = await readJsonSafe(res);
+  if (data?.ok !== true) {
+    throw new Error(apiErrMessage(data, "Aux LLM usage rejected"));
+  }
+}
+
+/**
  * Favorite assistant reply: markdown snapshot in the DB.
  * @param {string} turnId
  * @param {{ favorite: boolean, markdown?: string }} body
