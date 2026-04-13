@@ -1695,13 +1695,13 @@ button.btn {
 }
 
 .analytics-bar-seg--openai {
-  background: #10a37f;
+  background: #eab308;
 }
 .analytics-bar-seg--perplexity {
-  background: #3b82f6;
+  background: #15803d;
 }
 .analytics-bar-seg--gemini-flash {
-  background: #4285f4;
+  background: #38bdf8;
 }
 .analytics-bar-seg--anthropic {
   background: #d97757;
