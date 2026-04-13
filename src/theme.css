@@ -1616,6 +1616,13 @@ button.btn {
   margin-bottom: 1.5rem;
 }
 
+.analytics-tokens-note {
+  margin: 0 0 0.75rem;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: var(--muted-fg, #8b949e);
+}
+
 .analytics-section-title {
   margin: 0 0 0.5rem;
   font-size: 0.95rem;

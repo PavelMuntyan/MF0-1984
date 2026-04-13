@@ -27,6 +27,7 @@ function renderAnalytics(root, raw) {
   const data = raw && typeof raw === "object" ? raw : {};
   const providers = data.providers && typeof data.providers === "object" ? data.providers : {};
   const dailyUsage = Array.isArray(data.dailyUsage) ? data.dailyUsage : [];
+  const dailyTokens = Array.isArray(data.dailyTokens) ? data.dailyTokens : [];
   const themesCount = Number(data.themesCount) || 0;
   const dialogsCount = Number(data.dialogsCount) || 0;
   const mg = data.memoryGraph && typeof data.memoryGraph === "object" ? data.memoryGraph : {};
@@ -42,6 +43,14 @@ function renderAnalytics(root, raw) {
     if (sum > maxDay) maxDay = sum;
   }
 
+  let maxTokDay = 1;
+  for (const day of dailyTokens) {
+    const bp = day?.byProvider && typeof day.byProvider === "object" ? day.byProvider : {};
+    let sum = 0;
+    for (const id of PROVIDER_IDS) sum += Number(bp[id]) || 0;
+    if (sum > maxTokDay) maxTokDay = sum;
+  }
+
   const cardsHtml = PROVIDER_IDS.map((id) => {
     const p = providers[id] && typeof providers[id] === "object" ? providers[id] : {};
     const label = escapeHtml(String(PROVIDER_DISPLAY[id] ?? id));
@@ -51,6 +60,9 @@ function renderAnalytics(root, raw) {
     const dr = Number(p.researchRequests) || 0;
     const wb = Number(p.webRequests) || 0;
     const ar = Number(p.accessRequests) || 0;
+    const tp = Number(p.tokensPrompt) || 0;
+    const tc = Number(p.tokensCompletion) || 0;
+    const tt = Number(p.tokensTotal) || 0;
     return `
       <section class="analytics-model-card" data-provider="${id}">
         <h3 class="analytics-model-title">${label}</h3>
@@ -61,6 +73,9 @@ function renderAnalytics(root, raw) {
           <div class="analytics-dl-row"><dt>Deep research</dt><dd>${dr}</dd></div>
           <div class="analytics-dl-row"><dt>Web search</dt><dd>${wb}</dd></div>
           <div class="analytics-dl-row"><dt>Access requests</dt><dd>${ar}</dd></div>
+          <div class="analytics-dl-row"><dt>Prompt tokens (reported)</dt><dd>${tp.toLocaleString()}</dd></div>
+          <div class="analytics-dl-row"><dt>Completion tokens (reported)</dt><dd>${tc.toLocaleString()}</dd></div>
+          <div class="analytics-dl-row"><dt>Total tokens (reported)</dt><dd>${tt.toLocaleString()}</dd></div>
         </dl>
       </section>`;
   }).join("");
@@ -81,6 +96,23 @@ function renderAnalytics(root, raw) {
     })
     .join("");
 
+  const tokenBarsHtml = dailyTokens
+    .map((day) => {
+      const d = String(day?.date ?? "").trim();
+      const bp = day?.byProvider && typeof day.byProvider === "object" ? day.byProvider : {};
+      const short = escapeHtml(chartDayLabelMmDd(d));
+      const segs = PROVIDER_IDS.map((id) => {
+        const c = Number(bp[id]) || 0;
+        const pct = maxTokDay > 0 ? Math.round((c / maxTokDay) * 1000) / 10 : 0;
+        const title = escapeHtml(`${PROVIDER_DISPLAY[id] ?? id}: ${c.toLocaleString()}`);
+        return `<div class="analytics-bar-seg analytics-bar-seg--${id}" style="height:${pct}%" title="${title}"></div>`;
+      }).join("");
+      const total = PROVIDER_IDS.reduce((s, id) => s + (Number(bp[id]) || 0), 0);
+      const totalLabel = escapeHtml(total.toLocaleString());
+      return `<div class="analytics-bar-col"><div class="analytics-bar-stack">${segs}</div><span class="analytics-bar-day">${short}</span><span class="analytics-bar-total">${totalLabel}</span></div>`;
+    })
+    .join("");
+
   root.innerHTML = `
     <div class="analytics-inner">
       <header class="analytics-header">
@@ -97,6 +129,17 @@ function renderAnalytics(root, raw) {
           ).join("")}
         </div>
         <div class="analytics-bars-wrap"><div class="analytics-bars">${barsHtml}</div></div>
+      </section>
+      <section class="analytics-chart-block">
+        <h3 class="analytics-section-title">Last 30 days — reported total tokens per day</h3>
+        <p class="analytics-tokens-note">Stack height is the sum of total tokens the provider reported for that day (per model). Days or models with no usage metadata count as zero.</p>
+        <div class="analytics-legend">
+          ${PROVIDER_IDS.map(
+            (id) =>
+              `<span class="analytics-legend-item"><span class="analytics-legend-swatch analytics-bar-seg--${id}"></span>${escapeHtml(String(PROVIDER_DISPLAY[id] ?? id))}</span>`,
+          ).join("")}
+        </div>
+        <div class="analytics-bars-wrap"><div class="analytics-bars">${tokenBarsHtml}</div></div>
       </section>
       <section class="analytics-meta-grid">
         <div class="analytics-meta-card"><div class="analytics-meta-label">Themes</div><div class="analytics-meta-value">${themesCount}</div></div>

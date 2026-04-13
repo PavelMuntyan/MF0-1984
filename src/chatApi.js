@@ -23,6 +23,74 @@ export const PROVIDER_DISPLAY = {
   anthropic: "Claude",
 };
 
+/**
+ * Normalized LLM usage for analytics (optional on every request).
+ * @typedef {{ promptTokens: number, completionTokens: number, totalTokens: number }} LlmUsageTotals
+ */
+
+/** @param {unknown} u */
+function usageFromOpenAiStyleUsage(u) {
+  if (!u || typeof u !== "object") return null;
+  const o = /** @type {Record<string, unknown>} */ (u);
+  const p = Number(o.prompt_tokens);
+  const c = Number(o.completion_tokens);
+  const t = Number(o.total_tokens);
+  if (!Number.isFinite(p) && !Number.isFinite(c) && !Number.isFinite(t)) return null;
+  const promptTokens = Number.isFinite(p) ? Math.max(0, Math.floor(p)) : 0;
+  const completionTokens = Number.isFinite(c) ? Math.max(0, Math.floor(c)) : 0;
+  const totalTokens = Number.isFinite(t)
+    ? Math.max(0, Math.floor(t))
+    : promptTokens + completionTokens;
+  return { promptTokens, completionTokens, totalTokens };
+}
+
+/** @param {unknown} data — top-level Anthropic Messages API JSON */
+function usageFromAnthropicResponse(data) {
+  const u = data && typeof data === "object" ? /** @type {Record<string, unknown>} */ (data).usage : null;
+  if (!u || typeof u !== "object") return null;
+  const o = /** @type {Record<string, unknown>} */ (u);
+  const inp = Number(o.input_tokens);
+  const outp = Number(o.output_tokens);
+  if (!Number.isFinite(inp) && !Number.isFinite(outp)) return null;
+  const promptTokens = Number.isFinite(inp) ? Math.max(0, Math.floor(inp)) : 0;
+  const completionTokens = Number.isFinite(outp) ? Math.max(0, Math.floor(outp)) : 0;
+  return { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
+}
+
+/** OpenAI Images API (`/v1/images/*`): `usage` when present (e.g. gpt-image models). */
+function usageFromOpenAiImageResponse(data) {
+  const u = data && typeof data === "object" ? /** @type {Record<string, unknown>} */ (data).usage : null;
+  if (!u || typeof u !== "object") return null;
+  const o = /** @type {Record<string, unknown>} */ (u);
+  const inp = Number(o.input_tokens ?? o.prompt_tokens);
+  const outp = Number(o.output_tokens ?? o.completion_tokens);
+  const tot = Number(o.total_tokens);
+  if (!Number.isFinite(inp) && !Number.isFinite(outp) && !Number.isFinite(tot)) return null;
+  const promptTokens = Number.isFinite(inp) ? Math.max(0, Math.floor(inp)) : 0;
+  const completionTokens = Number.isFinite(outp) ? Math.max(0, Math.floor(outp)) : 0;
+  const totalTokens = Number.isFinite(tot)
+    ? Math.max(0, Math.floor(tot))
+    : promptTokens + completionTokens;
+  return { promptTokens, completionTokens, totalTokens };
+}
+
+/** @param {unknown} data — top-level Gemini generateContent JSON */
+function usageFromGeminiResponse(data) {
+  const um = data && typeof data === "object" ? /** @type {Record<string, unknown>} */ (data).usageMetadata : null;
+  if (!um || typeof um !== "object") return null;
+  const o = /** @type {Record<string, unknown>} */ (um);
+  const p = Number(o.promptTokenCount);
+  const c = Number(o.candidatesTokenCount);
+  const t = Number(o.totalTokenCount);
+  if (!Number.isFinite(p) && !Number.isFinite(c) && !Number.isFinite(t)) return null;
+  const promptTokens = Number.isFinite(p) ? Math.max(0, Math.floor(p)) : 0;
+  const completionTokens = Number.isFinite(c) ? Math.max(0, Math.floor(c)) : 0;
+  const totalTokens = Number.isFinite(t)
+    ? Math.max(0, Math.floor(t))
+    : promptTokens + completionTokens;
+  return { promptTokens, completionTokens, totalTokens };
+}
+
 function openAiDialogue() {
   return getUserAiModel("openai", "dialogue");
 }
@@ -318,6 +386,7 @@ async function geminiGenerateContent(modelId, trimmed, key, googleSearch = false
     text: mergePlainBracketRefsWithCitationList(out, groundingUrls, {
       citationLabels: groundingLabels,
     }),
+    usage: usageFromGeminiResponse(data),
   };
 }
 
@@ -473,7 +542,7 @@ function humanizeOpenAiImageError(raw, status) {
  * @param {string} text
  * @param {string} apiKey
  * @param {{ webSearch?: boolean, deepResearch?: boolean, systemInstruction?: string, llmMessages?: Array<{ role: string, content: string }>, chatAttachments?: { images?: Array<{ mimeType: string, base64: string }> }, accessDataDumpMode?: boolean }} [options] — webSearch/deepResearch: search-capable models where supported; llmMessages: assembled thread context; chatAttachments: images for the last user turn (file text is already in `text`); accessDataDumpMode: #data lockdown
- * @returns {Promise<{ text: string }>}
+ * @returns {Promise<{ text: string, usage: LlmUsageTotals | null }>}
  */
 export async function completeChatMessage(providerId, text, apiKey, options = {}) {
   const key = String(apiKey ?? "").trim();
@@ -514,7 +583,10 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
       const rawText = openAiChatCompletionMessageContentToString(content);
       if (!rawText.trim()) throw new Error("Empty API response");
       const annUrls = collectOpenAiLikeAnnotationUrls(data.choices?.[0]?.message);
-      return { text: mergePlainBracketRefsWithCitationList(rawText, annUrls) };
+      return {
+        text: mergePlainBracketRefsWithCitationList(rawText, annUrls),
+        usage: usageFromOpenAiStyleUsage(data.usage),
+      };
     }
     case "anthropic": {
       const anthropicBody = {
@@ -552,7 +624,7 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
         .map((b) => b.text);
       const out = textParts.join("\n").trim();
       if (!out) throw new Error("Empty API response");
-      return { text: out };
+      return { text: out, usage: usageFromAnthropicResponse(data) };
     }
     case "gemini-flash": {
       const gMsgs =
@@ -597,7 +669,7 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
       if (!rawText.trim()) throw new Error("Empty API response");
       const citeRaw = pickPerplexityCitationPayload(data);
       const withCites = mergePlainBracketRefsWithCitationList(rawText, citeRaw);
-      return { text: withCites };
+      return { text: withCites, usage: usageFromOpenAiStyleUsage(data.usage) };
     }
     default:
       throw new Error("Unknown provider");
@@ -1637,7 +1709,7 @@ export async function extractIntroMemoryGraphForIngest(providerId, apiKey, userT
 /**
  * Streaming reply: `onDelta` is called for each text chunk as it arrives.
  * @param {{ webSearch?: boolean, deepResearch?: boolean, systemInstruction?: string, llmMessages?: Array<{ role: string, content: string }>, chatAttachments?: { images?: Array<{ mimeType: string, base64: string }> }, accessDataDumpMode?: boolean }} [options]
- * @returns {Promise<string>} full accumulated text
+ * @returns {Promise<{ text: string, usage: LlmUsageTotals | null }>}
  */
 export async function completeChatMessageStreaming(providerId, text, apiKey, onDelta, options = {}) {
   const key = String(apiKey ?? "").trim();
@@ -1660,6 +1732,8 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
   );
 
   let full;
+  /** @type {LlmUsageTotals | null} */
+  let usageOut = null;
 
   switch (providerId) {
     case "openai": {
@@ -1678,6 +1752,7 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
       });
       const oaStream = await streamOpenAICompatJson(res, onDelta);
       full = mergePlainBracketRefsWithCitationList(oaStream.text, oaStream.citations);
+      usageOut = oaStream.usage ?? null;
       break;
     }
     case "perplexity": {
@@ -1706,6 +1781,7 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
       });
       const pStream = await streamOpenAICompatJson(res, onDelta);
       full = mergePlainBracketRefsWithCitationList(pStream.text, pStream.citations);
+      usageOut = pStream.usage ?? null;
       break;
     }
     case "anthropic": {
@@ -1737,7 +1813,9 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
         },
         body: JSON.stringify(aStreamBody),
       });
-      full = await streamAnthropicMessages(res, onDelta);
+      const anthStream = await streamAnthropicMessages(res, onDelta);
+      full = anthStream.text;
+      usageOut = anthStream.usage ?? null;
       break;
     }
     case "gemini-flash": {
@@ -1777,6 +1855,7 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
       full = mergePlainBracketRefsWithCitationList(gStream.text, gStream.citations, {
         citationLabels: gStream.citationLabels,
       });
+      usageOut = gStream.usage ?? null;
       break;
     }
     default:
@@ -1786,7 +1865,7 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
   if (!String(full).trim()) {
     throw new Error("Empty API response");
   }
-  return full;
+  return { text: full, usage: usageOut };
 }
 
 /**
@@ -1952,7 +2031,10 @@ async function openaiImageEditsWithReferences(prompt, key, images, preferredSize
     throw new Error(humanizeOpenAiImageError(errBody, res.status));
   }
   const data = await res.json();
-  return openAiImageDataToMarkdown(data);
+  return {
+    text: openAiImageDataToMarkdown(data),
+    usage: usageFromOpenAiImageResponse(data),
+  };
 }
 
 /**
@@ -2005,7 +2087,10 @@ async function openaiImageGeneration(prompt, key, chatAtt = null) {
     throw new Error(humanizeOpenAiImageError(errBody, res.status));
   }
   const data = await res.json();
-  return openAiImageDataToMarkdown(data);
+  return {
+    text: openAiImageDataToMarkdown(data),
+    usage: usageFromOpenAiImageResponse(data),
+  };
 }
 
 /**
@@ -2128,13 +2213,14 @@ async function geminiImageGeneration(prompt, key, chatAtt = null) {
     throw new Error(hint);
   }
   const prefix = textBits.filter(Boolean).join("\n\n").trim();
-  return prefix ? `${prefix}\n\n${imageMd}` : imageMd;
+  const text = prefix ? `${prefix}\n\n${imageMd}` : imageMd;
+  return { text, usage: usageFromGeminiResponse(data) };
 }
 
 /**
  * Image generation from a text prompt (Create image mode).
  * @param {{ chatAttachments?: { images?: Array<{ mimeType: string, base64: string }> } }} [options] — reference images: Gemini (parts), ChatGPT (`/images/edits` + multipart).
- * @returns {Promise<{ text: string }>} markdown with an image (![]())
+ * @returns {Promise<{ text: string, usage: LlmUsageTotals | null }>} markdown with an image (![]())
  */
 /**
  * @param {unknown} err
@@ -2171,16 +2257,14 @@ export async function completeImageGeneration(providerId, prompt, apiKey, option
   switch (providerId) {
     case "openai": {
       try {
-        const text = await openaiImageGeneration(trimmed, key, options.chatAttachments ?? null);
-        return { text };
+        return await openaiImageGeneration(trimmed, key, options.chatAttachments ?? null);
       } catch (e) {
         throwIfImageFetchNetworkFailed(e, "ChatGPT image");
       }
     }
     case "gemini-flash": {
       try {
-        const text = await geminiImageGeneration(trimmed, key, options.chatAttachments ?? null);
-        return { text };
+        return await geminiImageGeneration(trimmed, key, options.chatAttachments ?? null);
       } catch (e) {
         throwIfImageFetchNetworkFailed(e, "Gemini image");
       }

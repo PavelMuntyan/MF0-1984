@@ -587,6 +587,71 @@ function sizeGraphToContainer() {
   }
 }
 
+/** Auto-fit uses node simulation positions only — not label sprite meshes (those blow up `zoomToFit` bbox). */
+const MEMORY_TREE_AUTO_FIT_DIST_MIN = 220;
+const MEMORY_TREE_AUTO_FIT_DIST_MAX = 820;
+
+/**
+ * Aim the camera at the graph center from a distance derived from layout spread (clamped).
+ * @param {number} [transitionMs]
+ */
+function fitMemoryTreeCameraFromSimulationLayout(transitionMs = 0) {
+  if (!Graph || !dom.graphWrap) return;
+  sizeGraphToContainer();
+  const wrap = dom.graphWrap;
+  const h = wrap.clientHeight;
+  const w = wrap.clientWidth;
+  if (h < 64 || w < 64) return;
+
+  const nodes = graphData.nodes.filter((n) =>
+    [n.x, n.y, n.z].every((v) => typeof v === "number" && Number.isFinite(v)),
+  );
+  if (nodes.length === 0) return;
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let minZ = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let maxZ = -Infinity;
+  for (const n of nodes) {
+    minX = Math.min(minX, n.x);
+    maxX = Math.max(maxX, n.x);
+    minY = Math.min(minY, n.y);
+    maxY = Math.max(maxY, n.y);
+    minZ = Math.min(minZ, n.z);
+    maxZ = Math.max(maxZ, n.z);
+  }
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  const cz = (minZ + maxZ) / 2;
+
+  const spanX = Math.max(maxX - minX, 36);
+  const spanY = Math.max(maxY - minY, 36);
+  const spanZ = Math.max(maxZ - minZ, 36);
+  const halfSpan = 0.5 * Math.sqrt(spanX * spanX + spanY * spanY + spanZ * spanZ);
+
+  const camera = Graph.camera();
+  const aspect = camera.aspect > 0 ? camera.aspect : w / h;
+  const vFovRad = (camera.fov * Math.PI) / 180;
+  const margin = 1.2;
+  const distV = (halfSpan * margin) / Math.tan(vFovRad / 2);
+  const hFovRad = 2 * Math.atan(Math.tan(vFovRad / 2) * aspect);
+  const distH = (halfSpan * margin) / Math.tan(hFovRad / 2);
+  let distance = Math.max(distV, distH);
+  distance = Math.min(
+    MEMORY_TREE_AUTO_FIT_DIST_MAX,
+    Math.max(MEMORY_TREE_AUTO_FIT_DIST_MIN, distance),
+  );
+
+  Graph.cameraPosition(
+    { x: cx, y: cy, z: cz + distance },
+    { x: cx, y: cy, z: cz },
+    transitionMs,
+  );
+  syncZoomSliderFromCamera();
+}
+
 function cameraDistanceFromOrigin() {
   if (!Graph) return 0;
   const cam = Graph.cameraPosition();
@@ -725,14 +790,15 @@ function mountGraph() {
     if (didMemoryTreeLayoutZoom || graphData.nodes.length === 0) return;
     didMemoryTreeLayoutZoom = true;
     requestAnimationFrame(() => {
-      try {
-        if (Graph && graphData.nodes.length > 0) {
-          Graph.zoomToFit(500, 60);
-          syncZoomSliderFromCamera();
+      requestAnimationFrame(() => {
+        try {
+          if (Graph && graphData.nodes.length > 0) {
+            fitMemoryTreeCameraFromSimulationLayout(420);
+          }
+        } catch {
+          /* ignore */
         }
-      } catch {
-        /* ignore */
-      }
+      });
     });
   });
 
@@ -801,8 +867,7 @@ function mountGraph() {
     resetDetailsPanelToPlaceholder();
     if (graphData.nodes.length > 0) {
       requestAnimationFrame(() => {
-        Graph?.zoomToFit?.(500, 60);
-        syncZoomSliderFromCamera();
+        fitMemoryTreeCameraFromSimulationLayout(380);
       });
     }
   });

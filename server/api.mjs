@@ -45,6 +45,7 @@ const migration006 = path.join(root, "db", "migrations", "006_intro_pin_lock.sql
 const migration007 = path.join(root, "db", "migrations", "007_ir_panel_pin_lock.sql");
 const migration008 = path.join(root, "db", "migrations", "008_access_external_services.sql");
 const migration009 = path.join(root, "db", "migrations", "009_analytics_usage_archive.sql");
+const migration010 = path.join(root, "db", "migrations", "010_llm_token_usage.sql");
 const PORT = resolveApiPort(process.env.API_PORT);
 
 /** Default max JSON body size for POST/PUT (bytes). Override with API_MAX_BODY_BYTES. */
@@ -286,7 +287,17 @@ function ensureDatabase() {
   applyAccessExternalServicesMigration(database);
   migrateAccessExternalServicesFromJsonIfNeeded(database);
   applyAnalyticsUsageArchiveMigration(database);
+  applyLlmTokenUsageMigration(database);
   return database;
+}
+
+function applyLlmTokenUsageMigration(database) {
+  const cols = database.prepare(`PRAGMA table_info(conversation_turns)`).all();
+  const names = new Set(cols.map((c) => c.name));
+  if (names.has("llm_total_tokens")) return;
+  if (fs.existsSync(migration010)) {
+    database.exec(fs.readFileSync(migration010, "utf8"));
+  }
 }
 
 function applyAnalyticsUsageArchiveMigration(database) {
@@ -1135,21 +1146,27 @@ function archiveConversationTurnAggregatesForDialog(dialogId, sourceKind, themeI
          COALESCE(NULLIF(TRIM(responding_provider_id), ''), requested_provider_id) AS pid,
          request_type,
          COUNT(*) AS turn_count,
-         SUM(CASE WHEN assistant_message_at IS NOT NULL AND IFNULL(assistant_error, 0) = 0 THEN 1 ELSE 0 END) AS responses_ok
+         SUM(CASE WHEN assistant_message_at IS NOT NULL AND IFNULL(assistant_error, 0) = 0 THEN 1 ELSE 0 END) AS responses_ok,
+         SUM(COALESCE(llm_prompt_tokens, 0)) AS tokens_prompt,
+         SUM(COALESCE(llm_completion_tokens, 0)) AS tokens_completion,
+         SUM(COALESCE(llm_total_tokens, 0)) AS tokens_total
        FROM conversation_turns
        WHERE dialog_id = ?
        GROUP BY pid, request_type`,
     )
     .all(did);
   const ins = db.prepare(
-    `INSERT INTO analytics_usage_archive (id, archived_at, source_kind, theme_id, dialog_id, dialog_purpose, provider_id, request_type, turn_count, responses_ok)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO analytics_usage_archive (id, archived_at, source_kind, theme_id, dialog_id, dialog_purpose, provider_id, request_type, turn_count, responses_ok, tokens_prompt, tokens_completion, tokens_total)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   for (const g of groups) {
     const pid = String(g.pid ?? "").trim();
     const rt = String(g.request_type ?? "default").trim() || "default";
     const tc = Number(g.turn_count) || 0;
     const rok = Number(g.responses_ok) || 0;
+    const tp = Number(g.tokens_prompt) || 0;
+    const tcpl = Number(g.tokens_completion) || 0;
+    const tt = Number(g.tokens_total) || 0;
     if (!pid || tc <= 0) continue;
     ins.run(
       crypto.randomUUID(),
@@ -1162,6 +1179,9 @@ function archiveConversationTurnAggregatesForDialog(dialogId, sourceKind, themeI
       rt,
       tc,
       rok,
+      tp,
+      tcpl,
+      tt,
     );
   }
 }
@@ -1374,8 +1394,9 @@ function analyticsDialogWhereSql(alias = "d") {
 
 /**
  * @returns {{
- *   providers: Record<string, { requestsSent: number, responsesOk: number, imageRequests: number, researchRequests: number, webRequests: number, accessRequests: number }>,
+ *   providers: Record<string, { requestsSent: number, responsesOk: number, imageRequests: number, researchRequests: number, webRequests: number, accessRequests: number, tokensPrompt: number, tokensCompletion: number, tokensTotal: number }>,
  *   dailyUsage: Array<{ date: string, byProvider: Record<string, number> }>,
+ *   dailyTokens: Array<{ date: string, byProvider: Record<string, number> }>,
  *   themesCount: number,
  *   dialogsCount: number,
  *   memoryGraph: { nodes: number, edges: number, groups: number }
@@ -1383,7 +1404,8 @@ function analyticsDialogWhereSql(alias = "d") {
  */
 function getAnalyticsPayload() {
   applyAnalyticsUsageArchiveMigration(db);
-  /** @type {Record<string, { requestsSent: number, responsesOk: number, imageRequests: number, researchRequests: number, webRequests: number, accessRequests: number }>} */
+  applyLlmTokenUsageMigration(db);
+  /** @type {Record<string, { requestsSent: number, responsesOk: number, imageRequests: number, researchRequests: number, webRequests: number, accessRequests: number, tokensPrompt: number, tokensCompletion: number, tokensTotal: number }>} */
   const providers = {};
   for (const id of ANALYTICS_PROVIDER_IDS) {
     providers[id] = {
@@ -1393,6 +1415,9 @@ function getAnalyticsPayload() {
       researchRequests: 0,
       webRequests: 0,
       accessRequests: 0,
+      tokensPrompt: 0,
+      tokensCompletion: 0,
+      tokensTotal: 0,
     };
   }
 
@@ -1405,7 +1430,10 @@ function getAnalyticsPayload() {
          SUM(CASE WHEN t.request_type = 'image' THEN 1 ELSE 0 END) AS image_requests,
          SUM(CASE WHEN t.request_type = 'research' THEN 1 ELSE 0 END) AS research_requests,
          SUM(CASE WHEN t.request_type = 'web' THEN 1 ELSE 0 END) AS web_requests,
-         SUM(CASE WHEN t.request_type = 'access_data' THEN 1 ELSE 0 END) AS access_requests
+         SUM(CASE WHEN t.request_type = 'access_data' THEN 1 ELSE 0 END) AS access_requests,
+         SUM(COALESCE(t.llm_prompt_tokens, 0)) AS tokens_prompt,
+         SUM(COALESCE(t.llm_completion_tokens, 0)) AS tokens_completion,
+         SUM(COALESCE(t.llm_total_tokens, 0)) AS tokens_total
        FROM conversation_turns t
        INNER JOIN dialogs d ON d.id = t.dialog_id
        WHERE ${analyticsDialogWhereSql("d")}
@@ -1421,13 +1449,33 @@ function getAnalyticsPayload() {
     providers[pid].researchRequests = Number(row.research_requests) || 0;
     providers[pid].webRequests = Number(row.web_requests) || 0;
     providers[pid].accessRequests = Number(row.access_requests) || 0;
+    providers[pid].tokensPrompt = Number(row.tokens_prompt) || 0;
+    providers[pid].tokensCompletion = Number(row.tokens_completion) || 0;
+    providers[pid].tokensTotal = Number(row.tokens_total) || 0;
   }
 
   const archTbl = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='analytics_usage_archive'`).get();
+  let archHasTokens = false;
   if (archTbl) {
+    const archCols = db.prepare(`PRAGMA table_info(analytics_usage_archive)`).all();
+    archHasTokens = archCols.some((c) => c.name === "tokens_total");
     const archAgg = db
       .prepare(
-        `SELECT
+        archHasTokens
+          ? `SELECT
+           provider_id AS pid,
+           SUM(turn_count) AS requests_sent,
+           SUM(responses_ok) AS responses_ok,
+           SUM(CASE WHEN request_type = 'image' THEN turn_count ELSE 0 END) AS image_requests,
+           SUM(CASE WHEN request_type = 'research' THEN turn_count ELSE 0 END) AS research_requests,
+           SUM(CASE WHEN request_type = 'web' THEN turn_count ELSE 0 END) AS web_requests,
+           SUM(CASE WHEN request_type = 'access_data' THEN turn_count ELSE 0 END) AS access_requests,
+           SUM(tokens_prompt) AS tokens_prompt,
+           SUM(tokens_completion) AS tokens_completion,
+           SUM(tokens_total) AS tokens_total
+         FROM analytics_usage_archive
+         GROUP BY pid`
+          : `SELECT
            provider_id AS pid,
            SUM(turn_count) AS requests_sent,
            SUM(responses_ok) AS responses_ok,
@@ -1448,6 +1496,11 @@ function getAnalyticsPayload() {
       providers[pid].researchRequests += Number(row.research_requests) || 0;
       providers[pid].webRequests += Number(row.web_requests) || 0;
       providers[pid].accessRequests += Number(row.access_requests) || 0;
+      if (archHasTokens) {
+        providers[pid].tokensPrompt += Number(row.tokens_prompt) || 0;
+        providers[pid].tokensCompletion += Number(row.tokens_completion) || 0;
+        providers[pid].tokensTotal += Number(row.tokens_total) || 0;
+      }
     }
   }
 
@@ -1506,12 +1559,70 @@ function getAnalyticsPayload() {
     }
   }
 
+  const dayTokenRows = db
+    .prepare(
+      `SELECT
+         DATE(t.user_message_at) AS day,
+         COALESCE(NULLIF(TRIM(t.responding_provider_id), ''), t.requested_provider_id) AS pid,
+         SUM(COALESCE(t.llm_total_tokens, 0)) AS cnt
+       FROM conversation_turns t
+       INNER JOIN dialogs d ON d.id = t.dialog_id
+       WHERE ${analyticsDialogWhereSql("d")}
+         AND DATETIME(t.user_message_at) >= DATETIME('now', '-30 days')
+       GROUP BY day, pid`,
+    )
+    .all();
+
+  /** @type {Map<string, Record<string, number>>} */
+  const dayTokenMap = new Map();
+  for (const r of dayTokenRows) {
+    const day = String(r.day ?? "").trim();
+    const pid = String(r.pid ?? "").trim();
+    if (!day || !ANALYTICS_PROVIDER_IDS.includes(pid)) continue;
+    if (!dayTokenMap.has(day)) {
+      const o = {};
+      for (const id of ANALYTICS_PROVIDER_IDS) o[id] = 0;
+      dayTokenMap.set(day, o);
+    }
+    dayTokenMap.get(day)[pid] = Number(r.cnt) || 0;
+  }
+
+  if (archTbl && archHasTokens) {
+    const archTokDays = db
+      .prepare(
+        `SELECT
+           DATE(archived_at) AS day,
+           provider_id AS pid,
+           SUM(tokens_total) AS cnt
+         FROM analytics_usage_archive
+         WHERE datetime(archived_at) >= datetime('now', '-30 days')
+         GROUP BY day, pid`,
+      )
+      .all();
+    for (const r of archTokDays) {
+      const day = String(r.day ?? "").trim();
+      const pid = String(r.pid ?? "").trim();
+      if (!day || !ANALYTICS_PROVIDER_IDS.includes(pid)) continue;
+      if (!dayTokenMap.has(day)) {
+        const o = {};
+        for (const id of ANALYTICS_PROVIDER_IDS) o[id] = 0;
+        dayTokenMap.set(day, o);
+      }
+      const cur = dayTokenMap.get(day)[pid] || 0;
+      dayTokenMap.get(day)[pid] = cur + (Number(r.cnt) || 0);
+    }
+  }
+
   const dailyUsage = [];
+  /** @type {Array<{ date: string, byProvider: Record<string, number> }>} */
+  const dailyTokens = [];
   for (let i = 29; i >= 0; i -= 1) {
     const row = db.prepare(`SELECT DATE(DATETIME('now', ?)) AS d`).get(`-${i} days`);
     const day = String(row?.d ?? "").trim();
     const byProvider = dayMap.get(day) ?? Object.fromEntries(ANALYTICS_PROVIDER_IDS.map((id) => [id, 0]));
     dailyUsage.push({ date: day, byProvider: { ...byProvider } });
+    const byTok = dayTokenMap.get(day) ?? Object.fromEntries(ANALYTICS_PROVIDER_IDS.map((id) => [id, 0]));
+    dailyTokens.push({ date: day, byProvider: { ...byTok } });
   }
 
   const themesRow = db
@@ -1541,6 +1652,7 @@ function getAnalyticsPayload() {
   return {
     providers,
     dailyUsage,
+    dailyTokens,
     themesCount: Number(themesRow?.n) || 0,
     dialogsCount: Number(dialogsRow?.n) || 0,
     memoryGraph,
@@ -2185,6 +2297,16 @@ const server = http.createServer(async (req, res) => {
         body.assistant_message_at != null ? String(body.assistant_message_at) : null;
       const assistantError = body.assistant_error === 1 || body.assistant_error === true ? 1 : 0;
 
+      function optNonNegInt(v) {
+        if (v === undefined || v === null || v === "") return null;
+        const n = Number(v);
+        if (!Number.isFinite(n) || n < 0) return null;
+        return Math.min(Math.floor(n), 2_000_000_000);
+      }
+      const llmPromptTokens = optNonNegInt(body.llm_prompt_tokens);
+      const llmCompletionTokens = optNonNegInt(body.llm_completion_tokens);
+      const llmTotalTokens = optNonNegInt(body.llm_total_tokens);
+
       if (cloneFrom) {
         const src = db
           .prepare(
@@ -2224,8 +2346,9 @@ const server = http.createServer(async (req, res) => {
         db.prepare(
           `INSERT INTO conversation_turns (
             id, dialog_id, user_text, user_attachments_json, assistant_text, requested_provider_id, responding_provider_id,
-            request_type, user_message_at, assistant_message_at, assistant_error
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            request_type, user_message_at, assistant_message_at, assistant_error,
+            llm_prompt_tokens, llm_completion_tokens, llm_total_tokens
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           turnId,
           dialogId,
@@ -2238,6 +2361,9 @@ const server = http.createServer(async (req, res) => {
           userMessageAt,
           assistantMessageAt,
           assistantError,
+          llmPromptTokens,
+          llmCompletionTokens,
+          llmTotalTokens,
         );
         db.prepare(`UPDATE dialogs SET updated_at = ? WHERE id = ?`).run(now, dialogId);
         db.prepare(`UPDATE themes SET updated_at = ? WHERE id = ?`).run(now, drow.theme_id);

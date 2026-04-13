@@ -14,7 +14,7 @@ import {
 /**
  * OpenAI-compatible SSE (OpenAI, Perplexity): each line `data: {JSON}`.
  * Perplexity: root `citations`. OpenAI (web search): URLs in `delta.annotations` / `message.annotations`.
- * @returns {Promise<{ text: string, citations: string[] }>}
+ * @returns {Promise<{ text: string, citations: string[], usage: { promptTokens: number, completionTokens: number, totalTokens: number } | null }>}
  */
 export async function streamOpenAICompatJson(res, onDelta) {
   if (!res.ok) {
@@ -36,6 +36,8 @@ export async function streamOpenAICompatJson(res, onDelta) {
   /** @type {string[]} */
   let citations = [];
   let sawDone = false;
+  /** @type {{ promptTokens: number, completionTokens: number, totalTokens: number } | null} */
+  let usage = null;
 
   function mergeCitationsFromJson(j) {
     const raw = pickPerplexityCitationPayload(j);
@@ -73,6 +75,21 @@ export async function streamOpenAICompatJson(res, onDelta) {
     }
     try {
       const j = JSON.parse(data);
+      if (j.usage && typeof j.usage === "object") {
+        const p = Number(j.usage.prompt_tokens);
+        const c = Number(j.usage.completion_tokens);
+        const t = Number(j.usage.total_tokens);
+        if (Number.isFinite(p) || Number.isFinite(c) || Number.isFinite(t)) {
+          usage = {
+            promptTokens: Number.isFinite(p) ? Math.max(0, Math.floor(p)) : 0,
+            completionTokens: Number.isFinite(c) ? Math.max(0, Math.floor(c)) : 0,
+            totalTokens: Number.isFinite(t)
+              ? Math.max(0, Math.floor(t))
+              : (Number.isFinite(p) ? Math.max(0, Math.floor(p)) : 0) +
+                (Number.isFinite(c) ? Math.max(0, Math.floor(c)) : 0),
+          };
+        }
+      }
       mergeCitationsFromJson(j);
       const piece = j.choices?.[0]?.delta?.content;
       if (typeof piece === "string" && piece.length) {
@@ -96,7 +113,7 @@ export async function streamOpenAICompatJson(res, onDelta) {
       if (!line.startsWith("data:")) continue;
       const data = line.slice(5).trim();
       handleDataPayload(data);
-      if (sawDone) return { text: full, citations };
+      if (sawDone) return { text: full, citations, usage };
     }
     if (done) break;
   }
@@ -105,10 +122,12 @@ export async function streamOpenAICompatJson(res, onDelta) {
   if (tail.startsWith("data:")) {
     handleDataPayload(tail.slice(5).trim());
   }
-  return { text: full, citations };
+  return { text: full, citations, usage };
 }
 
-/** Anthropic messages stream (SSE, `data:` lines) */
+/** Anthropic messages stream (SSE, `data:` lines)
+ * @returns {Promise<{ text: string, usage: { promptTokens: number, completionTokens: number, totalTokens: number } | null }>}
+ */
 export async function streamAnthropicMessages(res, onDelta) {
   if (!res.ok) {
     const t = await res.text();
@@ -126,6 +145,8 @@ export async function streamAnthropicMessages(res, onDelta) {
   const dec = new TextDecoder();
   let buffer = "";
   let full = "";
+  /** @type {{ promptTokens: number, completionTokens: number, totalTokens: number } | null} */
+  let usage = null;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -140,6 +161,19 @@ export async function streamAnthropicMessages(res, onDelta) {
       if (!dataLine) continue;
       try {
         const j = JSON.parse(dataLine);
+        if (j.usage && typeof j.usage === "object") {
+          const inp = Number(j.usage.input_tokens);
+          const outp = Number(j.usage.output_tokens);
+          if (Number.isFinite(inp) || Number.isFinite(outp)) {
+            const promptTokens = Number.isFinite(inp) ? Math.max(0, Math.floor(inp)) : 0;
+            const completionTokens = Number.isFinite(outp) ? Math.max(0, Math.floor(outp)) : 0;
+            usage = {
+              promptTokens,
+              completionTokens,
+              totalTokens: promptTokens + completionTokens,
+            };
+          }
+        }
         if (j.type !== "content_block_delta" || !j.delta) continue;
         const piece =
           typeof j.delta.text === "string" && j.delta.text.length > 0 ? j.delta.text : "";
@@ -153,14 +187,14 @@ export async function streamAnthropicMessages(res, onDelta) {
     }
     if (done) break;
   }
-  return full;
+  return { text: full, usage };
 }
 
 /**
  * Google Gemini streamGenerateContent with `alt=sse`: `data: {...}` lines.
  * Parts with thought: true are internal reasoning — not shown in chat.
  * Collects URLs from `groundingMetadata` for numeric refs [1], [2] in text.
- * @returns {Promise<{ text: string, citations: string[], citationLabels: string[] }>}
+ * @returns {Promise<{ text: string, citations: string[], citationLabels: string[], usage: { promptTokens: number, completionTokens: number, totalTokens: number } | null }>}
  */
 export async function streamGeminiGenerateContent(res, onDelta) {
   if (!res.ok) {
@@ -183,8 +217,25 @@ export async function streamGeminiGenerateContent(res, onDelta) {
   let citations = [];
   /** @type {string[]} */
   let citationLabels = [];
+  /** @type {{ promptTokens: number, completionTokens: number, totalTokens: number } | null} */
+  let usage = null;
 
   function mergeGeminiGroundingFromJson(j) {
+    const um = j.usageMetadata;
+    if (um && typeof um === "object") {
+      const p = Number(um.promptTokenCount);
+      const c = Number(um.candidatesTokenCount);
+      const t = Number(um.totalTokenCount);
+      if (Number.isFinite(p) || Number.isFinite(c) || Number.isFinite(t)) {
+        const promptTokens = Number.isFinite(p) ? Math.max(0, Math.floor(p)) : 0;
+        const completionTokens = Number.isFinite(c) ? Math.max(0, Math.floor(c)) : 0;
+        usage = {
+          promptTokens,
+          completionTokens,
+          totalTokens: Number.isFinite(t) ? Math.max(0, Math.floor(t)) : promptTokens + completionTokens,
+        };
+      }
+    }
     const cand = j.candidates?.[0];
     if (!cand) return;
     const ent = collectGeminiGroundingEntries(cand);
@@ -240,5 +291,5 @@ export async function streamGeminiGenerateContent(res, onDelta) {
       }
     }
   }
-  return { text: full, citations, citationLabels };
+  return { text: full, citations, citationLabels, usage };
 }
