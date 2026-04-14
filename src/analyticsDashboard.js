@@ -1,6 +1,7 @@
 import { PROVIDER_DISPLAY } from "./chatApi.js";
 import { apiHealth } from "./chatPersistence.js";
 import { escapeHtml } from "./escapeHtml.js";
+import { ANALYTICS_USD_PER_1M, estimateProviderUsd, formatUsdEstimate } from "./analyticsPricing.js";
 
 const PROVIDER_IDS = ["openai", "perplexity", "gemini-flash", "anthropic"];
 
@@ -51,6 +52,8 @@ function renderAnalytics(root, raw) {
     if (sum > maxTokDay) maxTokDay = sum;
   }
 
+  let sumInputUsd = 0;
+  let sumOutputUsd = 0;
   const cardsHtml = PROVIDER_IDS.map((id) => {
     const p = providers[id] && typeof providers[id] === "object" ? providers[id] : {};
     const label = escapeHtml(String(PROVIDER_DISPLAY[id] ?? id));
@@ -63,6 +66,18 @@ function renderAnalytics(root, raw) {
     const tp = Number(p.tokensPrompt) || 0;
     const tc = Number(p.tokensCompletion) || 0;
     const tt = Number(p.tokensTotal) || 0;
+    const est = estimateProviderUsd(id, tp, tc);
+    if (est) {
+      sumInputUsd += est.inputUsd;
+      sumOutputUsd += est.outputUsd;
+    }
+    const rate = ANALYTICS_USD_PER_1M[id];
+    const rateBasisHtml =
+      rate && est
+        ? `<div class="analytics-dl-row analytics-dl-row--rate"><dt>Rate basis</dt><dd><span class="analytics-rate-line">${escapeHtml(
+            `$${rate.input} / $${rate.output} per 1M tokens (input / output)`,
+          )}</span><span class="analytics-rate-tier">${escapeHtml(est.tier)}</span></dd></div>`
+        : "";
     return `
       <section class="analytics-model-card" data-provider="${id}">
         <h3 class="analytics-model-title">${label}</h3>
@@ -76,9 +91,28 @@ function renderAnalytics(root, raw) {
           <div class="analytics-dl-row"><dt>Prompt tokens</dt><dd>${tp.toLocaleString()}</dd></div>
           <div class="analytics-dl-row"><dt>Completion tokens</dt><dd>${tc.toLocaleString()}</dd></div>
           <div class="analytics-dl-row"><dt>Total tokens</dt><dd>${tt.toLocaleString()}</dd></div>
+          <div class="analytics-dl-row analytics-dl-row--cost"><dt>Est. input cost (USD)</dt><dd>${formatUsdEstimate(est?.inputUsd)}</dd></div>
+          <div class="analytics-dl-row analytics-dl-row--cost"><dt>Est. output cost (USD)</dt><dd>${formatUsdEstimate(est?.outputUsd)}</dd></div>
+          <div class="analytics-dl-row analytics-dl-row--cost"><dt>Est. total cost (USD)</dt><dd>${formatUsdEstimate(est?.totalUsd)}</dd></div>
+          ${rateBasisHtml}
         </dl>
       </section>`;
   }).join("");
+
+  const totalUsd = sumInputUsd + sumOutputUsd;
+  const pricingFootnote = escapeHtml(
+    "Estimated USD is not an invoice: each provider row mixes models (chat, images, background tools). Rates are fixed reference tiers for planning only — OpenAI GPT-4o class ($2.50 / $15 per 1M in/out), Claude Sonnet class ($3 / $15), Gemini Flash ($0.50 / $3), Perplexity midpoint ($2.75 / $9). Your API bill may differ.",
+  );
+  const costSummaryHtml = `
+    <section class="analytics-cost-summary">
+      <h3 class="analytics-section-title">Estimated spend (all listed providers)</h3>
+      <dl class="analytics-dl analytics-dl--inline">
+        <div class="analytics-dl-row"><dt>Est. input (USD)</dt><dd>${formatUsdEstimate(sumInputUsd)}</dd></div>
+        <div class="analytics-dl-row"><dt>Est. output (USD)</dt><dd>${formatUsdEstimate(sumOutputUsd)}</dd></div>
+        <div class="analytics-dl-row"><dt>Est. combined (USD)</dt><dd>${formatUsdEstimate(totalUsd)}</dd></div>
+      </dl>
+      <p class="analytics-pricing-note">${pricingFootnote}</p>
+    </section>`;
 
   const barsHtml = dailyUsage
     .map((day) => {
@@ -120,6 +154,7 @@ function renderAnalytics(root, raw) {
         <p class="analytics-sub">Usage includes regular chats and archived counts from cleared Intro / Rules / Access threads and from deleted themes (live DB + archive).</p>
       </header>
       <div class="analytics-model-grid">${cardsHtml}</div>
+      ${costSummaryHtml}
       <section class="analytics-chart-block">
         <h3 class="analytics-section-title">Last 30 days — requests per day</h3>
         <div class="analytics-legend">

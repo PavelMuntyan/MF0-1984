@@ -1612,6 +1612,51 @@ button.btn {
   font-variant-numeric: tabular-nums;
 }
 
+.analytics-dl-row--cost dt {
+  color: hsl(var(--foreground) / 0.72);
+}
+
+.analytics-dl-row--rate dd {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.2rem;
+  max-width: 62%;
+  text-align: right;
+}
+
+.analytics-rate-line {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.analytics-rate-tier {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 400;
+  color: hsl(var(--muted-foreground));
+  line-height: 1.35;
+}
+
+.analytics-cost-summary {
+  margin: 0 0 1.5rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.75rem;
+  background: hsl(var(--card));
+}
+
+.analytics-dl--inline {
+  max-width: 28rem;
+}
+
+.analytics-pricing-note {
+  margin: 0.65rem 0 0;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: hsl(var(--muted-foreground));
+}
+
 .analytics-chart-block {
   margin-bottom: 1.5rem;
 }
