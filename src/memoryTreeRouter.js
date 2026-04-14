@@ -26,14 +26,14 @@ const ANTHROPIC_BROWSER_ACCESS_HEADER = {
 };
 
 const MEMORY_TREE_ROUTER_SYSTEM =
-  "You are the **Memory tree router** for app MF0. You receive a **text dump** of the user’s saved Memory graph: nodes (id, category, label, text blob/notes) and edges (relations between node ids).\n" +
+  "You are the **Memory tree router** for app MF0. You receive a compact **skeleton dump** of the user’s saved Memory graph: nodes (id, category, label) and edges (relations between node ids).\n" +
   "You also receive the user’s **next message** (what they are about to ask the main assistant).\n\n" +
-  "**Task:** Pick only subgraphs and blob text that could help the main assistant answer **in a personalized way** (who they are, stable preferences, family/work names they stored, constraints, ongoing projects, interests they track). Copy or tightly paraphrase **only** material grounded in the dump.\n\n" +
+  "**Task:** Pick only subgraphs that could help the main assistant answer **in a personalized way** (who they are, stable preferences, family/work names they stored, constraints, ongoing projects, interests they track). Use node titles and edges only.\n\n" +
   "**Rules:**\n" +
   "- Do **not** invent facts. If nothing in the tree plausibly helps this specific message, reply with exactly the single word: NONE\n" +
-  "- Prefer structured sections, e.g. `## Category / Label` then bullets or short quoted excerpts from blobs.\n" +
+  "- Prefer structured sections, e.g. `## Category / Label` then bullets with node IDs and relation hints.\n" +
   "- Ignore graph noise unrelated to the next message.\n" +
-  "- Stay under ~6000 words; prefer dense excerpts over chatter.\n" +
+  "- Stay concise (target <= 250 words).\n" +
   "- Output **plain text only** (no JSON, no markdown code fences).";
 
 /**
@@ -75,14 +75,15 @@ function nodeRelevanceScore(n, tokens) {
 }
 
 /**
- * Serialize graph for the router (size-capped). Full blobs may be truncated here; router still sees structure + substantial text.
+ * Serialize graph for the router in compact skeleton form.
  * @param {{ nodes?: unknown[], links?: unknown[] }} graph
  * @param {string} userQuery
- * @param {{ maxTotalChars?: number, blobPreviewPerNode?: number }} [opts]
+ * @param {{ maxTotalChars?: number }} [opts]
  */
 export function serializeMemoryGraphForRouter(graph, userQuery, opts = {}) {
-  const maxTotal = opts.maxTotalChars ?? 92000;
-  const blobCap = opts.blobPreviewPerNode ?? 4200;
+  const maxTotal = opts.maxTotalChars ?? 28000;
+  const maxNodes = 240;
+  const maxEdges = 320;
   const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
   const links = Array.isArray(graph?.links) ? graph.links : [];
   const tokens = queryTokens(userQuery);
@@ -103,19 +104,13 @@ export function serializeMemoryGraphForRouter(graph, userQuery, opts = {}) {
     const id = String(n.id ?? "").trim();
     const cat = String(n.category ?? "").trim();
     const lab = String(n.label ?? "").trim();
-    const blob = String(n.blob ?? "").trim();
-    const blobNote =
-      blob.length > blobCap ? `${blob.slice(0, blobCap)}\n… (${blob.length} chars total; truncated in router view)` : blob;
-    idToLine.set(
-      id,
-      `NODE id=${id || "?"} | ${cat || "?"} / ${lab || "?"}\n${blobNote || "(empty blob)"}\n---`,
-    );
+    idToLine.set(id, `NODE id=${id || "?"} | ${cat || "?"} / ${lab || "?"}`);
   }
 
   /** @type {string[]} */
   const parts = [];
   parts.push("EDGES (source_node_id -> target_node_id : relation):");
-  for (const e of links) {
+  for (const e of links.slice(0, maxEdges)) {
     if (!e || typeof e !== "object") continue;
     parts.push(`${String(e.source ?? "").trim()} -> ${String(e.target ?? "").trim()} : ${String(e.label ?? "").trim()}`);
   }
@@ -123,7 +118,7 @@ export function serializeMemoryGraphForRouter(graph, userQuery, opts = {}) {
 
   let used = parts.join("\n").length;
   const seen = new Set();
-  for (const { n } of scored) {
+  for (const { n } of scored.slice(0, maxNodes)) {
     const id = String(n.id ?? "").trim();
     const line = idToLine.get(id) ?? "";
     if (seen.has(id)) continue;
@@ -169,7 +164,7 @@ function pickRouterKey(allKeys, activeProviderId, activeApiKey) {
 async function runRouterModel(providerId, key, treeDump, userQuery) {
   const userBlock =
     `USER_NEXT_MESSAGE:\n${String(userQuery ?? "").trim().slice(0, 8000)}\n\n--- MEMORY_TREE_DUMP ---\n` +
-    String(treeDump ?? "").slice(0, 95000);
+    String(treeDump ?? "").slice(0, 30000);
 
   switch (providerId) {
     case "openai": {
@@ -182,7 +177,7 @@ async function runRouterModel(providerId, key, treeDump, userQuery) {
         body: JSON.stringify({
           model: ROUTER_MODEL.openai,
           temperature: 0.15,
-          max_completion_tokens: 6000,
+          max_completion_tokens: 900,
           messages: [
             { role: "system", content: MEMORY_TREE_ROUTER_SYSTEM },
             { role: "user", content: userBlock },
@@ -198,7 +193,7 @@ async function runRouterModel(providerId, key, treeDump, userQuery) {
     case "anthropic": {
       const body = {
         model: ROUTER_MODEL.anthropic,
-        max_tokens: 6000,
+        max_tokens: 900,
         system: MEMORY_TREE_ROUTER_SYSTEM,
         messages: [{ role: "user", content: userBlock }],
       };
@@ -237,7 +232,7 @@ async function runRouterModel(providerId, key, treeDump, userQuery) {
           ],
           generationConfig: {
             temperature: 0.15,
-            maxOutputTokens: 6000,
+            maxOutputTokens: 900,
           },
         }),
       });
@@ -262,7 +257,7 @@ async function runRouterModel(providerId, key, treeDump, userQuery) {
         body: JSON.stringify({
           model: ROUTER_MODEL.perplexity,
           temperature: 0.15,
-          max_tokens: 6000,
+          max_tokens: 900,
           disable_search: true,
           messages: [
             { role: "system", content: MEMORY_TREE_ROUTER_SYSTEM },

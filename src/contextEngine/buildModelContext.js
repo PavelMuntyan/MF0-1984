@@ -31,9 +31,15 @@ function buildRulesDigest(rules) {
     return String(a.title ?? "").localeCompare(String(b.title ?? ""));
   });
   const lines = [];
+  const maxWords = 300;
+  let usedWords = 0;
   for (const r of active) {
-    const line = `- [${r.rule_type}/${r.priority}] ${r.title}: ${String(r.content ?? "").replace(/\s+/g, " ").trim().slice(0, 220)}`;
+    const compact = String(r.content ?? "").replace(/\s+/g, " ").trim().slice(0, 220);
+    const line = `- [${r.rule_type}/${r.priority}] ${String(r.title ?? "").trim().slice(0, 80)}: ${compact}`;
+    const w = line.split(/\s+/).filter(Boolean).length;
+    if (usedWords + w > maxWords) break;
     lines.push(line);
+    usedWords += w;
     if (lines.length >= 24) break;
   }
   return lines.join("\n");
