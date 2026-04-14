@@ -1,7 +1,7 @@
 import { PROVIDER_DISPLAY } from "./chatApi.js";
 import { apiHealth } from "./chatPersistence.js";
 import { escapeHtml } from "./escapeHtml.js";
-import { ANALYTICS_USD_PER_1M, estimateProviderUsd, formatUsdEstimate } from "./analyticsPricing.js";
+import { estimateProviderUsd, formatUsdEstimate } from "./analyticsPricing.js";
 
 const PROVIDER_IDS = ["openai", "perplexity", "gemini-flash", "anthropic"];
 
@@ -29,6 +29,16 @@ function renderAnalytics(root, raw) {
   const providers = data.providers && typeof data.providers === "object" ? data.providers : {};
   const dailyUsage = Array.isArray(data.dailyUsage) ? data.dailyUsage : [];
   const dailyTokens = Array.isArray(data.dailyTokens) ? data.dailyTokens : [];
+  const dailyLlmTokensRaw = Array.isArray(data.dailyLlmTokens) ? data.dailyLlmTokens : [];
+  const dailyLlmTokens =
+    dailyLlmTokensRaw.length > 0
+      ? dailyLlmTokensRaw
+      : dailyTokens.map((t) => ({
+          date: String(t?.date ?? "").trim(),
+          byProvider: Object.fromEntries(
+            PROVIDER_IDS.map((id) => [id, { prompt: 0, completion: 0, total: 0 }]),
+          ),
+        }));
   const themesCount = Number(data.themesCount) || 0;
   const dialogsCount = Number(data.dialogsCount) || 0;
   const mg = data.memoryGraph && typeof data.memoryGraph === "object" ? data.memoryGraph : {};
@@ -52,6 +62,21 @@ function renderAnalytics(root, raw) {
     if (sum > maxTokDay) maxTokDay = sum;
   }
 
+  let maxSpendDay = 1e-9;
+  for (const day of dailyLlmTokens) {
+    const bp = day?.byProvider && typeof day.byProvider === "object" ? day.byProvider : {};
+    let sumUsd = 0;
+    for (const id of PROVIDER_IDS) {
+      const cell = bp[id] && typeof bp[id] === "object" ? bp[id] : {};
+      const pr = Number(cell.prompt) || 0;
+      const co = Number(cell.completion) || 0;
+      const est = estimateProviderUsd(id, pr, co);
+      sumUsd += est?.totalUsd ?? 0;
+    }
+    if (sumUsd > maxSpendDay) maxSpendDay = sumUsd;
+  }
+  if (maxSpendDay < 1e-9) maxSpendDay = 1;
+
   let sumInputUsd = 0;
   let sumOutputUsd = 0;
   const cardsHtml = PROVIDER_IDS.map((id) => {
@@ -71,13 +96,6 @@ function renderAnalytics(root, raw) {
       sumInputUsd += est.inputUsd;
       sumOutputUsd += est.outputUsd;
     }
-    const rate = ANALYTICS_USD_PER_1M[id];
-    const rateBasisHtml =
-      rate && est
-        ? `<div class="analytics-dl-row analytics-dl-row--rate"><dt>Rate basis</dt><dd><span class="analytics-rate-line">${escapeHtml(
-            `$${rate.input} / $${rate.output} per 1M tokens (input / output)`,
-          )}</span><span class="analytics-rate-tier">${escapeHtml(est.tier)}</span></dd></div>`
-        : "";
     return `
       <section class="analytics-model-card" data-provider="${id}">
         <h3 class="analytics-model-title">${label}</h3>
@@ -94,7 +112,6 @@ function renderAnalytics(root, raw) {
           <div class="analytics-dl-row analytics-dl-row--cost"><dt>Est. input cost (USD)</dt><dd>${formatUsdEstimate(est?.inputUsd)}</dd></div>
           <div class="analytics-dl-row analytics-dl-row--cost"><dt>Est. output cost (USD)</dt><dd>${formatUsdEstimate(est?.outputUsd)}</dd></div>
           <div class="analytics-dl-row analytics-dl-row--cost"><dt>Est. total cost (USD)</dt><dd>${formatUsdEstimate(est?.totalUsd)}</dd></div>
-          ${rateBasisHtml}
         </dl>
       </section>`;
   }).join("");
@@ -126,7 +143,7 @@ function renderAnalytics(root, raw) {
         return `<div class="analytics-bar-seg analytics-bar-seg--${id}" style="height:${pct}%" title="${title}"></div>`;
       }).join("");
       const total = PROVIDER_IDS.reduce((s, id) => s + (Number(bp[id]) || 0), 0);
-      return `<div class="analytics-bar-col"><div class="analytics-bar-stack">${segs}</div><span class="analytics-bar-day">${short}</span><span class="analytics-bar-total">${total}</span></div>`;
+      return `<div class="analytics-bar-col"><div class="analytics-bar-stack-wrap"><div class="analytics-bar-stack">${segs}</div><span class="analytics-bar-total">${total}</span></div><span class="analytics-bar-day">${short}</span></div>`;
     })
     .join("");
 
@@ -143,7 +160,29 @@ function renderAnalytics(root, raw) {
       }).join("");
       const total = PROVIDER_IDS.reduce((s, id) => s + (Number(bp[id]) || 0), 0);
       const totalLabel = escapeHtml(total.toLocaleString());
-      return `<div class="analytics-bar-col"><div class="analytics-bar-stack">${segs}</div><span class="analytics-bar-day">${short}</span><span class="analytics-bar-total">${totalLabel}</span></div>`;
+      return `<div class="analytics-bar-col"><div class="analytics-bar-stack-wrap"><div class="analytics-bar-stack">${segs}</div><span class="analytics-bar-total">${totalLabel}</span></div><span class="analytics-bar-day">${short}</span></div>`;
+    })
+    .join("");
+
+  const spendBarsHtml = dailyLlmTokens
+    .map((day) => {
+      const d = String(day?.date ?? "").trim();
+      const bp = day?.byProvider && typeof day.byProvider === "object" ? day.byProvider : {};
+      const short = escapeHtml(chartDayLabelMmDd(d));
+      let dayUsdSum = 0;
+      const segs = PROVIDER_IDS.map((id) => {
+        const cell = bp[id] && typeof bp[id] === "object" ? bp[id] : {};
+        const pr = Number(cell.prompt) || 0;
+        const co = Number(cell.completion) || 0;
+        const est = estimateProviderUsd(id, pr, co);
+        const usd = est?.totalUsd ?? 0;
+        dayUsdSum += usd;
+        const pct = maxSpendDay > 0 ? Math.round((usd / maxSpendDay) * 1000) / 10 : 0;
+        const title = escapeHtml(`${PROVIDER_DISPLAY[id] ?? id}: ${formatUsdEstimate(usd)}`);
+        return `<div class="analytics-bar-seg analytics-bar-seg--${id}" style="height:${pct}%" title="${title}"></div>`;
+      }).join("");
+      const totalLabel = escapeHtml(formatUsdEstimate(dayUsdSum));
+      return `<div class="analytics-bar-col"><div class="analytics-bar-stack-wrap"><div class="analytics-bar-stack">${segs}</div><span class="analytics-bar-total">${totalLabel}</span></div><span class="analytics-bar-day">${short}</span></div>`;
     })
     .join("");
 
@@ -175,6 +214,17 @@ function renderAnalytics(root, raw) {
           ).join("")}
         </div>
         <div class="analytics-bars-wrap"><div class="analytics-bars">${tokenBarsHtml}</div></div>
+      </section>
+      <section class="analytics-chart-block">
+        <h3 class="analytics-section-title">Last 30 days — estimated generation spend (USD) per day</h3>
+        <p class="analytics-tokens-note">Uses the same illustrative per-provider rates as the cards: each day’s height compares estimated spend to the busiest day in the window. Not actual billing; days with no prompt/completion metadata count as zero.</p>
+        <div class="analytics-legend">
+          ${PROVIDER_IDS.map(
+            (id) =>
+              `<span class="analytics-legend-item"><span class="analytics-legend-swatch analytics-bar-seg--${id}"></span>${escapeHtml(String(PROVIDER_DISPLAY[id] ?? id))}</span>`,
+          ).join("")}
+        </div>
+        <div class="analytics-bars-wrap"><div class="analytics-bars">${spendBarsHtml}</div></div>
       </section>
       <section class="analytics-meta-grid">
         <div class="analytics-meta-card"><div class="analytics-meta-label">Themes</div><div class="analytics-meta-value">${themesCount}</div></div>

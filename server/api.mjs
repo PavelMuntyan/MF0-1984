@@ -1417,6 +1417,7 @@ function analyticsDialogWhereSql(alias = "d") {
  *   providers: Record<string, { requestsSent: number, responsesOk: number, imageRequests: number, researchRequests: number, webRequests: number, accessRequests: number, tokensPrompt: number, tokensCompletion: number, tokensTotal: number }>,
  *   dailyUsage: Array<{ date: string, byProvider: Record<string, number> }>,
  *   dailyTokens: Array<{ date: string, byProvider: Record<string, number> }>,
+ *   dailyLlmTokens: Array<{ date: string, byProvider: Record<string, { prompt: number, completion: number, total: number }> }>,
  *   themesCount: number,
  *   dialogsCount: number,
  *   memoryGraph: { nodes: number, edges: number, groups: number }
@@ -1608,7 +1609,9 @@ function getAnalyticsPayload() {
       `SELECT
          DATE(t.user_message_at) AS day,
          COALESCE(NULLIF(TRIM(t.responding_provider_id), ''), t.requested_provider_id) AS pid,
-         SUM(COALESCE(t.llm_total_tokens, 0)) AS cnt
+         SUM(COALESCE(t.llm_prompt_tokens, 0)) AS psum,
+         SUM(COALESCE(t.llm_completion_tokens, 0)) AS csum,
+         SUM(COALESCE(t.llm_total_tokens, 0)) AS tsum
        FROM conversation_turns t
        INNER JOIN dialogs d ON d.id = t.dialog_id
        WHERE ${analyticsDialogWhereSql("d")}
@@ -1617,18 +1620,27 @@ function getAnalyticsPayload() {
     )
     .all();
 
-  /** @type {Map<string, Record<string, number>>} */
-  const dayTokenMap = new Map();
+  /** @type {Map<string, Record<string, { prompt: number, completion: number, total: number }>>} */
+  const dayTokenDetailMap = new Map();
+
+  function emptyDayTokenDetailRow() {
+    const o = {};
+    for (const id of ANALYTICS_PROVIDER_IDS) o[id] = { prompt: 0, completion: 0, total: 0 };
+    return o;
+  }
+
+  function addDayTokenDetail(day, pid, p, c, t) {
+    if (!day || !ANALYTICS_PROVIDER_IDS.includes(pid)) return;
+    if (!dayTokenDetailMap.has(day)) dayTokenDetailMap.set(day, emptyDayTokenDetailRow());
+    const row = dayTokenDetailMap.get(day)[pid];
+    if (!row) return;
+    row.prompt += Number(p) || 0;
+    row.completion += Number(c) || 0;
+    row.total += Number(t) || 0;
+  }
+
   for (const r of dayTokenRows) {
-    const day = String(r.day ?? "").trim();
-    const pid = String(r.pid ?? "").trim();
-    if (!day || !ANALYTICS_PROVIDER_IDS.includes(pid)) continue;
-    if (!dayTokenMap.has(day)) {
-      const o = {};
-      for (const id of ANALYTICS_PROVIDER_IDS) o[id] = 0;
-      dayTokenMap.set(day, o);
-    }
-    dayTokenMap.get(day)[pid] = Number(r.cnt) || 0;
+    addDayTokenDetail(String(r.day ?? "").trim(), String(r.pid ?? "").trim(), r.psum, r.csum, r.tsum);
   }
 
   if (archTbl && archHasTokens) {
@@ -1637,23 +1649,16 @@ function getAnalyticsPayload() {
         `SELECT
            DATE(archived_at) AS day,
            provider_id AS pid,
-           SUM(tokens_total) AS cnt
+           SUM(tokens_prompt) AS psum,
+           SUM(tokens_completion) AS csum,
+           SUM(tokens_total) AS tsum
          FROM analytics_usage_archive
          WHERE datetime(archived_at) >= datetime('now', '-30 days')
          GROUP BY day, pid`,
       )
       .all();
     for (const r of archTokDays) {
-      const day = String(r.day ?? "").trim();
-      const pid = String(r.pid ?? "").trim();
-      if (!day || !ANALYTICS_PROVIDER_IDS.includes(pid)) continue;
-      if (!dayTokenMap.has(day)) {
-        const o = {};
-        for (const id of ANALYTICS_PROVIDER_IDS) o[id] = 0;
-        dayTokenMap.set(day, o);
-      }
-      const cur = dayTokenMap.get(day)[pid] || 0;
-      dayTokenMap.get(day)[pid] = cur + (Number(r.cnt) || 0);
+      addDayTokenDetail(String(r.day ?? "").trim(), String(r.pid ?? "").trim(), r.psum, r.csum, r.tsum);
     }
   }
 
@@ -1661,36 +1666,39 @@ function getAnalyticsPayload() {
     const auxTokDays = db
       .prepare(
         `SELECT DATE(created_at) AS day, provider_id AS pid,
-            SUM(COALESCE(llm_total_tokens, 0)) AS cnt
+            SUM(COALESCE(llm_prompt_tokens, 0)) AS psum,
+            SUM(COALESCE(llm_completion_tokens, 0)) AS csum,
+            SUM(COALESCE(llm_total_tokens, 0)) AS tsum
           FROM analytics_aux_llm_usage
           WHERE datetime(created_at) >= datetime('now', '-30 days')
           GROUP BY day, pid`,
       )
       .all();
     for (const r of auxTokDays) {
-      const day = String(r.day ?? "").trim();
-      const pid = String(r.pid ?? "").trim();
-      if (!day || !ANALYTICS_PROVIDER_IDS.includes(pid)) continue;
-      if (!dayTokenMap.has(day)) {
-        const o = {};
-        for (const id of ANALYTICS_PROVIDER_IDS) o[id] = 0;
-        dayTokenMap.set(day, o);
-      }
-      const cur = dayTokenMap.get(day)[pid] || 0;
-      dayTokenMap.get(day)[pid] = cur + (Number(r.cnt) || 0);
+      addDayTokenDetail(String(r.day ?? "").trim(), String(r.pid ?? "").trim(), r.psum, r.csum, r.tsum);
     }
   }
 
   const dailyUsage = [];
   /** @type {Array<{ date: string, byProvider: Record<string, number> }>} */
   const dailyTokens = [];
+  /** @type {Array<{ date: string, byProvider: Record<string, { prompt: number, completion: number, total: number }> }>} */
+  const dailyLlmTokens = [];
   for (let i = 29; i >= 0; i -= 1) {
     const row = db.prepare(`SELECT DATE(DATETIME('now', ?)) AS d`).get(`-${i} days`);
     const day = String(row?.d ?? "").trim();
     const byProvider = dayMap.get(day) ?? Object.fromEntries(ANALYTICS_PROVIDER_IDS.map((id) => [id, 0]));
     dailyUsage.push({ date: day, byProvider: { ...byProvider } });
-    const byTok = dayTokenMap.get(day) ?? Object.fromEntries(ANALYTICS_PROVIDER_IDS.map((id) => [id, 0]));
+    const det = dayTokenDetailMap.get(day) ?? emptyDayTokenDetailRow();
+    const byTok = {};
+    const byDetail = {};
+    for (const id of ANALYTICS_PROVIDER_IDS) {
+      const x = det[id] || { prompt: 0, completion: 0, total: 0 };
+      byTok[id] = Number(x.total) || 0;
+      byDetail[id] = { prompt: Number(x.prompt) || 0, completion: Number(x.completion) || 0, total: Number(x.total) || 0 };
+    }
     dailyTokens.push({ date: day, byProvider: { ...byTok } });
+    dailyLlmTokens.push({ date: day, byProvider: byDetail });
   }
 
   const themesRow = db
@@ -1721,6 +1729,7 @@ function getAnalyticsPayload() {
     providers,
     dailyUsage,
     dailyTokens,
+    dailyLlmTokens,
     themesCount: Number(themesRow?.n) || 0,
     dialogsCount: Number(dialogsRow?.n) || 0,
     memoryGraph,

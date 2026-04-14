@@ -1616,28 +1616,6 @@ button.btn {
   color: hsl(var(--foreground) / 0.72);
 }
 
-.analytics-dl-row--rate dd {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 0.2rem;
-  max-width: 62%;
-  text-align: right;
-}
-
-.analytics-rate-line {
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
-.analytics-rate-tier {
-  display: block;
-  font-size: 0.72rem;
-  font-weight: 400;
-  color: hsl(var(--muted-foreground));
-  line-height: 1.35;
-}
-
 .analytics-cost-summary {
   margin: 0 0 1.5rem;
   padding: 0.85rem 1rem;
@@ -1722,12 +1700,18 @@ button.btn {
   max-width: 2rem;
 }
 
+.analytics-bar-stack-wrap {
+  position: relative;
+  width: 100%;
+  height: 10rem;
+}
+
 .analytics-bar-stack {
   display: flex;
   flex-direction: column-reverse;
   justify-content: flex-start;
   width: 100%;
-  height: 10rem;
+  height: 100%;
   border-radius: 0.25rem 0.25rem 0 0;
   overflow: hidden;
   background: hsl(var(--muted) / 0.35);
@@ -1763,10 +1747,25 @@ button.btn {
 }
 
 .analytics-bar-total {
-  font-size: 0.58rem;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%) rotate(-90deg);
+  transform-origin: center center;
+  font-size: 0.5rem;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: hsl(var(--foreground));
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+  max-width: 9.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow:
+    0 0 2px hsl(var(--card)),
+    0 0 5px hsl(var(--card)),
+    0 0 8px hsl(var(--card));
 }
 
 @container analytics-dash (max-width: 43.2rem) {
