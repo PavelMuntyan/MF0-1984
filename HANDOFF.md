@@ -4,6 +4,20 @@ This document is a **single-source orientation** for engineers taking over the r
 
 ---
 
+## Release notes (1.8.4)
+
+- Added a dedicated **Chat analysis priority** block in Settings with horizontal drag-and-drop ordering for analysis providers.
+- Keeper/background analysis provider selection now follows user-configured analysis priority for:
+  - chat interest extraction + normalize pipeline
+  - Memory tree router supplement generation
+- Analytics model cards now show a subtle check badge for the provider currently used for lightweight chat analysis / Memory tree routing.
+- Attach menu now closes reliably when clicking outside the popup.
+- Sidebar UX refinements:
+  - lock-state contrast adjustments for Intro / Rules / Access bubbles
+  - active dialog emphasis moved specifically to dialog rows inside expanded theme folder lists.
+
+---
+
 ## 1. Product snapshot
 
 - **Name / repo:** MF0-1984 (internal product id), repository folder **`mf-lab`**.

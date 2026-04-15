@@ -40,11 +40,13 @@ function formatDialogMenuTitle(raw) {
 /**
  * @param {object} d
  * @param {string|number} themeId
+ * @param {boolean} isActive
  */
-function createDialogMenuItem(d, themeId) {
+function createDialogMenuItem(d, themeId, isActive) {
   const item = document.createElement("button");
   item.type = "button";
   item.className = "dialog-folder-menu-item";
+  if (isActive) item.classList.add("dialog-folder-menu-item--active");
   item.setAttribute("role", "menuitem");
   item.dataset.dialogId = d.id;
   item.dataset.themeId = themeId;
@@ -213,7 +215,9 @@ export function buildThemeCard(
       ev.stopPropagation();
       const next = Math.min(visibleDialogCount + DIALOGS_PAGE_SIZE, dialogs.length);
       for (let i = visibleDialogCount; i < next; i++) {
-        menuInner.appendChild(createDialogMenuItem(dialogs[i], theme.id));
+        menuInner.appendChild(
+          createDialogMenuItem(dialogs[i], theme.id, normId(dialogs[i]?.id) === ad),
+        );
       }
       visibleDialogCount = next;
       appendMoreRow();
@@ -227,7 +231,9 @@ export function buildThemeCard(
     visibleDialogCount = 0;
     const first = Math.min(DIALOGS_PAGE_SIZE, dialogs.length);
     for (let i = 0; i < first; i++) {
-      menuInner.appendChild(createDialogMenuItem(dialogs[i], theme.id));
+      menuInner.appendChild(
+        createDialogMenuItem(dialogs[i], theme.id, normId(dialogs[i]?.id) === ad),
+      );
     }
     visibleDialogCount = first;
     appendMoreRow();

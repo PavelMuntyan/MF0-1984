@@ -12,6 +12,16 @@ For architecture, data model, env vars, and operations, see **[HANDOFF.md](./HAN
 
 ---
 
+## Release 1.8.4 highlights
+
+- Added **Chat analysis priority** in Settings with horizontal drag-and-drop ordering.
+- Keeper/background analysis now follows user-defined provider priority for chat analysis and Memory tree routing.
+- Analytics cards now mark the current analysis provider with a subtle check badge and explanatory tooltip.
+- Improved attach-menu UX: clicking outside the popup closes it.
+- Refined sidebar visuals: lock-state contrast for Intro / Rules / Access and clearer active-dialog emphasis inside theme dialog lists.
+
+---
+
 ## Prerequisites
 
 - **Git**, **Node.js** (LTS / 18+ recommended) and **npm** on your PATH

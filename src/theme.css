@@ -821,11 +821,15 @@ button.btn {
   flex: 1;
   min-width: 0;
   font-size: 0.875rem;
-  font-weight: 600;
+  font-weight: 500;
   line-height: 1.25;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.dialog-card.dialog-card--selected .dialog-card-title-row .dialog-card-title {
+  font-weight: 700;
 }
 
 .dialog-card-meta {
@@ -1111,9 +1115,14 @@ button.btn {
 .dialog-folder-menu-item-label {
   flex: 1;
   min-width: 0;
+  color: hsl(var(--muted-foreground));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.dialog-folder-menu-item--active .dialog-folder-menu-item-label {
+  color: hsl(var(--foreground));
 }
 
 .dialog-folder-menu-item:hover {
@@ -1242,7 +1251,24 @@ button.btn {
 }
 
 .sidebar-ir-bubble--ir-locked {
-  border-color: hsl(var(--muted-foreground) / 0.55);
+  border-color: hsl(var(--border) / 0.6);
+  color: hsl(var(--foreground) / 0.6);
+  background: hsl(var(--card) / 0.78);
+}
+
+.sidebar-ir-bubble--ir-locked .sidebar-ir-bubble-label,
+.sidebar-ir-bubble--ir-locked .sidebar-ir-lock-icon {
+  color: hsl(var(--foreground) / 0.6);
+}
+
+.sidebar-ir-bubble--ir-locked:hover:not(:disabled) {
+  background: hsl(var(--muted) / 0.22);
+}
+
+#btn-ir-intro.sidebar-ir-bubble--ir-locked .sidebar-ir-lock-icon:hover,
+#btn-ir-rules.sidebar-ir-bubble--ir-locked .sidebar-ir-lock-icon:hover,
+#btn-ir-access.sidebar-ir-bubble--ir-locked .sidebar-ir-lock-icon:hover {
+  color: hsl(var(--foreground) / 0.72);
 }
 
 .sidebar-ir-bubble:focus-visible {
@@ -1581,6 +1607,25 @@ button.btn {
   margin: 0 0 0.65rem;
   font-size: 0.95rem;
   font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+}
+
+.analytics-keeper-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 0.92rem;
+  height: 0.92rem;
+  border-radius: 999px;
+  border: 1px solid #22c55e;
+  background: transparent;
+  color: #22c55e;
+  font-size: 0.62rem;
+  line-height: 1;
+  font-weight: 700;
+  flex-shrink: 0;
 }
 
 .analytics-dl {

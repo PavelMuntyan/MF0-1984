@@ -2,6 +2,7 @@ import { PROVIDER_DISPLAY } from "./chatApi.js";
 import { apiHealth } from "./chatPersistence.js";
 import { escapeHtml } from "./escapeHtml.js";
 import { estimateProviderUsd, formatUsdEstimate } from "./analyticsPricing.js";
+import { getChatAnalysisPriority } from "./chatAnalysisPriority.js";
 
 const PROVIDER_IDS = ["openai", "perplexity", "gemini-flash", "anthropic"];
 
@@ -79,6 +80,8 @@ function renderAnalytics(root, raw) {
 
   let sumInputUsd = 0;
   let sumOutputUsd = 0;
+  const analysisPriority = getChatAnalysisPriority();
+  const keeperAnalysisProvider = String(analysisPriority[0] ?? "").trim();
   const cardsHtml = PROVIDER_IDS.map((id) => {
     const p = providers[id] && typeof providers[id] === "object" ? providers[id] : {};
     const label = escapeHtml(String(PROVIDER_DISPLAY[id] ?? id));
@@ -96,9 +99,13 @@ function renderAnalytics(root, raw) {
       sumInputUsd += est.inputUsd;
       sumOutputUsd += est.outputUsd;
     }
+    const keeperBadge =
+      id === keeperAnalysisProvider
+        ? `<span class="analytics-keeper-badge" title="This provider (its lightweight model) handles chat analysis and Memory tree routing." aria-label="This provider (its lightweight model) handles chat analysis and Memory tree routing.">✓</span>`
+        : "";
     return `
       <section class="analytics-model-card" data-provider="${id}">
-        <h3 class="analytics-model-title">${label}</h3>
+        <h3 class="analytics-model-title">${label}${keeperBadge}</h3>
         <dl class="analytics-dl">
           <div class="analytics-dl-row"><dt>Requests sent</dt><dd>${rs}</dd></div>
           <div class="analytics-dl-row"><dt>Responses without error</dt><dd>${ok}</dd></div>

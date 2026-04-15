@@ -2644,9 +2644,17 @@ function initAttachMenu() {
     fileInput.value = "";
   });
 
-  document.addEventListener("click", () => {
-    if (!menu.hidden) close();
-  });
+  document.addEventListener(
+    "pointerdown",
+    (e) => {
+      if (menu.hidden) return;
+      if (!(e.target instanceof Node)) return;
+      if (menu.contains(e.target)) return;
+      if (btn.contains(e.target)) return;
+      close();
+    },
+    true,
+  );
 
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !menu.hidden) {
