@@ -31,6 +31,10 @@ import {
   readAccessDataDumpEnrichmentImportCacheIfPresent,
   clearAccessDataDumpEnrichmentImportCache,
 } from "./accessDataDumpImportCache.mjs";
+import {
+  scheduleMemoryGraphKeeperIngestForChatApiTurn,
+  shouldRunMemoryGraphKeeperForApiTurnBody,
+} from "./memoryGraphApiTurnKeeper.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "..");
@@ -2617,6 +2621,21 @@ const server = http.createServer(async (req, res) => {
             userMessageAt,
             assistantMessageAt || now,
           );
+        }
+        const graphPur = String(drow.purpose ?? "").trim();
+        const graphKeeperEligiblePurpose =
+          graphPur !== "access" && graphPur !== "rules" && graphPur !== "intro";
+        if (
+          graphKeeperEligiblePurpose &&
+          !dataDumpLockdown &&
+          !skipPipelineForRetryClone &&
+          assistantError === 0 &&
+          requestType !== "image" &&
+          requestType !== "access_data" &&
+          shouldRunMemoryGraphKeeperForApiTurnBody(body) &&
+          String(pipelineUserText ?? "").trim().length > 0
+        ) {
+          scheduleMemoryGraphKeeperIngestForChatApiTurn(db, (ingestBody) => ingestMemoryGraphFromBody(ingestBody), pipelineUserText);
         }
       } catch (e) {
         console.error("context pipeline after turn:", e);
