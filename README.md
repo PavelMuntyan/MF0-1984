@@ -12,13 +12,12 @@ For architecture, data model, env vars, and operations, see **[HANDOFF.md](./HAN
 
 ---
 
-## Release 1.9.0 highlights
+## Release 1.9.1 highlights
 
-- Replaced **AI talks** with **AI opinion** mode in the Attach menu and user-message labeling.
-- AI opinion now requires at least **2 configured model keys**; provider badges are locked for selection while the mode is active.
-- AI opinion responses are rendered in **one assistant bubble** with per-model sections, streamed output updates, and a final `Replied:` line listing all participating models.
-- Added UI readability improvements for resumed agent discussions: stable round ordering and cleaner replay handling for turns without assistant text.
-- AI opinion chats now also pass through lightweight Keeper analysis so extracted interests can be ingested into the **Memory tree** pipeline.
+- AI opinion now uses the same context-building path as regular chat, so panel responses no longer bypass user knowledge and Memory tree-backed context.
+- Added explicit AI opinion debug traces in the activity log to confirm context usage per speaker (context message count and memory-layer status).
+- AI opinion remains integrated with lightweight Keeper interest extraction so panel chats continue feeding Memory tree interests.
+- Included a new **LoCoMo benchmark plan** (`LOCOMO_BENCH_PLAN.md`) to evaluate long-context quality, cost, and retention regressions across modes.
 
 ---
 

@@ -4979,7 +4979,7 @@ function initChatComposer() {
             const speakerLabel = PROVIDER_DISPLAY[pid] ?? pid;
             setAssistantPendingThinkingLabel(pending, `Думает: ${speakerLabel}…`);
             const hasPrior = sections.length > 0;
-            const userPrompt = [
+            const panelPrompt = [
               `User question:\n${String(promptForApi ?? "").trim()}`,
               "",
               "You are one expert in an AI-opinion panel.",
@@ -4989,13 +4989,36 @@ function initChatComposer() {
               "Previous panel answers:",
               hasPrior ? buildAiOpinionMarkdown(sections) : "(none yet)",
             ].join("\n");
+            const chatOptsForSpeaker = await buildChatOptsForModelRequest({
+              persistDialogId,
+              promptForApi: panelPrompt,
+              providerId: pid,
+              key: speakerKey,
+              modeForSend,
+              accessDataDumpMode,
+              chatAttachments: undefined,
+              introChatOpen: introContextActive,
+              accessChatOpen,
+              rulesChatOpen,
+              helpChatOpen,
+            });
+            const baseSystem = String(chatOptsForSpeaker.systemInstruction ?? "").trim();
+            chatOptsForSpeaker.systemInstruction = baseSystem
+              ? `${baseSystem}\n\nAI opinion mode: provide one concise, useful opinion for the user's question. Plain text.`
+              : "AI opinion mode: provide one concise, useful opinion for the user's question. Plain text.";
+            const nCtxMessages = Array.isArray(chatOptsForSpeaker.llmMessages)
+              ? chatOptsForSpeaker.llmMessages.length
+              : 0;
+            appendActivityLog(
+              `AI opinion context: ${speakerLabel} — context messages ${nCtxMessages}, memory layer ${nCtxMessages > 0 ? "on" : "fallback"}.`,
+            );
             appendActivityLog(`AI opinion: ${speakerLabel}`);
             let body = "";
             let usage = null;
             try {
               const streamRes = await completeChatMessageStreaming(
                 pid,
-                userPrompt,
+                panelPrompt,
                 speakerKey,
                 (piece) => {
                   body += piece;
@@ -5008,18 +5031,12 @@ function initChatComposer() {
                     scrollMessagesToEnd();
                   }
                 },
-                {
-                  systemInstruction:
-                    "AI opinion mode: provide one concise, useful opinion for the user's question. Plain text.",
-                },
+                chatOptsForSpeaker,
               );
               body = String(streamRes.text ?? body ?? "");
               usage = streamRes.usage ?? null;
             } catch {
-              const fallback = await completeChatMessage(pid, userPrompt, speakerKey, {
-                systemInstruction:
-                  "AI opinion mode: provide one concise, useful opinion for the user's question. Plain text.",
-              });
+              const fallback = await completeChatMessage(pid, panelPrompt, speakerKey, chatOptsForSpeaker);
               body = String(fallback.text ?? "");
               usage = fallback.usage ?? null;
             }
@@ -5030,7 +5047,7 @@ function initChatComposer() {
             usageAgg.promptTokens += Number(usage?.promptTokens) || 0;
             usageAgg.completionTokens += Number(usage?.completionTokens) || 0;
             usageAgg.totalTokens += Number(usage?.totalTokens) || 0;
-            recordAiTalksAuxUsage(pid, usage, userPrompt, body);
+            recordAiTalksAuxUsage(pid, usage, panelPrompt, body);
             if (pending && te) {
               const draft = buildAiOpinionMarkdown(sections);
               pending.dataset.assistantMarkdown = draft;

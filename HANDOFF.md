@@ -4,23 +4,19 @@ This document is a **single-source orientation** for engineers taking over the r
 
 ---
 
-## Release notes (1.9.0)
+## Release notes (1.9.1)
 
-- Replaced **AI talks** mode with **AI opinion**:
-  - visible in the Attach menu and user bubble labeling
-  - intended for multi-model panel-style answers in a single assistant bubble
-- AI opinion availability is now gated by configured keys:
-  - requires at least **2 providers** with API keys in `.env`
-  - model badges stay visible but selection is locked while AI opinion mode is active
-- AI opinion response rendering improvements:
-  - one shared assistant bubble with per-model sections separated by markdown dividers
-  - incremental streaming updates while each model is generating (fallback to non-streaming when unavailable)
-  - final footer rewritten to `Replied:` with all model labels that answered
-- Conversation replay reliability updates for model-panel flows:
-  - ordering logic prefers assistant timestamps and round metadata to avoid shuffled round display on reload
-  - replay skips synthetic `ai_talks` rows that intentionally have no `assistant_text` payload
-- Keeper ingestion scope update:
-  - AI opinion turns now re-enter lightweight chat-interest extraction and can contribute to Memory tree interest ingest.
+- AI opinion context path fix:
+  - per-speaker panel requests now pass through `buildChatOptsForModelRequest(...)`
+  - this aligns AI opinion with regular chat context assembly (thread context + Memory tree-related context layer)
+  - AI opinion no longer bypasses user-knowledge context while generating panel answers
+- Activity-log diagnostics added for AI opinion:
+  - each speaker logs context message count and whether memory-layer context is active/fallback
+  - easier runtime verification without opening developer tools
+- Keeper ingestion behavior remains enabled for AI opinion:
+  - panel turns continue feeding lightweight interest extraction and Memory tree ingest
+- Added benchmark planning artifact:
+  - `LOCOMO_BENCH_PLAN.md` documents a repeatable long-context evaluation workflow for MF0-1984.
 
 ---
 
