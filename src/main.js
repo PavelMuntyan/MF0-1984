@@ -287,6 +287,39 @@ function llmUsageTurnDbFields(u) {
   };
 }
 
+/**
+ * Best-effort token estimate for analytics continuity when provider usage is missing.
+ * @param {string} text
+ */
+function estimateTokensFromText(text) {
+  const s = String(text ?? "").trim();
+  if (!s) return 0;
+  return Math.max(1, Math.ceil(s.length / 4));
+}
+
+/**
+ * @param {{ promptTokens: number, completionTokens: number, totalTokens: number } | null | undefined} usage
+ * @param {string} promptText
+ * @param {string} completionText
+ */
+function ensureUsageTotals(usage, promptText, completionText) {
+  if (
+    usage &&
+    typeof usage === "object" &&
+    Number.isFinite(usage.totalTokens) &&
+    Number(usage.totalTokens) > 0
+  ) {
+    return usage;
+  }
+  const promptTokens = estimateTokensFromText(promptText);
+  const completionTokens = estimateTokensFromText(completionText);
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens: promptTokens + completionTokens,
+  };
+}
+
 /** @type {{ id: string, t: number, text: string }[]} */
 let activityLogLines = [];
 let logId = 0;
@@ -3096,12 +3129,12 @@ async function retryAssistantReply(clickedAssistantWrap) {
         chatOpts,
       );
       fullText = streamRes.text;
-      turnLlmUsage = streamRes.usage ?? null;
+      turnLlmUsage = ensureUsageTotals(streamRes.usage, JSON.stringify(chatOpts), fullText);
     } catch {
       appendActivityLog(`Chat: streaming unavailable on retry, full response (${modelLabel})`);
       const { text, usage } = await completeChatMessage(providerId, promptForApi, key, chatOpts);
       fullText = text;
-      turnLlmUsage = usage ?? null;
+      turnLlmUsage = ensureUsageTotals(usage, JSON.stringify(chatOpts), fullText);
       const te = pending.querySelector(".msg-assistant-text");
       if (te) setAssistantMessageMarkdown(te, fullText);
       scrollMessagesToEnd();
@@ -4529,7 +4562,7 @@ function initChatComposer() {
             imageGenOpts,
           );
           fullText = text;
-          turnLlmUsage = usage ?? null;
+          turnLlmUsage = ensureUsageTotals(usage, promptForApi, fullText);
           const te = pending?.querySelector(".msg-assistant-text");
           if (te) setAssistantMessageMarkdown(te, fullText);
           scrollMessagesToEnd();
@@ -4570,12 +4603,12 @@ function initChatComposer() {
               chatOpts,
             );
             fullText = streamRes.text;
-            turnLlmUsage = streamRes.usage ?? null;
+            turnLlmUsage = ensureUsageTotals(streamRes.usage, JSON.stringify(chatOpts), fullText);
           } catch {
             appendActivityLog(`Chat: streaming unavailable, full response (${modelLabel})`);
             const { text, usage } = await completeChatMessage(providerId, promptForApi, key, chatOpts);
             fullText = text;
-            turnLlmUsage = usage ?? null;
+            turnLlmUsage = ensureUsageTotals(usage, JSON.stringify(chatOpts), fullText);
             const te = pending?.querySelector(".msg-assistant-text");
             if (te) setAssistantMessageMarkdown(te, fullText);
             scrollMessagesToEnd();

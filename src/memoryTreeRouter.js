@@ -37,6 +37,27 @@ const MEMORY_TREE_ROUTER_SYSTEM =
   "- Output **plain text only** (no JSON, no markdown code fences).";
 
 /**
+ * @param {string} text
+ */
+function estimateTokensFromText(text) {
+  const s = String(text ?? "").trim();
+  if (!s) return 0;
+  return Math.max(1, Math.ceil(s.length / 4));
+}
+
+/**
+ * @param {{ promptTokens: number, completionTokens: number, totalTokens: number } | null} usage
+ * @param {string} promptText
+ * @param {string} completionText
+ */
+function withUsageFallback(usage, promptText, completionText) {
+  if (usage && Number.isFinite(usage.totalTokens) && Number(usage.totalTokens) > 0) return usage;
+  const promptTokens = estimateTokensFromText(promptText);
+  const completionTokens = estimateTokensFromText(completionText);
+  return { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
+}
+
+/**
  * @param {Response} res
  */
 async function readErrorBody(res) {
@@ -305,15 +326,18 @@ export async function fetchMemoryTreeSupplementForPrompt(args) {
   if (!treeDump.trim()) return "";
 
   const { text: rawText, usage } = await runRouterModel(providerId, key, treeDump, userQuery);
-  if (usage) {
-    void recordAuxLlmUsage({
-      provider_id: providerId,
-      request_kind: "memory_tree_router",
-      llm_prompt_tokens: usage.promptTokens,
-      llm_completion_tokens: usage.completionTokens,
-      llm_total_tokens: usage.totalTokens,
-    }).catch(() => {});
-  }
+  const usageSafe = withUsageFallback(
+    usage,
+    `${MEMORY_TREE_ROUTER_SYSTEM}\n\n${String(userQuery ?? "")}\n\n${String(treeDump ?? "")}`,
+    rawText,
+  );
+  void recordAuxLlmUsage({
+    provider_id: providerId,
+    request_kind: "memory_tree_router",
+    llm_prompt_tokens: usageSafe.promptTokens,
+    llm_completion_tokens: usageSafe.completionTokens,
+    llm_total_tokens: usageSafe.totalTokens,
+  }).catch(() => {});
   const out = String(rawText ?? "").trim();
   if (!out || /^NONE\.?$/i.test(out) || /^\(none\)$/i.test(out)) return "";
   return out;

@@ -109,6 +109,41 @@ export function usageFromGeminiResponse(data) {
   return { promptTokens, completionTokens, totalTokens };
 }
 
+/**
+ * Best-effort token estimate when provider usage is absent.
+ * Keeps analytics continuity for providers/endpoints that omit usage metadata.
+ * @param {string} text
+ */
+function estimateTokensFromText(text) {
+  const s = String(text ?? "").trim();
+  if (!s) return 0;
+  return Math.max(1, Math.ceil(s.length / 4));
+}
+
+/**
+ * @param {LlmUsageTotals | null | undefined} usage
+ * @param {string} promptText
+ * @param {string} completionText
+ * @returns {LlmUsageTotals}
+ */
+function withUsageFallback(usage, promptText, completionText) {
+  if (
+    usage &&
+    typeof usage === "object" &&
+    Number.isFinite(usage.totalTokens) &&
+    Number(usage.totalTokens) > 0
+  ) {
+    return usage;
+  }
+  const promptTokens = estimateTokensFromText(promptText);
+  const completionTokens = estimateTokensFromText(completionText);
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens: promptTokens + completionTokens,
+  };
+}
+
 function openAiDialogue() {
   return getUserAiModel("openai", "dialogue");
 }
@@ -581,6 +616,14 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
     openAiCompatMessages(trimmed, options),
     options.chatAttachments,
   );
+  const promptUsageBasis = [
+    String(options.systemInstruction ?? "").trim(),
+    JSON.stringify(options.llmMessages ?? []),
+    JSON.stringify(oaMsgs),
+    trimmed,
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   switch (providerId) {
     case "openai": {
@@ -603,7 +646,7 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
       const annUrls = collectOpenAiLikeAnnotationUrls(data.choices?.[0]?.message);
       return {
         text: mergePlainBracketRefsWithCitationList(rawText, annUrls),
-        usage: usageFromOpenAiStyleUsage(data.usage),
+        usage: withUsageFallback(usageFromOpenAiStyleUsage(data.usage), promptUsageBasis, rawText),
       };
     }
     case "anthropic": {
@@ -642,7 +685,7 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
         .map((b) => b.text);
       const out = textParts.join("\n").trim();
       if (!out) throw new Error("Empty API response");
-      return { text: out, usage: usageFromAnthropicResponse(data) };
+      return { text: out, usage: withUsageFallback(usageFromAnthropicResponse(data), promptUsageBasis, out) };
     }
     case "gemini-flash": {
       const gMsgs =
@@ -687,7 +730,10 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
       if (!rawText.trim()) throw new Error("Empty API response");
       const citeRaw = pickPerplexityCitationPayload(data);
       const withCites = mergePlainBracketRefsWithCitationList(rawText, citeRaw);
-      return { text: withCites, usage: usageFromOpenAiStyleUsage(data.usage) };
+      return {
+        text: withCites,
+        usage: withUsageFallback(usageFromOpenAiStyleUsage(data.usage), promptUsageBasis, withCites),
+      };
     }
     default:
       throw new Error("Unknown provider");
@@ -1455,14 +1501,18 @@ export async function extractChatInterestSketchForIngest(providerId, apiKey, use
     const content = data.choices?.[0]?.message?.content;
     const rawText = openAiChatCompletionMessageContentToString(content);
     if (!rawText.trim()) throw new Error("Empty API response");
-    reportAuxLlmUsage(providerId, "interests_sketch", usageFromOpenAiStyleUsage(data.usage));
+    reportAuxLlmUsage(
+      providerId,
+      "interests_sketch",
+      withUsageFallback(usageFromOpenAiStyleUsage(data.usage), userBlock, rawText),
+    );
     return clampGraphPayloadToInterestsOnly(parseIntroGraphJsonFromModelText(rawText));
   }
 
   const { text, usage } = await completeChatMessage(providerId, userBlock, key, {
     systemInstruction: `${CHAT_INTEREST_SKETCH_EXTRACT_SYSTEM}\nRespond with a single JSON object only, no markdown fences.`,
   });
-  reportAuxLlmUsage(providerId, "interests_sketch", usage);
+  reportAuxLlmUsage(providerId, "interests_sketch", withUsageFallback(usage, userBlock, text));
   return clampGraphPayloadToInterestsOnly(parseIntroGraphJsonFromModelText(text));
 }
 
@@ -1651,7 +1701,11 @@ export async function normalizeIntroMemoryGraphForDb(
     const content = data.choices?.[0]?.message?.content;
     const rawText = openAiChatCompletionMessageContentToString(content);
     if (!rawText.trim()) throw new Error("Empty API response");
-    reportAuxLlmUsage(providerId, "memory_graph_normalize", usageFromOpenAiStyleUsage(data.usage));
+    reportAuxLlmUsage(
+      providerId,
+      "memory_graph_normalize",
+      withUsageFallback(usageFromOpenAiStyleUsage(data.usage), userJson, rawText),
+    );
     const normalized = parseIntroGraphJsonFromModelTextSafe(rawText, "Intro normalize");
     const n =
       normalized.entities.length + normalized.links.length + (normalized.commands?.length ?? 0);
@@ -1662,7 +1716,7 @@ export async function normalizeIntroMemoryGraphForDb(
   const { text, usage } = await completeChatMessage(providerId, userJson, key, {
     systemInstruction: `${INTRO_GRAPH_NORMALIZE_SYSTEM}\nRespond with one JSON object only, no markdown fences.`,
   });
-  reportAuxLlmUsage(providerId, "memory_graph_normalize", usage);
+  reportAuxLlmUsage(providerId, "memory_graph_normalize", withUsageFallback(usage, userJson, text));
   const normalized = parseIntroGraphJsonFromModelTextSafe(text, "Intro normalize");
   const n =
     normalized.entities.length + normalized.links.length + (normalized.commands?.length ?? 0);
@@ -1719,14 +1773,18 @@ export async function extractIntroMemoryGraphForIngest(providerId, apiKey, userT
     const content = data.choices?.[0]?.message?.content;
     const rawText = openAiChatCompletionMessageContentToString(content);
     if (!rawText.trim()) throw new Error("Empty API response");
-    reportAuxLlmUsage(providerId, "intro_graph_extract", usageFromOpenAiStyleUsage(data.usage));
+    reportAuxLlmUsage(
+      providerId,
+      "intro_graph_extract",
+      withUsageFallback(usageFromOpenAiStyleUsage(data.usage), userBlock, rawText),
+    );
     return parseIntroGraphJsonFromModelTextSafe(rawText, "Intro extract");
   }
 
   const { text, usage } = await completeChatMessage(providerId, userBlock, key, {
     systemInstruction: `${INTRO_GRAPH_EXTRACT_SYSTEM}\nRespond with a single JSON object only, no markdown fences.`,
   });
-  reportAuxLlmUsage(providerId, "intro_graph_extract", usage);
+  reportAuxLlmUsage(providerId, "intro_graph_extract", withUsageFallback(usage, userBlock, text));
   return parseIntroGraphJsonFromModelTextSafe(text, "Intro extract");
 }
 
@@ -1754,6 +1812,14 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
     openAiCompatMessages(trimmed, options),
     options.chatAttachments,
   );
+  const promptUsageBasis = [
+    String(options.systemInstruction ?? "").trim(),
+    JSON.stringify(options.llmMessages ?? []),
+    JSON.stringify(oaMsgs),
+    trimmed,
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   let full;
   /** @type {LlmUsageTotals | null} */
@@ -1892,7 +1958,7 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
   if (!String(full).trim()) {
     throw new Error("Empty API response");
   }
-  return { text: full, usage: usageOut };
+  return { text: full, usage: withUsageFallback(usageOut, promptUsageBasis, full) };
 }
 
 /**
