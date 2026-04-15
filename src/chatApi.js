@@ -1772,6 +1772,9 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
           model: pickOpenAi(webSearch, deepResearch),
           messages: oaMsgs,
           stream: true,
+          stream_options: {
+            include_usage: true,
+          },
         }),
       });
       const oaStream = await streamOpenAICompatJson(res, onDelta);
