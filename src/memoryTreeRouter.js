@@ -137,18 +137,18 @@ export function serializeMemoryGraphForRouter(graph, userQuery, opts = {}) {
 
 /**
  * @param {Record<string, string>} allKeys
+ * @param {string[]} [analysisPriority]
  * @param {string} activeProviderId
  * @param {string} activeApiKey
  */
-function pickRouterKey(allKeys, activeProviderId, activeApiKey) {
-  const o = String(allKeys?.openai ?? "").trim();
-  if (o) return { providerId: "openai", key: o };
-  const a = String(allKeys?.anthropic ?? "").trim();
-  if (a) return { providerId: "anthropic", key: a };
-  const g = String(allKeys?.["gemini-flash"] ?? "").trim();
-  if (g) return { providerId: "gemini-flash", key: g };
-  const p = String(allKeys?.perplexity ?? "").trim();
-  if (p) return { providerId: "perplexity", key: p };
+function pickRouterKey(allKeys, analysisPriority, activeProviderId, activeApiKey) {
+  const preferred = Array.isArray(analysisPriority)
+    ? analysisPriority
+    : ["openai", "anthropic", "gemini-flash", "perplexity"];
+  for (const pid of preferred) {
+    const key = String(allKeys?.[pid] ?? "").trim();
+    if (key) return { providerId: pid, key };
+  }
   const k = String(activeApiKey ?? "").trim();
   if (k) return { providerId: activeProviderId, key: k };
   return { providerId: "", key: "" };
@@ -281,6 +281,7 @@ async function runRouterModel(providerId, key, treeDump, userQuery) {
  *   userQuery: string,
  *   graph: { nodes?: unknown[], links?: unknown[] },
  *   allKeys: Record<string, string>,
+ *   analysisPriority?: string[],
  *   activeProviderId: string,
  *   activeApiKey: string,
  * }} args
@@ -292,7 +293,12 @@ export async function fetchMemoryTreeSupplementForPrompt(args) {
   const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
   if (!userQuery || nodes.length === 0) return "";
 
-  const { providerId, key } = pickRouterKey(args.allKeys ?? {}, args.activeProviderId, args.activeApiKey);
+  const { providerId, key } = pickRouterKey(
+    args.allKeys ?? {},
+    args.analysisPriority,
+    args.activeProviderId,
+    args.activeApiKey,
+  );
   if (!providerId || !key) return "";
 
   const treeDump = serializeMemoryGraphForRouter(graph, userQuery);

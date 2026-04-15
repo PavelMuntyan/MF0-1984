@@ -26,6 +26,11 @@ import {
   initSettingsModelSelects,
   refreshSettingsModelSelects,
 } from "./settingsModelsUi.js";
+import {
+  getChatAnalysisPriority,
+  initChatAnalysisPrioritySettings,
+  refreshChatAnalysisPrioritySettings,
+} from "./chatAnalysisPriority.js";
 import { setTheme } from "./theme.js";
 import {
   closeMemoryTree,
@@ -737,6 +742,11 @@ function initSettingsModal() {
       appendActivityLog("AI models saved");
     },
   });
+  initChatAnalysisPrioritySettings({
+    onSave() {
+      appendActivityLog("Chat analysis priority saved");
+    },
+  });
 
   const settingsAiLoading = document.getElementById("settings-ai-loading");
 
@@ -914,6 +924,7 @@ function initSettingsModal() {
     const opening = modal.hidden;
     setOpen(modal.hidden);
     if (opening) {
+      refreshChatAnalysisPrioritySettings();
       if (settingsAiLoading instanceof HTMLElement) {
         settingsAiLoading.hidden = false;
       }
@@ -1175,6 +1186,7 @@ function initSettingsModal() {
             const raw = await fetchMemoryGraphFromApi({ signal });
             setMemoryGraphData(enrichMemoryGraphFromApi(raw));
             await refreshSettingsModelSelects();
+            refreshChatAnalysisPrioritySettings();
           } catch (refreshErr) {
             const refreshAborted =
               typeof refreshErr === "object" &&
@@ -1268,6 +1280,19 @@ const PROVIDER_ORDER = ["openai", "perplexity", "gemini-flash", "anthropic"];
 
 function providerHasKey(keys, id) {
   return Boolean(String(keys[id] ?? "").trim());
+}
+
+/**
+ * Picks a provider/key for Keeper analysis only (Memory tree ingest helpers).
+ * This must not affect the provider the user picked for the visible chat reply.
+ */
+function pickKeeperProviderWithKey() {
+  const keys = getModelApiKeys();
+  for (const id of getChatAnalysisPriority()) {
+    const key = String(keys[id] ?? "").trim();
+    if (key) return { providerId: id, apiKey: key };
+  }
+  return { providerId: "", apiKey: "" };
 }
 
 /** Web search mode: Gemini → Perplexity → Claude → ChatGPT */
@@ -4121,6 +4146,7 @@ async function buildChatOptsForModelRequest(p) {
               userQuery: promptForApi,
               graph: graphPayload,
               allKeys: getModelApiKeys(),
+              analysisPriority: getChatAnalysisPriority(),
               activeProviderId: providerId,
               activeApiKey: key,
             });
@@ -4636,10 +4662,22 @@ function initChatComposer() {
         ) {
           try {
             appendActivityLog("Keeper (Intro): start — extracting from user text…");
+            const keeperPick = pickKeeperProviderWithKey();
+            const keeperProviderId = String(keeperPick.providerId ?? "").trim();
+            const keeperApiKey = String(keeperPick.apiKey ?? "").trim();
+            if (!keeperProviderId || !keeperApiKey) {
+              appendActivityLog(
+                "Keeper (Intro): skipped — no API key for analysis provider (OpenAI/Anthropic/Gemini/Perplexity).",
+              );
+            } else {
             /** @type {{ entities: unknown[], links: unknown[], commands?: unknown[] }} */
             let extracted = { entities: [], links: [], commands: [] };
             try {
-              extracted = await extractIntroMemoryGraphForIngest(providerId, key, persistUserText);
+              extracted = await extractIntroMemoryGraphForIngest(
+                keeperProviderId,
+                keeperApiKey,
+                persistUserText,
+              );
             } catch (exErr) {
               appendActivityLog(
                 `Keeper (Intro): extract request failed — ${exErr instanceof Error ? exErr.message : String(exErr)}. Continuing with empty extract (normalize + fallback can still run).`,
@@ -4654,8 +4692,8 @@ function initChatComposer() {
                   `Keeper (Intro): normalize to DB (${(existing.nodes ?? []).length} nodes in graph)…`,
                 );
                 pack = await normalizeIntroMemoryGraphForDb(
-                  providerId,
-                  key,
+                  keeperProviderId,
+                  keeperApiKey,
                   extracted,
                   existing.nodes ?? [],
                   {
@@ -4708,6 +4746,7 @@ function initChatComposer() {
               appendActivityLog(
                 "Keeper (Intro): ingest skipped — empty pack after extract/normalize. The model returned no entities/links/commands for this message (or the API did not respond).",
               );
+            }
             }
           } catch (ingErr) {
             appendActivityLog(
@@ -4862,49 +4901,67 @@ function initChatComposer() {
           ) {
             try {
               appendActivityLog("Keeper (chat): start — interest sketch from user text…");
-              const extracted = await extractChatInterestSketchForIngest(providerId, key, persistUserText);
-              appendActivityLog(`Keeper (chat): extract — ${keeperPayloadSummary(extracted)}`);
-              let pack = extracted;
-              if ((extracted.entities.length > 0 || extracted.links.length > 0) && (await apiHealth())) {
-                try {
-                  const existing = await fetchMemoryGraphFromApi();
-                  appendActivityLog(
-                    `Keeper (chat): normalize to DB (${(existing.nodes ?? []).length} nodes in graph)…`,
-                  );
-                  pack = await normalizeIntroMemoryGraphForDb(providerId, key, extracted, existing.nodes ?? []);
-                  appendActivityLog(`Keeper (chat): normalize — ${keeperPayloadSummary(pack)}`);
-                } catch (normErr) {
-                  appendActivityLog(
-                    `Keeper (chat): normalize — error: ${normErr instanceof Error ? normErr.message : String(normErr)}`,
-                  );
-                  appendActivityLog(`Keeper (chat): pack without normalize — ${keeperPayloadSummary(pack)}`);
-                }
-              } else if (extracted.entities.length > 0 || extracted.links.length > 0) {
+              const keeperPick = pickKeeperProviderWithKey();
+              const keeperProviderId = String(keeperPick.providerId ?? "").trim();
+              const keeperApiKey = String(keeperPick.apiKey ?? "").trim();
+              if (!keeperProviderId || !keeperApiKey) {
                 appendActivityLog(
-                  "Keeper (chat): normalize skipped — local API unavailable.",
+                  "Keeper (chat): skipped — no API key for analysis provider (OpenAI/Anthropic/Gemini/Perplexity).",
                 );
-              }
-              const chatCmdLen = Array.isArray(pack.commands) ? pack.commands.length : 0;
-              if (pack.entities.length > 0 || pack.links.length > 0 || chatCmdLen > 0) {
-                const ing = await ingestMemoryGraphPayload({
-                  entities: pack.entities ?? [],
-                  links: pack.links ?? [],
-                  commands: pack.commands ?? [],
-                });
-                const u = Number(ing?.upsertedEntities);
-                const l = Number(ing?.insertedLinks);
-                appendActivityLog(
-                  `Keeper (chat): ingest — upserted nodes: ${Number.isFinite(u) ? u : "?"}, inserted edges: ${Number.isFinite(l) ? l : "?"}.${keeperIngestCommandsLine(ing)}`,
-                );
-                try {
-                  await loadMemoryGraphIntoUi();
-                } catch {
-                  /* loadMemoryGraphIntoUi logs */
-                }
               } else {
-                appendActivityLog(
-                  "Keeper (chat): ingest skipped — empty interest sketch for this message.",
+                const extracted = await extractChatInterestSketchForIngest(
+                  keeperProviderId,
+                  keeperApiKey,
+                  persistUserText,
                 );
+                appendActivityLog(`Keeper (chat): extract — ${keeperPayloadSummary(extracted)}`);
+                let pack = extracted;
+                if ((extracted.entities.length > 0 || extracted.links.length > 0) && (await apiHealth())) {
+                  try {
+                    const existing = await fetchMemoryGraphFromApi();
+                    appendActivityLog(
+                      `Keeper (chat): normalize to DB (${(existing.nodes ?? []).length} nodes in graph)…`,
+                    );
+                    pack = await normalizeIntroMemoryGraphForDb(
+                      keeperProviderId,
+                      keeperApiKey,
+                      extracted,
+                      existing.nodes ?? [],
+                    );
+                    appendActivityLog(`Keeper (chat): normalize — ${keeperPayloadSummary(pack)}`);
+                  } catch (normErr) {
+                    appendActivityLog(
+                      `Keeper (chat): normalize — error: ${normErr instanceof Error ? normErr.message : String(normErr)}`,
+                    );
+                    appendActivityLog(`Keeper (chat): pack without normalize — ${keeperPayloadSummary(pack)}`);
+                  }
+                } else if (extracted.entities.length > 0 || extracted.links.length > 0) {
+                  appendActivityLog(
+                    "Keeper (chat): normalize skipped — local API unavailable.",
+                  );
+                }
+                const chatCmdLen = Array.isArray(pack.commands) ? pack.commands.length : 0;
+                if (pack.entities.length > 0 || pack.links.length > 0 || chatCmdLen > 0) {
+                  const ing = await ingestMemoryGraphPayload({
+                    entities: pack.entities ?? [],
+                    links: pack.links ?? [],
+                    commands: pack.commands ?? [],
+                  });
+                  const u = Number(ing?.upsertedEntities);
+                  const l = Number(ing?.insertedLinks);
+                  appendActivityLog(
+                    `Keeper (chat): ingest — upserted nodes: ${Number.isFinite(u) ? u : "?"}, inserted edges: ${Number.isFinite(l) ? l : "?"}.${keeperIngestCommandsLine(ing)}`,
+                  );
+                  try {
+                    await loadMemoryGraphIntoUi();
+                  } catch {
+                    /* loadMemoryGraphIntoUi logs */
+                  }
+                } else {
+                  appendActivityLog(
+                    "Keeper (chat): ingest skipped — empty interest sketch for this message.",
+                  );
+                }
               }
             } catch (skErr) {
               appendActivityLog(
