@@ -124,17 +124,74 @@ function renderAnalytics(root, raw) {
   }).join("");
 
   const totalUsd = sumInputUsd + sumOutputUsd;
+  const spendSummaryRaw = data.spendSummary && typeof data.spendSummary === "object" ? data.spendSummary : {};
+  const summaryInput = spendSummaryRaw.inputUsd && typeof spendSummaryRaw.inputUsd === "object" ? spendSummaryRaw.inputUsd : {};
+  const summaryOutput =
+    spendSummaryRaw.outputUsd && typeof spendSummaryRaw.outputUsd === "object" ? spendSummaryRaw.outputUsd : {};
+  const summaryCombined =
+    spendSummaryRaw.combinedUsd && typeof spendSummaryRaw.combinedUsd === "object"
+      ? spendSummaryRaw.combinedUsd
+      : {};
+  const spendInput = {
+    total: Number(summaryInput.total),
+    last30d: Number(summaryInput.last30d),
+    last24h: Number(summaryInput.last24h),
+  };
+  const spendOutput = {
+    total: Number(summaryOutput.total),
+    last30d: Number(summaryOutput.last30d),
+    last24h: Number(summaryOutput.last24h),
+  };
+  const spendCombined = {
+    total: Number(summaryCombined.total),
+    last30d: Number(summaryCombined.last30d),
+    last24h: Number(summaryCombined.last24h),
+  };
+  if (!Number.isFinite(spendInput.total)) spendInput.total = sumInputUsd;
+  if (!Number.isFinite(spendOutput.total)) spendOutput.total = sumOutputUsd;
+  if (!Number.isFinite(spendCombined.total)) spendCombined.total = totalUsd;
+  if (!Number.isFinite(spendInput.last30d)) spendInput.last30d = spendInput.total;
+  if (!Number.isFinite(spendOutput.last30d)) spendOutput.last30d = spendOutput.total;
+  if (!Number.isFinite(spendCombined.last30d)) spendCombined.last30d = spendCombined.total;
+  if (!Number.isFinite(spendInput.last24h)) spendInput.last24h = 0;
+  if (!Number.isFinite(spendOutput.last24h)) spendOutput.last24h = 0;
+  if (!Number.isFinite(spendCombined.last24h)) spendCombined.last24h = 0;
   const pricingFootnote = escapeHtml(
     "Estimated USD is not an invoice: each provider row mixes models (chat, images, background tools). Rates are fixed reference tiers for planning only — OpenAI GPT-4o class ($2.50 / $15 per 1M in/out), Claude Sonnet class ($3 / $15), Gemini Flash ($0.50 / $3), Perplexity midpoint ($2.75 / $9). Your API bill may differ.",
   );
   const costSummaryHtml = `
     <section class="analytics-cost-summary">
       <h3 class="analytics-section-title">Estimated spend (all listed providers)</h3>
-      <dl class="analytics-dl analytics-dl--inline">
-        <div class="analytics-dl-row"><dt>Est. input (USD)</dt><dd>${formatUsdEstimate(sumInputUsd)}</dd></div>
-        <div class="analytics-dl-row"><dt>Est. output (USD)</dt><dd>${formatUsdEstimate(sumOutputUsd)}</dd></div>
-        <div class="analytics-dl-row"><dt>Est. combined (USD)</dt><dd>${formatUsdEstimate(totalUsd)}</dd></div>
-      </dl>
+      <table class="analytics-spend-table" role="table" aria-label="Estimated spend breakdown by period">
+        <thead>
+          <tr>
+            <th>Metric</th>
+            <th>Total</th>
+            <th>Last 30 days</th>
+            <th>Last 24 hours</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">Est. input (USD)</th>
+            <td>${formatUsdEstimate(spendInput.total)}</td>
+            <td>${formatUsdEstimate(spendInput.last30d)}</td>
+            <td>${formatUsdEstimate(spendInput.last24h)}</td>
+          </tr>
+          <tr>
+            <th scope="row">Est. output (USD)</th>
+            <td>${formatUsdEstimate(spendOutput.total)}</td>
+            <td>${formatUsdEstimate(spendOutput.last30d)}</td>
+            <td>${formatUsdEstimate(spendOutput.last24h)}</td>
+          </tr>
+          <tr>
+            <th scope="row">Est. combined (USD)</th>
+            <td>${formatUsdEstimate(spendCombined.total)}</td>
+            <td>${formatUsdEstimate(spendCombined.last30d)}</td>
+            <td>${formatUsdEstimate(spendCombined.last24h)}</td>
+          </tr>
+        </tbody>
+      </table>
       <p class="analytics-pricing-note">${pricingFootnote}</p>
     </section>`;
 

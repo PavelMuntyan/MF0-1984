@@ -1009,6 +1009,14 @@
                       <span class="attach-menu-label">Add photos &amp; files</span>
                     </button>
                     <div class="attach-menu-sep" role="separator"></div>
+                    <button type="button" class="attach-menu-item" role="menuitem" data-action="aiTalks">
+                      <span class="attach-menu-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M12 3 13.8 10.2 21 12 13.8 13.8 12 21 10.2 13.8 3 12 10.2 10.2 12 3z" />
+                        </svg>
+                      </span>
+                      <span class="attach-menu-label">AI opinion</span>
+                    </button>
                     <button type="button" class="attach-menu-item" role="menuitem" data-action="image">
                       <span class="attach-menu-icon" aria-hidden="true">
                         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1062,6 +1070,19 @@
                     placeholder="Type a message..."
                     aria-label="Message text"
                   ></textarea>
+                  <button
+                    type="button"
+                    class="ai-talks-stop-btn"
+                    id="btn-ai-talks-stop"
+                    aria-label="Stop AI opinion"
+                    title="Stop AI opinion"
+                    hidden
+                  >
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <circle cx="12" cy="12" r="9" />
+                      <rect x="9" y="9" width="6" height="6" rx="1" ry="1" />
+                    </svg>
+                  </button>
                 </div>
                 <button type="button" class="send-btn" id="btn-chat-send" aria-label="Send message">↑</button>
                 <button

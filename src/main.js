@@ -75,6 +75,7 @@ import {
   fetchTurns,
   ingestMemoryGraphPayload,
   requestTypeFromAttachMode,
+  recordAuxLlmUsage,
   saveConversationTurn,
   setAssistantTurnFavorite,
   titleFromUserMessage,
@@ -366,6 +367,7 @@ function attachModeLogLabel(mode) {
   if (m === "image") return "image";
   if (m === "research") return "deep research";
   if (m === "accessData") return "access data";
+  if (m === "aiTalks") return "AI opinion";
   return "default text";
 }
 
@@ -1341,6 +1343,270 @@ const WEB_SEARCH_PROVIDER_PRIORITY = [
  * @type {string}
  */
 let composerAttachMode = "";
+/** AI talks runtime control for loop stop/cancel. */
+const aiTalksRuntime = {
+  running: false,
+  stopRequested: false,
+  abortController: null,
+};
+
+/**
+ * Persisted across pauses: same dialog until user continues, Stop, or reset.
+ * @type {null | {
+ *   dialogId: string,
+ *   topic: string,
+ *   ordered: string[],
+ *   transcript: Array<{ providerId: string, text: string }>,
+ *   speakerId: string,
+ *   cloneRootTurnId: string | null,
+ *   awaitingUser: boolean,
+ *   anchorUserMessageAt: string,
+ * }}
+ */
+let aiTalksSession = null;
+
+/** Set from `initAttachMenu` so AI talks can refresh Stop visibility after pausing. */
+let syncAttachButtonExternal = null;
+
+function clearAiTalksSession() {
+  aiTalksSession = null;
+}
+
+function isAbortErrorLike(err) {
+  if (!err) return false;
+  const n = String(err?.name ?? "").toLowerCase();
+  const m = String(err?.message ?? "").toLowerCase();
+  return n === "aborterror" || m.includes("aborted") || m.includes("abort");
+}
+
+/** Provider ids with API keys, user’s active model first (for AI talks handoff list). */
+function aiTalksProvidersWithKeysOrdered(primaryProviderId) {
+  const keys = getModelApiKeys();
+  const ordered = [primaryProviderId, ...PROVIDER_ORDER.filter((id) => id && id !== primaryProviderId)];
+  /** @type {string[]} */
+  const out = [];
+  for (const id of ordered) {
+    if (!id || out.includes(id)) continue;
+    if (String(keys[id] ?? "").trim()) out.push(id);
+  }
+  return out;
+}
+
+function hasAtLeastTwoModelKeys() {
+  const keys = getModelApiKeys();
+  let n = 0;
+  for (const id of PROVIDER_ORDER) {
+    if (String(keys[id] ?? "").trim()) n += 1;
+    if (n >= 2) return true;
+  }
+  return false;
+}
+
+const AI_TALKS_HANDOFF_RE =
+  /HANDOFF:\s*(openai|anthropic|gemini-flash|perplexity)\s*$/im;
+const AI_TALKS_MAX_TURNS = 20;
+const AI_TALKS_ROUTING_GUIDE = [
+  "- If the task needs creative ideation or non-obvious options -> HANDOFF: openai (ChatGPT).",
+  "- If someone must check current web facts/sources -> HANDOFF: gemini-flash (Gemini).",
+  "- If the team needs dry trade-off weighing / objective structure -> HANDOFF: perplexity (Perplexity).",
+  "- If you need critical evaluation, risk review, or quality judgment -> HANDOFF: anthropic (Claude).",
+  "- Do not rotate models mechanically. Choose based on what is needed next to solve the user's task.",
+].join("\n");
+
+/**
+ * @param {string} raw
+ * @returns {{ clean: string, handoffId: string }}
+ */
+function parseAiTalksHandoff(raw) {
+  const s = String(raw ?? "").trim();
+  const m = s.match(AI_TALKS_HANDOFF_RE);
+  if (!m) return { clean: s, handoffId: "" };
+  const handoffId = String(m[1] ?? "").trim();
+  const clean = s.replace(AI_TALKS_HANDOFF_RE, "").trim();
+  return { clean, handoffId };
+}
+
+/**
+ * Rounds 3, 4, 5, 8, 9, 10, … — ask the human as arbiter (every block of five, last three rounds).
+ * @param {number} roundNo 1-based index of the reply being generated
+ */
+function aiTalksWantsUserArbiter(roundNo) {
+  if (roundNo < 3) return false;
+  const r = roundNo % 5;
+  return r === 3 || r === 4 || r === 0;
+}
+
+/** @param {HTMLElement | null} wrap */
+function setAssistantPendingThinkingLabel(wrap, label) {
+  const lab = wrap?.querySelector(".msg-assistant-thinking-label");
+  if (lab) lab.textContent = String(label ?? "").trim().slice(0, 120) || "Thinking…";
+}
+
+function aiTalksAiMessageCount(transcript) {
+  return transcript.filter((t) => t && t.providerId && t.providerId !== "user").length;
+}
+
+/**
+ * @param {string} speakerId
+ * @param {{ promptTokens: number, completionTokens: number, totalTokens: number } | null | undefined} usage
+ * @param {string} promptBasis
+ * @param {string} body
+ */
+function recordAiTalksAuxUsage(speakerId, usage, promptBasis, body) {
+  const u = ensureUsageTotals(usage, promptBasis, body);
+  if (!u || !(Number(u.totalTokens) > 0)) return;
+  void recordAuxLlmUsage({
+    provider_id: speakerId,
+    request_kind: "ai_talks_round",
+    llm_prompt_tokens: u.promptTokens,
+    llm_completion_tokens: u.completionTokens,
+    llm_total_tokens: u.totalTokens,
+  }).catch(() => {});
+}
+
+/**
+ * @param {number} roundIndex 1-based assistant reply index in this AI talks run
+ * @param {string} body
+ */
+function formatAiTalksAssistantBubbleBody(roundIndex, body) {
+  return `**Round ${roundIndex}**\n\n${String(body ?? "").trim()}`;
+}
+
+/**
+ * @param {Array<{ providerId: string, label: string, body: string }>} sections
+ */
+function buildAiOpinionMarkdown(sections) {
+  return sections
+    .map((s, i) => {
+      const body = String(s?.body ?? "").trim() || "_(no content)_";
+      const sep = i < sections.length - 1 ? "\n\n---\n\n" : "";
+      return `### ${String(s?.label ?? s?.providerId ?? "Model")}\n${body}${sep}`;
+    })
+    .join("\n\n")
+    .trim();
+}
+
+/**
+ * @param {string} dialogId
+ * @param {string} topicUserText
+ * @param {string | null} cloneRootTurnId
+ * @param {string} speakerId
+ * @param {string} assistantMd
+ * @param {string} userMessageAt
+ * @param {{ promptTokens: number, completionTokens: number, totalTokens: number } | null | undefined} usage
+ */
+async function persistAiTalksAssistantTurn(
+  dialogId,
+  topicUserText,
+  cloneRootTurnId,
+  speakerId,
+  assistantMd,
+  userMessageAt,
+  usage,
+) {
+  const u = ensureUsageTotals(usage, JSON.stringify({ aiTalks: true }), assistantMd);
+  /** @type {Record<string, unknown>} */
+  const payload = {
+    assistant_text: assistantMd,
+    requested_provider_id: speakerId,
+    responding_provider_id: speakerId,
+    request_type: "ai_talks",
+    user_message_at: userMessageAt,
+    assistant_message_at: new Date().toISOString(),
+    assistant_error: 0,
+    ...llmUsageTurnDbFields(u),
+  };
+  if (cloneRootTurnId) {
+    payload.clone_user_from_turn_id = cloneRootTurnId;
+  } else {
+    payload.user_text = topicUserText;
+  }
+  return saveConversationTurn(dialogId, payload);
+}
+
+/**
+ * @param {string} userTopic
+ * @param {string[]} othersIds provider ids (not first speaker) that have keys
+ * @param {number} roundNo 1-based current model turn
+ */
+function buildAiTalksFirstUserPrompt(userTopic, othersIds, roundNo) {
+  const list = othersIds
+    .map((id) => `- ${id} (${PROVIDER_DISPLAY[id] ?? id})`)
+    .join("\n");
+  return [
+    `User topic:\n${String(userTopic ?? "").trim()}`,
+    "",
+    `Turn ${Math.max(1, roundNo)} of ${AI_TALKS_MAX_TURNS}.`,
+    "You are the first speaker in a collaborative problem-solving team.",
+    "Give a concrete first solution attempt (max ~180 words).",
+    "Focus on moving toward a real solution, not generic discussion.",
+    "",
+    "Routing policy for choosing who should speak next:",
+    AI_TALKS_ROUTING_GUIDE,
+    "",
+    "Then choose exactly ONE other model to continue the chain.",
+    "Only choose from this list (each has an API key in the user setup):",
+    list || "(no other models — still answer the topic, no handoff line)",
+    "",
+    othersIds.length
+      ? "End your reply with its own final line exactly (no characters after it):\nHANDOFF: <provider_id>\nUse one of: " +
+          othersIds.join(", ") +
+          "."
+      : "Do not add a HANDOFF line.",
+  ].join("\n");
+}
+
+/**
+ * @param {string} userTopic
+ * @param {Array<{ providerId: string, text: string }>} transcript
+ * @param {string} speakerLabel
+ * @param {string[]} handoffCandidates ids excluding current speaker
+ * @param {number} roundNo 1-based current model turn
+ */
+function buildAiTalksCritiqueUserPrompt(
+  userTopic,
+  transcript,
+  speakerLabel,
+  handoffCandidates,
+  roundNo,
+) {
+  const thread = transcript
+    .map((x, i) => {
+      const who =
+        x.providerId === "user"
+          ? "User (arbiter)"
+          : PROVIDER_DISPLAY[x.providerId] ?? x.providerId;
+      return `### ${i + 1}. ${who}\n${String(x.text ?? "").trim()}`;
+    })
+    .join("\n\n");
+  const list = handoffCandidates
+    .map((id) => `- ${id} (${PROVIDER_DISPLAY[id] ?? id})`)
+    .join("\n");
+  return [
+    `Original user topic:\n${String(userTopic ?? "").trim()}`,
+    "",
+    `Turn ${Math.max(1, roundNo)} of ${AI_TALKS_MAX_TURNS}.`,
+    "### Thread so far",
+    thread || "(empty)",
+    "",
+    `You are **${speakerLabel}** (next in the AI talks chain).`,
+    "Critique the **last** message in the thread: weaknesses, gaps, or risks.",
+    "Propose concrete improvements or a tighter solution step (max ~180 words).",
+    "Prioritize actionable progress toward solving the user's problem.",
+    "",
+    "Routing policy for choosing who should speak next:",
+    AI_TALKS_ROUTING_GUIDE,
+    "",
+    "Choose the next model to continue (not yourself). Only from:",
+    list || "(none — end without HANDOFF)",
+    "",
+    handoffCandidates.length
+      ? "End with its own final line exactly (no characters after it):\nHANDOFF: <provider_id>\nUse one of: " +
+          handoffCandidates.join(", ") +
+          "."
+      : "If no other model is listed, do not add a HANDOFF line.",
+  ].join("\n");
+}
 
 /** Deep research mode: Perplexity → ChatGPT → Gemini → Claude */
 const DEEP_RESEARCH_PROVIDER_PRIORITY = [
@@ -1428,7 +1694,12 @@ function refreshModelBadges() {
       continue;
     }
     btn.classList.remove("badge--no-key");
-    if (composerAttachMode === "image" && IMAGE_MODE_DISABLED_PROVIDERS.has(id)) {
+    if (composerAttachMode === "aiTalks") {
+      btn.classList.add("badge--mode-locked");
+      btn.disabled = false;
+      btn.setAttribute("aria-disabled", "true");
+      btn.title = "In AI opinion mode model selection is locked";
+    } else if (composerAttachMode === "image" && IMAGE_MODE_DISABLED_PROVIDERS.has(id)) {
       btn.classList.add("badge--mode-locked");
       btn.disabled = true;
       btn.setAttribute("aria-disabled", "true");
@@ -1443,8 +1714,7 @@ function refreshModelBadges() {
   const active = wrap.querySelector("[data-provider].active");
   if (active && active.disabled) {
     active.classList.remove("active");
-    const order =
-      composerAttachMode === "image" ? IMAGE_CREATION_PROVIDER_PRIORITY : PROVIDER_ORDER;
+    const order = composerAttachMode === "image" ? IMAGE_CREATION_PROVIDER_PRIORITY : PROVIDER_ORDER;
     const next = order
       .map((pid) => wrap.querySelector(`[data-provider="${pid}"]`))
       .find((b) => b && !b.disabled);
@@ -2266,6 +2536,7 @@ function initDialoguesMenu() {
 const ATTACH_TITLES = {
   "": "Add",
   files: "Add photos & files",
+  aiTalks: "AI opinion",
   image: "Create image",
   research: "Deep research",
   web: "Web search",
@@ -2482,6 +2753,7 @@ function syncComposerSendButtonState() {
 /** Rules / Access: only plain text — reset attach menu and strip (same DOM as theme chat). */
 function resetComposerAttachUi() {
   composerAttachMode = "";
+  clearAiTalksSession();
   clearComposerAttachmentRows();
   const menu = document.getElementById("attach-menu");
   if (menu) menu.hidden = true;
@@ -2549,8 +2821,11 @@ function initAttachMenu() {
   const menu = document.getElementById("attach-menu");
   const visual = document.getElementById("btn-attach-visual");
   const fileInput = document.getElementById("attach-file-input");
+  const aiTalksStopBtn = document.getElementById("btn-ai-talks-stop");
+  const inputField = document.querySelector(".input-bar-field");
   const resetBtn = document.getElementById("attach-menu-reset");
   const resetSep = menu?.querySelector(".attach-menu-reset-sep");
+  const aiOpinionItem = menu?.querySelector('[data-action="aiTalks"]');
   if (!btn || !menu || !visual) return;
 
   /** Plain text input only when the main button is no longer "+" (mode icon shown). */
@@ -2594,12 +2869,28 @@ function initAttachMenu() {
     btn.setAttribute("aria-label", ATTACH_TITLES[composerAttachMode] ?? ATTACH_TITLES[""]);
     btn.classList.toggle(
       "btn-attach-trigger--mode-active",
+      composerAttachMode === "aiTalks" ||
       composerAttachMode === "web" ||
         composerAttachMode === "image" ||
         composerAttachMode === "research" ||
         composerAttachMode === "accessData",
     );
+    const aiTalksActive = false;
+    if (aiTalksStopBtn instanceof HTMLButtonElement) {
+      aiTalksStopBtn.hidden = !aiTalksActive;
+    }
+    if (inputField instanceof HTMLElement) {
+      inputField.classList.toggle("input-bar-field--ai-talks-stop", aiTalksActive);
+    }
     syncResetRow();
+  }
+
+  function syncAiOpinionItemAvailability() {
+    if (!(aiOpinionItem instanceof HTMLButtonElement)) return;
+    const ok = hasAtLeastTwoModelKeys();
+    aiOpinionItem.disabled = !ok;
+    aiOpinionItem.setAttribute("aria-disabled", ok ? "false" : "true");
+    aiOpinionItem.title = ok ? "AI opinion" : "AI opinion requires at least 2 model keys in .env";
   }
 
   function close() {
@@ -2608,6 +2899,7 @@ function initAttachMenu() {
   }
 
   function open() {
+    syncAiOpinionItemAvailability();
     syncResetRow();
     menu.hidden = false;
     btn.setAttribute("aria-expanded", "true");
@@ -2653,6 +2945,16 @@ function initAttachMenu() {
         appendActivityLog('Attach menu: Create image');
         activateProviderForImageCreation();
         appendActivityLog("In this mode only ChatGPT and Gemini are available (other models disabled)");
+      } else if (action === "aiTalks") {
+        if (!hasAtLeastTwoModelKeys()) {
+          composerAttachMode = "";
+          syncAttachButton();
+          refreshModelBadges();
+          appendActivityLog("AI opinion requires at least 2 model keys in .env.");
+          close();
+          return;
+        }
+        appendActivityLog("Attach menu: AI opinion");
       } else if (action === "research") {
         appendActivityLog('Attach menu: Deep research');
         activateProviderForDeepResearch();
@@ -2677,6 +2979,21 @@ function initAttachMenu() {
     fileInput.value = "";
   });
 
+  aiTalksStopBtn?.addEventListener("click", () => {
+    if (aiTalksSession?.awaitingUser) {
+      clearAiTalksSession();
+      syncAttachButtonExternal?.();
+      appendActivityLog("AI talks: ожидание отменено.");
+      return;
+    }
+    if (!aiTalksRuntime.running) {
+      appendActivityLog("AI talks: nothing to stop.");
+      return;
+    }
+    aiTalksRuntime.stopRequested = true;
+    appendActivityLog("AI talks: остановим после текущего ответа модели.");
+  });
+
   document.addEventListener(
     "pointerdown",
     (e) => {
@@ -2696,6 +3013,8 @@ function initAttachMenu() {
     }
   });
 
+  syncAttachButtonExternal = syncAttachButton;
+  syncAiOpinionItemAvailability();
   syncAttachButton();
 }
 
@@ -2917,6 +3236,7 @@ function findPrecedingUserMessageEl(assistantWrap) {
  */
 function inferComposerAttachModeFromUserEl(userEl) {
   if (!userEl) return "";
+  if (userEl.querySelector(".msg-user-ai-opinion-badge")) return "aiTalks";
   if (userEl.querySelector(".msg-user-access-data-badge")) return "accessData";
   if (userEl.querySelector(".msg-user-image-badge")) return "image";
   if (userEl.querySelector(".msg-user-research-badge")) return "research";
@@ -3351,6 +3671,24 @@ function createImageCreationBadgeIcon() {
   return svg;
 }
 
+/** AI opinion icon (same star as in the attachment menu) */
+function createAiOpinionBadgeIcon() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "14");
+  svg.setAttribute("height", "14");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  p.setAttribute("d", "M12 3 13.8 10.2 21 12 13.8 13.8 12 21 10.2 13.8 3 12 10.2 10.2 12 3z");
+  svg.appendChild(p);
+  return svg;
+}
+
 /** Access data (info-in-circle), same motif as attach menu */
 function createAccessDataBadgeIcon() {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -3408,6 +3746,7 @@ function createDeepResearchBadgeIcon() {
  * @param {string} rawText
  * @param {string} modelLabel
  * @param {{
+ *   aiOpinion?: boolean;
  *   webSearch?: boolean;
  *   imageCreation?: boolean;
  *   deepResearch?: boolean;
@@ -3425,6 +3764,7 @@ function appendUserMessage(rawText, modelLabel, options) {
   if (!list) return;
 
   const webSearch = Boolean(options?.webSearch);
+  const aiOpinion = Boolean(options?.aiOpinion);
   const imageCreation = Boolean(options?.imageCreation);
   const deepResearch = Boolean(options?.deepResearch);
   const accessData = Boolean(options?.accessData);
@@ -3446,6 +3786,14 @@ function appendUserMessage(rawText, modelLabel, options) {
     webBadge.title = "Web search";
     webBadge.appendChild(createWebSearchBadgeIcon());
     head.appendChild(webBadge);
+  }
+  if (aiOpinion) {
+    const opinionBadge = document.createElement("span");
+    opinionBadge.className = "msg-user-ai-opinion-badge";
+    opinionBadge.setAttribute("aria-label", "AI opinion");
+    opinionBadge.title = "AI opinion";
+    opinionBadge.appendChild(createAiOpinionBadgeIcon());
+    head.appendChild(opinionBadge);
   }
   if (imageCreation) {
     const imageBadge = document.createElement("span");
@@ -3973,13 +4321,26 @@ function userTurnGroupKey(turn) {
 }
 
 /**
+ * Reads persisted AI talks heading `**Round N**` from assistant markdown.
+ * @param {unknown} turn
+ * @returns {number}
+ */
+function aiTalksRoundNumberFromTurn(turn) {
+  const t = turn && typeof turn === "object" ? turn : {};
+  const md = String(t.assistant_text ?? "");
+  const m = md.match(/^\s*\*\*Round\s+(\d+)\*\*/i);
+  const n = m ? Number(m[1]) : NaN;
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+/**
  * @param {unknown} turn
  */
 function appendUserBubbleFromTurn(turn) {
   const t = turn && typeof turn === "object" ? turn : {};
   const reqProvider = t.requested_provider_id;
-  const modelLabel = PROVIDER_DISPLAY[reqProvider] ?? reqProvider;
   const rt = t.request_type || "default";
+  const modelLabel = rt === "ai_talks" ? "AI opinion" : PROVIDER_DISPLAY[reqProvider] ?? reqProvider;
   /** @type {Array<{ name: string; kind: string }>} */
   let attachmentStrip = [];
   try {
@@ -3996,6 +4357,7 @@ function appendUserBubbleFromTurn(turn) {
     attachmentStrip = [];
   }
   appendUserMessage(t.user_text, modelLabel, {
+    aiOpinion: rt === "ai_talks",
     webSearch: rt === "web",
     imageCreation: rt === "image",
     deepResearch: rt === "research",
@@ -4038,6 +4400,10 @@ function appendAssistantBubbleFromTurn(turn, replyOrdinal, exchangeRootTurnId) {
       replyOrdinal,
     );
   } else {
+    if (rt === "ai_talks") {
+      pending.remove();
+      return;
+    }
     renderAssistantError(pending, "No reply stored for this turn.");
   }
 }
@@ -4059,10 +4425,25 @@ function replayDialogTurnsGrouped(turns) {
       group.push(arr[i]);
       i += 1;
     }
+    const firstRt = String((group[0] && group[0].request_type) ?? "default");
+    const replies =
+      firstRt === "ai_talks"
+        ? [...group].sort((a, b) => {
+            const ra = aiTalksRoundNumberFromTurn(a);
+            const rb = aiTalksRoundNumberFromTurn(b);
+            if (ra > 0 && rb > 0 && ra !== rb) return ra - rb;
+            const ta = String((a && typeof a === "object" ? a.assistant_message_at : "") ?? "");
+            const tb = String((b && typeof b === "object" ? b.assistant_message_at : "") ?? "");
+            if (ta && tb && ta !== tb) return ta.localeCompare(tb);
+            const ia = String((a && typeof a === "object" ? a.id : "") ?? "");
+            const ib = String((b && typeof b === "object" ? b.id : "") ?? "");
+            return ia.localeCompare(ib);
+          })
+        : group;
     const rootId = String((group[0] && group[0].id) ?? "").trim();
     appendUserBubbleFromTurn(group[0]);
-    for (let k = 0; k < group.length; k += 1) {
-      appendAssistantBubbleFromTurn(group[k], k + 1, rootId);
+    for (let k = 0; k < replies.length; k += 1) {
+      appendAssistantBubbleFromTurn(replies[k], k + 1, rootId);
     }
   }
 }
@@ -4295,6 +4676,7 @@ function initChatComposer() {
         return;
       }
       if (
+        modeForSend === "aiTalks" ||
         modeForSend === "image" ||
         modeForSend === "web" ||
         modeForSend === "research" ||
@@ -4326,6 +4708,10 @@ function initChatComposer() {
       appendActivityLog(
         `Chat → request cancelled: no API key for ${PROVIDER_DISPLAY[providerId] ?? providerId}`,
       );
+      return;
+    }
+    if (modeForSend === "aiTalks" && !hasAtLeastTwoModelKeys()) {
+      appendActivityLog("AI opinion requires at least 2 model keys in .env.");
       return;
     }
 
@@ -4500,7 +4886,8 @@ function initChatComposer() {
         `Chat → request: ${attachModeLogLabel(modeForSend)}, model ${modelLabel}, input chars: ${trimmed.length}, attachments: ${filesSnapshot.length}`,
       );
 
-      appendUserMessage(turnUserTextForUiAndDb, modelLabel, {
+      appendUserMessage(turnUserTextForUiAndDb, modeForSend === "aiTalks" ? "AI opinion" : modelLabel, {
+        aiOpinion: modeForSend === "aiTalks",
         webSearch: modeForSend === "web",
         imageCreation: modeForSend === "image",
         deepResearch: modeForSend === "research",
@@ -4572,6 +4959,100 @@ function initChatComposer() {
           }
           finalizeAssistantBubble(pending, fullText, providerId, imgHint || undefined, 1);
           appendActivityLog(`Chat ← reply: image, model ${modelLabel}, OK`);
+        } else if (modeForSend === "aiTalks") {
+          const ordered = aiTalksProvidersWithKeysOrdered(providerId);
+          if (ordered.length < 2) {
+            throw new Error("AI opinion requires at least 2 model keys in .env.");
+          }
+          const te = pending?.querySelector(".msg-assistant-text");
+          /** @type {string[]} */
+          const answeredProviders = [];
+          /** @type {Array<{ providerId: string, label: string, body: string }>} */
+          const sections = [];
+          /** @type {{ promptTokens: number, completionTokens: number, totalTokens: number }} */
+          const usageAgg = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+          for (let idx = 0; idx < ordered.length; idx += 1) {
+            const pid = ordered[idx];
+            const keysNow = getModelApiKeys();
+            const speakerKey = String(keysNow[pid] ?? "").trim();
+            if (!speakerKey) continue;
+            const speakerLabel = PROVIDER_DISPLAY[pid] ?? pid;
+            setAssistantPendingThinkingLabel(pending, `Думает: ${speakerLabel}…`);
+            const hasPrior = sections.length > 0;
+            const userPrompt = [
+              `User question:\n${String(promptForApi ?? "").trim()}`,
+              "",
+              "You are one expert in an AI-opinion panel.",
+              `Current speaker: ${speakerLabel}.`,
+              "Provide your own concise answer (max ~170 words). Add practical specifics; do not repeat prior answers verbatim.",
+              "",
+              "Previous panel answers:",
+              hasPrior ? buildAiOpinionMarkdown(sections) : "(none yet)",
+            ].join("\n");
+            appendActivityLog(`AI opinion: ${speakerLabel}`);
+            let body = "";
+            let usage = null;
+            try {
+              const streamRes = await completeChatMessageStreaming(
+                pid,
+                userPrompt,
+                speakerKey,
+                (piece) => {
+                  body += piece;
+                  const draftSections = [...sections, { providerId: pid, label: speakerLabel, body }];
+                  const draft = buildAiOpinionMarkdown(draftSections);
+                  if (pending && te) {
+                    pending.dataset.assistantMarkdown = draft;
+                    setAssistantMessageMarkdown(te, draft);
+                    syncAssistantCopyButtonDuringStream(pending);
+                    scrollMessagesToEnd();
+                  }
+                },
+                {
+                  systemInstruction:
+                    "AI opinion mode: provide one concise, useful opinion for the user's question. Plain text.",
+                },
+              );
+              body = String(streamRes.text ?? body ?? "");
+              usage = streamRes.usage ?? null;
+            } catch {
+              const fallback = await completeChatMessage(pid, userPrompt, speakerKey, {
+                systemInstruction:
+                  "AI opinion mode: provide one concise, useful opinion for the user's question. Plain text.",
+              });
+              body = String(fallback.text ?? "");
+              usage = fallback.usage ?? null;
+            }
+            body = String(body ?? "").trim();
+            if (!body) continue;
+            answeredProviders.push(pid);
+            sections.push({ providerId: pid, label: speakerLabel, body });
+            usageAgg.promptTokens += Number(usage?.promptTokens) || 0;
+            usageAgg.completionTokens += Number(usage?.completionTokens) || 0;
+            usageAgg.totalTokens += Number(usage?.totalTokens) || 0;
+            recordAiTalksAuxUsage(pid, usage, userPrompt, body);
+            if (pending && te) {
+              const draft = buildAiOpinionMarkdown(sections);
+              pending.dataset.assistantMarkdown = draft;
+              setAssistantMessageMarkdown(te, draft);
+              syncAssistantCopyButtonDuringStream(pending);
+              scrollMessagesToEnd();
+            }
+          }
+          if (sections.length === 0) {
+            throw new Error("AI opinion: no model returned a non-empty answer.");
+          }
+          fullText = buildAiOpinionMarkdown(sections);
+          turnLlmUsage = usageAgg.totalTokens > 0 ? usageAgg : ensureUsageTotals(null, promptForApi, fullText);
+          finalizeAssistantBubble(pending, fullText, providerId, undefined, 1);
+          const repliedLine = answeredProviders
+            .map((id) => PROVIDER_DISPLAY[id] ?? id)
+            .join(", ");
+          const meta = pending?.querySelector(".msg-assistant-model");
+          if (meta && repliedLine) {
+            meta.textContent = `Replied: ${repliedLine}`;
+          }
+          appendActivityLog(`Chat ← reply: AI opinion, models: ${answeredProviders.length}`);
         } else {
           const chatOpts = await buildChatOptsForModelRequest({
             persistDialogId,
@@ -4626,12 +5107,25 @@ function initChatComposer() {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         fullText = msg;
-        renderAssistantError(pending, msg);
+        if (pending) {
+          renderAssistantError(pending, msg);
+        } else if (modeForSend === "aiTalks") {
+          const list = document.getElementById("messages-list");
+          const pendLast = list?.querySelector(".msg-assistant.msg-assistant--pending:last-of-type");
+          if (pendLast) {
+            renderAssistantError(pendLast, msg);
+          }
+          clearAiTalksSession();
+          syncAttachButtonExternal?.();
+        }
         appendActivityLog(
           `Chat ← error, model ${modelLabel}: ${msg.length > 280 ? `${msg.slice(0, 280)}…` : msg}`,
         );
       }
     } finally {
+      aiTalksRuntime.stopRequested = false;
+      aiTalksRuntime.running = false;
+      aiTalksRuntime.abortController = null;
       chatComposerSending = false;
       sendBtn.disabled = false;
       ta.disabled = false;

@@ -56,6 +56,7 @@ export function requestTypeFromAttachMode(mode) {
   if (m === "web") return "web";
   if (m === "image") return "image";
   if (m === "research") return "research";
+  if (m === "aiTalks") return "ai_talks";
   if (m === "accessData") return "access_data";
   return "default";
 }

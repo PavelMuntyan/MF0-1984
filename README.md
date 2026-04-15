@@ -12,13 +12,13 @@ For architecture, data model, env vars, and operations, see **[HANDOFF.md](./HAN
 
 ---
 
-## Release 1.8.4 highlights
+## Release 1.9.0 highlights
 
-- Added **Chat analysis priority** in Settings with horizontal drag-and-drop ordering.
-- Keeper/background analysis now follows user-defined provider priority for chat analysis and Memory tree routing.
-- Analytics cards now mark the current analysis provider with a subtle check badge and explanatory tooltip.
-- Improved attach-menu UX: clicking outside the popup closes it.
-- Refined sidebar visuals: lock-state contrast for Intro / Rules / Access and clearer active-dialog emphasis inside theme dialog lists.
+- Replaced **AI talks** with **AI opinion** mode in the Attach menu and user-message labeling.
+- AI opinion now requires at least **2 configured model keys**; provider badges are locked for selection while the mode is active.
+- AI opinion responses are rendered in **one assistant bubble** with per-model sections, streamed output updates, and a final `Replied:` line listing all participating models.
+- Added UI readability improvements for resumed agent discussions: stable round ordering and cleaner replay handling for turns without assistant text.
+- AI opinion chats now also pass through lightweight Keeper analysis so extracted interests can be ingested into the **Memory tree** pipeline.
 
 ---
 

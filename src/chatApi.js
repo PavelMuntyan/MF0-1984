@@ -398,8 +398,16 @@ const ANTHROPIC_BROWSER_ACCESS_HEADER = {
  * @param {string} key
  * @param {boolean} [googleSearch]
  * @param {{ images?: Array<{ mimeType: string, base64: string }> } | null} [chatAtt]
+ * @param {AbortSignal | null} [abortSignal]
  */
-async function geminiGenerateContent(modelId, trimmed, key, googleSearch = false, chatAtt = null) {
+async function geminiGenerateContent(
+  modelId,
+  trimmed,
+  key,
+  googleSearch = false,
+  chatAtt = null,
+  abortSignal = null,
+) {
   const imgs = Array.isArray(chatAtt?.images) ? chatAtt.images : [];
   /** @type {Array<{ text?: string, inlineData?: { mimeType: string, data: string } }>} */
   const parts = [{ text: trimmed }];
@@ -416,6 +424,7 @@ async function geminiGenerateContent(modelId, trimmed, key, googleSearch = false
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(geminiRequestBodyFromParts(parts, { googleSearch, modelId })),
+    signal: abortSignal || undefined,
   });
   if (!res.ok) throw new Error(await readErrorBody(res));
   const data = await res.json();
@@ -594,7 +603,7 @@ function humanizeOpenAiImageError(raw, status) {
  * @param {string} providerId
  * @param {string} text
  * @param {string} apiKey
- * @param {{ webSearch?: boolean, deepResearch?: boolean, systemInstruction?: string, llmMessages?: Array<{ role: string, content: string }>, chatAttachments?: { images?: Array<{ mimeType: string, base64: string }> }, accessDataDumpMode?: boolean }} [options] — webSearch/deepResearch: search-capable models where supported; llmMessages: assembled thread context; chatAttachments: images for the last user turn (file text is already in `text`); accessDataDumpMode: #data lockdown
+ * @param {{ webSearch?: boolean, deepResearch?: boolean, systemInstruction?: string, llmMessages?: Array<{ role: string, content: string }>, chatAttachments?: { images?: Array<{ mimeType: string, base64: string }> }, accessDataDumpMode?: boolean, abortSignal?: AbortSignal | null }} [options] — webSearch/deepResearch: search-capable models where supported; llmMessages: assembled thread context; chatAttachments: images for the last user turn (file text is already in `text`); accessDataDumpMode: #data lockdown
  * @returns {Promise<{ text: string, usage: LlmUsageTotals | null }>}
  */
 export async function completeChatMessage(providerId, text, apiKey, options = {}) {
@@ -612,6 +621,7 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
   const webSearch = Boolean(options.webSearch) && !lockdown;
   const deepResearch = Boolean(options.deepResearch) && !lockdown;
   const useWebGrounding = webSearch || deepResearch;
+  const abortSignal = options.abortSignal || null;
   const oaMsgs = applyChatAttachmentsToOpenAiMessages(
     openAiCompatMessages(trimmed, options),
     options.chatAttachments,
@@ -637,6 +647,7 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
           model: pickOpenAi(webSearch, deepResearch),
           messages: oaMsgs,
         }),
+        signal: abortSignal || undefined,
       });
       if (!res.ok) throw new Error(await readErrorBody(res));
       const data = await res.json();
@@ -675,6 +686,7 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
           ...ANTHROPIC_BROWSER_ACCESS_HEADER,
         },
         body: JSON.stringify(anthropicBody),
+        signal: abortSignal || undefined,
       });
       if (!res.ok) throw new Error(await readErrorBody(res));
       const data = await res.json();
@@ -699,6 +711,7 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
         key,
         useWebGrounding,
         options.chatAttachments,
+        abortSignal,
       );
     }
     case "perplexity": {
@@ -722,6 +735,7 @@ export async function completeChatMessage(providerId, text, apiKey, options = {}
           Authorization: `Bearer ${key}`,
         },
         body: JSON.stringify(perplexityBody),
+        signal: abortSignal || undefined,
       });
       if (!res.ok) throw new Error(await readErrorBody(res));
       const data = await res.json();
@@ -1790,7 +1804,7 @@ export async function extractIntroMemoryGraphForIngest(providerId, apiKey, userT
 
 /**
  * Streaming reply: `onDelta` is called for each text chunk as it arrives.
- * @param {{ webSearch?: boolean, deepResearch?: boolean, systemInstruction?: string, llmMessages?: Array<{ role: string, content: string }>, chatAttachments?: { images?: Array<{ mimeType: string, base64: string }> }, accessDataDumpMode?: boolean }} [options]
+ * @param {{ webSearch?: boolean, deepResearch?: boolean, systemInstruction?: string, llmMessages?: Array<{ role: string, content: string }>, chatAttachments?: { images?: Array<{ mimeType: string, base64: string }> }, accessDataDumpMode?: boolean, abortSignal?: AbortSignal | null }} [options]
  * @returns {Promise<{ text: string, usage: LlmUsageTotals | null }>}
  */
 export async function completeChatMessageStreaming(providerId, text, apiKey, onDelta, options = {}) {
@@ -1808,6 +1822,7 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
   const webSearch = Boolean(options.webSearch) && !lockdown;
   const deepResearch = Boolean(options.deepResearch) && !lockdown;
   const useWebGrounding = webSearch || deepResearch;
+  const abortSignal = options.abortSignal || null;
   const oaMsgs = applyChatAttachmentsToOpenAiMessages(
     openAiCompatMessages(trimmed, options),
     options.chatAttachments,
@@ -1842,6 +1857,7 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
             include_usage: true,
           },
         }),
+        signal: abortSignal || undefined,
       });
       const oaStream = await streamOpenAICompatJson(res, onDelta);
       full = mergePlainBracketRefsWithCitationList(oaStream.text, oaStream.citations);
@@ -1871,6 +1887,7 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
           Authorization: `Bearer ${key}`,
         },
         body: JSON.stringify(pBody),
+        signal: abortSignal || undefined,
       });
       const pStream = await streamOpenAICompatJson(res, onDelta);
       full = mergePlainBracketRefsWithCitationList(pStream.text, pStream.citations);
@@ -1905,6 +1922,7 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
           ...ANTHROPIC_BROWSER_ACCESS_HEADER,
         },
         body: JSON.stringify(aStreamBody),
+        signal: abortSignal || undefined,
       });
       const anthStream = await streamAnthropicMessages(res, onDelta);
       full = anthStream.text;
@@ -1943,6 +1961,7 @@ export async function completeChatMessageStreaming(providerId, text, apiKey, onD
             modelId: gModel,
           }),
         ),
+        signal: abortSignal || undefined,
       });
       const gStream = await streamGeminiGenerateContent(res, onDelta);
       full = mergePlainBracketRefsWithCitationList(gStream.text, gStream.citations, {

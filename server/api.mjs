@@ -73,6 +73,7 @@ const AUX_LLM_USAGE_KINDS = new Set([
   "interests_sketch",
   "memory_graph_normalize",
   "intro_graph_extract",
+  "ai_talks_round",
 ]);
 
 function applyContextEngineMigration(database) {
@@ -532,7 +533,9 @@ function listTurns(dialogId) {
     .prepare(
       `SELECT id, user_text, user_attachments_json, assistant_text, requested_provider_id, responding_provider_id, request_type, user_message_at, assistant_message_at,
               assistant_favorite, assistant_favorite_markdown
-       FROM conversation_turns WHERE dialog_id = ? ORDER BY datetime(user_message_at) ASC, id ASC`,
+       FROM conversation_turns WHERE dialog_id = ?
+       /* AI talks clones reuse the anchor user_message_at; tie-break by reply time, not UUID id. */
+       ORDER BY COALESCE(NULLIF(assistant_message_at, ''), user_message_at) ASC, id ASC`,
     )
     .all(dialogId);
 }
@@ -1412,12 +1415,38 @@ function analyticsDialogWhereSql(alias = "d") {
   return `IFNULL(${alias}.purpose, '') NOT IN ('intro', 'rules', 'access')`;
 }
 
+/** Reference USD rates per 1M input/output tokens for analytics estimates. */
+const ANALYTICS_USD_PER_MILLION = {
+  openai: { input: 2.5, output: 15.0 },
+  anthropic: { input: 3.0, output: 15.0 },
+  "gemini-flash": { input: 0.5, output: 3.0 },
+  perplexity: { input: 2.75, output: 9.0 },
+};
+
+/**
+ * @param {string} providerId
+ * @param {number} promptTokens
+ * @param {number} completionTokens
+ */
+function estimateProviderUsd(providerId, promptTokens, completionTokens) {
+  const rate = ANALYTICS_USD_PER_MILLION[providerId];
+  if (!rate) return { inputUsd: 0, outputUsd: 0, totalUsd: 0 };
+  const inputUsd = ((Number(promptTokens) || 0) / 1_000_000) * rate.input;
+  const outputUsd = ((Number(completionTokens) || 0) / 1_000_000) * rate.output;
+  return { inputUsd, outputUsd, totalUsd: inputUsd + outputUsd };
+}
+
 /**
  * @returns {{
  *   providers: Record<string, { requestsSent: number, responsesOk: number, imageRequests: number, researchRequests: number, webRequests: number, accessRequests: number, tokensPrompt: number, tokensCompletion: number, tokensTotal: number }>,
  *   dailyUsage: Array<{ date: string, byProvider: Record<string, number> }>,
  *   dailyTokens: Array<{ date: string, byProvider: Record<string, number> }>,
  *   dailyLlmTokens: Array<{ date: string, byProvider: Record<string, { prompt: number, completion: number, total: number }> }>,
+ *   spendSummary: {
+ *     inputUsd: { total: number, last30d: number, last24h: number },
+ *     outputUsd: { total: number, last30d: number, last24h: number },
+ *     combinedUsd: { total: number, last30d: number, last24h: number }
+ *   },
  *   themesCount: number,
  *   dialogsCount: number,
  *   memoryGraph: { nodes: number, edges: number, groups: number }
@@ -1701,6 +1730,100 @@ function getAnalyticsPayload() {
     dailyLlmTokens.push({ date: day, byProvider: byDetail });
   }
 
+  const spendSummary = {
+    inputUsd: { total: 0, last30d: 0, last24h: 0 },
+    outputUsd: { total: 0, last30d: 0, last24h: 0 },
+    combinedUsd: { total: 0, last30d: 0, last24h: 0 },
+  };
+
+  for (const id of ANALYTICS_PROVIDER_IDS) {
+    const p = providers[id] || { tokensPrompt: 0, tokensCompletion: 0 };
+    const est = estimateProviderUsd(id, p.tokensPrompt, p.tokensCompletion);
+    spendSummary.inputUsd.total += est.inputUsd;
+    spendSummary.outputUsd.total += est.outputUsd;
+    spendSummary.combinedUsd.total += est.totalUsd;
+  }
+
+  for (const day of dailyLlmTokens) {
+    const byProvider = day?.byProvider && typeof day.byProvider === "object" ? day.byProvider : {};
+    for (const id of ANALYTICS_PROVIDER_IDS) {
+      const cell = byProvider[id] && typeof byProvider[id] === "object" ? byProvider[id] : {};
+      const est = estimateProviderUsd(id, Number(cell.prompt) || 0, Number(cell.completion) || 0);
+      spendSummary.inputUsd.last30d += est.inputUsd;
+      spendSummary.outputUsd.last30d += est.outputUsd;
+      spendSummary.combinedUsd.last30d += est.totalUsd;
+    }
+  }
+
+  /** @type {Record<string, { prompt: number, completion: number }>} */
+  const last24hByProvider = Object.fromEntries(
+    ANALYTICS_PROVIDER_IDS.map((id) => [id, { prompt: 0, completion: 0 }]),
+  );
+  const live24h = db
+    .prepare(
+      `SELECT
+         COALESCE(NULLIF(TRIM(t.responding_provider_id), ''), t.requested_provider_id) AS pid,
+         SUM(COALESCE(t.llm_prompt_tokens, 0)) AS psum,
+         SUM(COALESCE(t.llm_completion_tokens, 0)) AS csum
+       FROM conversation_turns t
+       INNER JOIN dialogs d ON d.id = t.dialog_id
+       WHERE ${analyticsDialogWhereSql("d")}
+         AND DATETIME(t.user_message_at) >= DATETIME('now', '-24 hours')
+       GROUP BY pid`,
+    )
+    .all();
+  for (const r of live24h) {
+    const pid = String(r.pid ?? "").trim();
+    if (!last24hByProvider[pid]) continue;
+    last24hByProvider[pid].prompt += Number(r.psum) || 0;
+    last24hByProvider[pid].completion += Number(r.csum) || 0;
+  }
+  if (archTbl && archHasTokens) {
+    const arch24h = db
+      .prepare(
+        `SELECT
+           provider_id AS pid,
+           SUM(COALESCE(tokens_prompt, 0)) AS psum,
+           SUM(COALESCE(tokens_completion, 0)) AS csum
+         FROM analytics_usage_archive
+         WHERE DATETIME(archived_at) >= DATETIME('now', '-24 hours')
+         GROUP BY pid`,
+      )
+      .all();
+    for (const r of arch24h) {
+      const pid = String(r.pid ?? "").trim();
+      if (!last24hByProvider[pid]) continue;
+      last24hByProvider[pid].prompt += Number(r.psum) || 0;
+      last24hByProvider[pid].completion += Number(r.csum) || 0;
+    }
+  }
+  if (auxTbl) {
+    const aux24h = db
+      .prepare(
+        `SELECT
+           provider_id AS pid,
+           SUM(COALESCE(llm_prompt_tokens, 0)) AS psum,
+           SUM(COALESCE(llm_completion_tokens, 0)) AS csum
+         FROM analytics_aux_llm_usage
+         WHERE DATETIME(created_at) >= DATETIME('now', '-24 hours')
+         GROUP BY pid`,
+      )
+      .all();
+    for (const r of aux24h) {
+      const pid = String(r.pid ?? "").trim();
+      if (!last24hByProvider[pid]) continue;
+      last24hByProvider[pid].prompt += Number(r.psum) || 0;
+      last24hByProvider[pid].completion += Number(r.csum) || 0;
+    }
+  }
+  for (const id of ANALYTICS_PROVIDER_IDS) {
+    const cell = last24hByProvider[id] || { prompt: 0, completion: 0 };
+    const est = estimateProviderUsd(id, cell.prompt, cell.completion);
+    spendSummary.inputUsd.last24h += est.inputUsd;
+    spendSummary.outputUsd.last24h += est.outputUsd;
+    spendSummary.combinedUsd.last24h += est.totalUsd;
+  }
+
   const themesRow = db
     .prepare(
       `SELECT COUNT(*) AS n FROM themes WHERE id NOT IN (
@@ -1730,6 +1853,7 @@ function getAnalyticsPayload() {
     dailyUsage,
     dailyTokens,
     dailyLlmTokens,
+    spendSummary,
     themesCount: Number(themesRow?.n) || 0,
     dialogsCount: Number(dialogsRow?.n) || 0,
     memoryGraph,
