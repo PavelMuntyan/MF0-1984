@@ -93,7 +93,10 @@ import {
 import {
   classifyComposerAttachmentKind,
   MAX_COMPOSER_ATTACHMENTS,
+  MAX_PERSIST_IMAGE_BASE64_CHARS,
+  MAX_PERSIST_TEXT_INLINE_CHARS,
   prepareComposerAttachmentsForApi,
+  prepareComposerAttachmentsForApiAndPersist,
   revokeComposerAttachmentPreview,
 } from "./composerAttachments.js";
 import {
@@ -3245,14 +3248,146 @@ function inferComposerAttachModeFromUserEl(userEl) {
 }
 
 /**
- * Rebuilds user attachments from the user bubble (blob: URLs).
- * Works only for bubbles created in this session (persisted turns have no blob URLs).
+ * @param {unknown} options
+ * @param {Array<Record<string, unknown>>} attachmentStrip
+ * @returns {Array<{ name: string; kind: string; mimeType?: string; imageBase64?: string; textInline?: string }>}
+ */
+function buildPersistRecoveryForAppend(options, attachmentStrip) {
+  const fromOpt = options?.persistRecovery;
+  const src = Array.isArray(fromOpt) && fromOpt.length > 0 ? fromOpt : attachmentStrip;
+  if (!Array.isArray(src) || src.length === 0) return [];
+  /** @type {Array<{ name: string; kind: string; mimeType?: string; imageBase64?: string; textInline?: string }>} */
+  const out = [];
+  for (const x of src) {
+    if (!x || typeof x !== "object") continue;
+    const name = String(x.name ?? "file").slice(0, 512) || "file";
+    const kind = normalizeStoredUserAttachmentKind(x.kind);
+    /** @type {{ name: string; kind: string; mimeType?: string; imageBase64?: string; textInline?: string }} */
+    const rec = { name, kind };
+    const mt = typeof x.mimeType === "string" ? x.mimeType.trim().slice(0, 128) : "";
+    if (mt && /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+\/-]*$/i.test(mt)) {
+      rec.mimeType = mt;
+    }
+    if (typeof x.imageBase64 === "string") {
+      const b = x.imageBase64.replace(/\s/g, "");
+      if (b.length > 0 && b.length <= MAX_PERSIST_IMAGE_BASE64_CHARS && /^[A-Za-z0-9+/]+=*$/.test(b)) {
+        rec.imageBase64 = b;
+      }
+    }
+    if (typeof x.textInline === "string" && x.textInline.length > 0) {
+      rec.textInline =
+        x.textInline.length > MAX_PERSIST_TEXT_INLINE_CHARS
+          ? x.textInline.slice(0, MAX_PERSIST_TEXT_INLINE_CHARS)
+          : x.textInline;
+    }
+    if (rec.imageBase64 || rec.textInline) out.push(rec);
+  }
+  return out.slice(0, MAX_COMPOSER_ATTACHMENTS);
+}
+
+/**
+ * @param {HTMLElement} userEl
+ * @returns {Array<Record<string, unknown>>}
+ */
+function readPersistedRecoveryRowsFromUserBubble(userEl) {
+  if (!(userEl instanceof HTMLElement)) return [];
+  const holder = userEl.querySelector(".mf-user-attachments-recover");
+  if (!holder) return [];
+  const raw = String(holder.textContent ?? "").trim();
+  if (!raw) return [];
+  try {
+    const j = JSON.parse(raw);
+    if (!Array.isArray(j)) return [];
+    return j.filter((x) => x && typeof x === "object").slice(0, MAX_COMPOSER_ATTACHMENTS);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Build a `File` from raw base64 (no `fetch(data:…)` — long data URLs are unreliable in some engines).
+ * @param {string} name
+ * @param {string} mimeType
+ * @param {string} b64
+ */
+function fileFromImageBase64Parts(name, mimeType, b64) {
+  const mime =
+    String(mimeType ?? "")
+      .trim()
+      .split(";")[0]
+      .trim() || "application/octet-stream";
+  const clean = String(b64 ?? "").replace(/\s/g, "");
+  if (!clean.length) throw new Error("empty base64");
+  const binary = atob(clean);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+  return new File([bytes], name, { type: mime });
+}
+
+/**
+ * @param {string} dataUrl
+ * @param {string} fallbackName
+ * @returns {File | null}
+ */
+function tryFileFromDataImageUrl(dataUrl, fallbackName) {
+  const u = String(dataUrl ?? "");
+  if (!u.startsWith("data:image/")) return null;
+  const sep = u.indexOf(";base64,");
+  if (sep < 0) return null;
+  const mime = u.slice(5, sep).trim();
+  const payload = u.slice(sep + ";base64,".length);
+  if (!mime.toLowerCase().startsWith("image/")) return null;
+  const nm = String(fallbackName ?? "file").trim() || "file";
+  try {
+    return fileFromImageBase64Parts(nm, mime, payload);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Rebuilds user attachments for "Try another reply": hidden persisted payload (base64 / text),
+ * else `blob:` / `data:` URLs from the bubble.
  * @param {HTMLElement} userEl
  * @returns {Promise<{ files: File[], filenames: string[], hadAny: boolean }>}
  */
 async function rebuildUserBubbleAttachmentsForRetry(userEl) {
   const out = { files: [], filenames: [], hadAny: false };
   if (!(userEl instanceof HTMLElement)) return out;
+
+  const recovery = readPersistedRecoveryRowsFromUserBubble(userEl);
+  if (recovery.length > 0) {
+    out.hadAny = true;
+    for (const row of recovery) {
+      const name = String(row.name ?? "file").trim() || "file";
+      let mime = String(row.mimeType ?? "")
+        .trim()
+        .split(";")[0]
+        .trim();
+      const kind = String(row.kind ?? "").trim();
+      try {
+        if (
+          typeof row.imageBase64 === "string" &&
+          String(row.imageBase64).replace(/\s/g, "").length > 0 &&
+          (mime.toLowerCase().startsWith("image/") || kind === "image")
+        ) {
+          if (!mime.toLowerCase().startsWith("image/")) mime = "image/png";
+          const f = fileFromImageBase64Parts(name, mime, String(row.imageBase64));
+          out.files.push(f);
+          out.filenames.push(name);
+        } else if (typeof row.textInline === "string" && row.textInline.length > 0) {
+          const mt = mime && !mime.includes(" ") ? mime : "text/plain";
+          out.files.push(new File([row.textInline], name, { type: mt }));
+          out.filenames.push(name);
+        }
+      } catch {
+        /* skip one attachment */
+      }
+    }
+    if (out.files.length > 0) return out;
+    out.hadAny = false;
+  }
 
   /** @type {Array<{ name: string, objectUrl: string }>} */
   let items = [];
@@ -3267,7 +3402,7 @@ async function rebuildUserBubbleAttachmentsForRetry(userEl) {
             name: String(x.name ?? "file").slice(0, 512) || "file",
             objectUrl: typeof x.objectUrl === "string" ? String(x.objectUrl) : "",
           }))
-          .filter((x) => x.objectUrl.startsWith("blob:"));
+          .filter((x) => x.objectUrl.startsWith("blob:") || x.objectUrl.startsWith("data:"));
       }
     }
   } catch {
@@ -3279,7 +3414,7 @@ async function rebuildUserBubbleAttachmentsForRetry(userEl) {
     tiles.forEach((a) => {
       if (!(a instanceof HTMLAnchorElement)) return;
       const href = String(a.getAttribute("href") ?? "");
-      if (!href.startsWith("blob:")) return;
+      if (!href.startsWith("blob:") && !href.startsWith("data:")) return;
       const nm = String(a.getAttribute("download") ?? a.getAttribute("title") ?? "file").trim() || "file";
       items.push({ name: nm, objectUrl: href });
     });
@@ -3290,11 +3425,19 @@ async function rebuildUserBubbleAttachmentsForRetry(userEl) {
 
   for (const it of items) {
     const url = String(it.objectUrl ?? "");
-    if (!url.startsWith("blob:")) continue;
+    if (!url.startsWith("blob:") && !url.startsWith("data:")) continue;
+    const nm = String(it.name ?? "file").trim() || "file";
     try {
+      if (url.startsWith("data:image/")) {
+        const fromData = tryFileFromDataImageUrl(url, nm);
+        if (fromData) {
+          out.files.push(fromData);
+          out.filenames.push(nm);
+          continue;
+        }
+      }
       const res = await fetch(url);
       const blob = await res.blob();
-      const nm = String(it.name ?? "file").trim() || "file";
       const file = new File([blob], nm, { type: String(blob.type || "") });
       out.files.push(file);
       out.filenames.push(nm);
@@ -3606,11 +3749,14 @@ async function retryAssistantReply(clickedAssistantWrap) {
       };
       const saveRes = await saveConversationTurn(persistDialogId, turnPayload);
       const tid =
-        saveRes && typeof saveRes === "object" && saveRes.id != null ? String(saveRes.id) : "";
+        saveRes && typeof saveRes === "object"
+          ? String(saveRes.id ?? saveRes.turnId ?? "").trim()
+          : "";
       if (pending && tid) {
         pending.dataset.turnId = tid;
         syncAssistantFavoriteStarButton(pending);
         syncAssistantRetryButton(pending);
+        syncAllAssistantRetryButtons();
       }
       await renderThemesSidebar();
     } catch (saveErr) {
@@ -3861,12 +4007,23 @@ function createDeepResearchBadgeIcon() {
  *     kind: string;
  *     objectUrl?: string;
  *     displayAsImage?: boolean;
+ *     mimeType?: string;
+ *     imageBase64?: string;
+ *     textInline?: string;
+ *   }>;
+ *   persistRecovery?: Array<{
+ *     name: string;
+ *     kind: string;
+ *     mimeType?: string;
+ *     imageBase64?: string;
+ *     textInline?: string;
  *   }>;
  * }} [options]
+ * @returns {HTMLElement | null}
  */
 function appendUserMessage(rawText, modelLabel, options) {
   const list = document.getElementById("messages-list");
-  if (!list) return;
+  if (!list) return null;
 
   const webSearch = Boolean(options?.webSearch);
   const aiOpinion = Boolean(options?.aiOpinion);
@@ -3880,9 +4037,10 @@ function appendUserMessage(rawText, modelLabel, options) {
   msg.dataset.userMessageRaw = String(rawText ?? "");
   if (attachmentStrip.length) {
     msg.dataset.userAttachmentNames = attachmentStrip.map((x) => x.name).filter(Boolean).join(" ");
-    const withUrls = attachmentStrip.some(
-      (x) => typeof x?.objectUrl === "string" && String(x.objectUrl).startsWith("blob:"),
-    );
+    const withUrls = attachmentStrip.some((x) => {
+      const u = typeof x?.objectUrl === "string" ? String(x.objectUrl) : "";
+      return u.startsWith("blob:") || u.startsWith("data:");
+    });
     if (withUrls) {
       try {
         msg.dataset.userAttachmentsJson = JSON.stringify(
@@ -3890,7 +4048,8 @@ function appendUserMessage(rawText, modelLabel, options) {
             name: String(x?.name ?? "file").slice(0, 512),
             kind: normalizeStoredUserAttachmentKind(x?.kind),
             objectUrl:
-              typeof x?.objectUrl === "string" && String(x.objectUrl).startsWith("blob:")
+              typeof x?.objectUrl === "string" &&
+              (String(x.objectUrl).startsWith("blob:") || String(x.objectUrl).startsWith("data:"))
                 ? String(x.objectUrl)
                 : "",
             displayAsImage: Boolean(x?.displayAsImage),
@@ -3960,9 +4119,36 @@ function appendUserMessage(rawText, modelLabel, options) {
     for (const item of attachmentStrip) {
       const nm = String(item?.name ?? "file").trim() || "file";
       const kind = normalizeStoredUserAttachmentKind(item?.kind);
-      const objectUrl =
-        typeof item?.objectUrl === "string" && item.objectUrl.startsWith("blob:") ? item.objectUrl : "";
-      const displayAsImage = Boolean(item?.displayAsImage) && objectUrl;
+      let objectUrl =
+        typeof item?.objectUrl === "string" &&
+        (item.objectUrl.startsWith("blob:") || item.objectUrl.startsWith("data:"))
+          ? item.objectUrl
+          : "";
+      const mtForData = String(item?.mimeType ?? "")
+        .trim()
+        .split(";")[0]
+        .trim();
+      if (
+        !objectUrl &&
+        typeof item?.imageBase64 === "string" &&
+        mtForData.toLowerCase().startsWith("image/")
+      ) {
+        const compact = String(item.imageBase64).replace(/\s/g, "");
+        if (compact.length > 0) {
+          objectUrl = `data:${mtForData};base64,${compact}`;
+        }
+      }
+      if (!objectUrl && typeof item?.textInline === "string" && item.textInline.length > 0) {
+        try {
+          const mt = mtForData || "text/plain";
+          objectUrl = URL.createObjectURL(new Blob([item.textInline], { type: mt }));
+        } catch {
+          objectUrl = "";
+        }
+      }
+      const displayAsImage =
+        Boolean(objectUrl) &&
+        (Boolean(item?.displayAsImage) || objectUrl.startsWith("data:image/"));
 
       if (objectUrl) {
         const a = document.createElement("a");
@@ -3978,22 +4164,15 @@ function appendUserMessage(rawText, modelLabel, options) {
           img.decoding = "async";
           img.src = objectUrl;
           img.addEventListener("error", () => {
-            const href = a.getAttribute("href");
-            if (href?.startsWith("blob:")) {
-              try {
-                URL.revokeObjectURL(href);
-              } catch {
-                /* ignore */
-              }
-            }
-            const div = document.createElement("div");
-            div.className = "chat-attach-tile chat-attach-tile--sent-stale chat-attach-tile--broken";
-            div.title = nm;
+            // Do not revoke blob: here — the same URL is needed for "Try another reply"
+            // (re-fetch blob → File). Replacing the <a> removes recovery metadata from the DOM.
+            img.remove();
+            while (a.firstChild) a.removeChild(a.firstChild);
             const wrap = document.createElement("div");
             wrap.className = "chat-attach-tile-icon-wrap";
             wrap.appendChild(userMessageAttachmentGlyph("image"));
-            div.appendChild(wrap);
-            a.replaceWith(div);
+            a.appendChild(wrap);
+            a.classList.add("chat-attach-tile--sent-stale");
           });
           a.appendChild(img);
         } else {
@@ -4058,11 +4237,27 @@ function appendUserMessage(rawText, modelLabel, options) {
   content.appendChild(actions);
   msg.appendChild(head);
   msg.appendChild(content);
+
+  const recoveryPayload = buildPersistRecoveryForAppend(options, attachmentStrip);
+  if (recoveryPayload.length > 0) {
+    const holder = document.createElement("div");
+    holder.className = "mf-user-attachments-recover";
+    holder.hidden = true;
+    holder.setAttribute("aria-hidden", "true");
+    try {
+      holder.textContent = JSON.stringify(recoveryPayload);
+    } catch {
+      /* ignore */
+    }
+    msg.appendChild(holder);
+  }
+
   list.appendChild(msg);
 
   requestAnimationFrame(() => {
     requestAnimationFrame(() => updateUserExpandVisibility(msg, textEl, expandBtn));
   });
+  return msg;
 }
 
 /** Highlight theme cards in the sidebar when the theme title appears in the user's latest message. */
@@ -4469,17 +4664,53 @@ function appendUserBubbleFromTurn(turn) {
   const reqProvider = t.requested_provider_id;
   const rt = t.request_type || "default";
   const modelLabel = rt === "ai_talks" ? "AI opinion" : PROVIDER_DISPLAY[reqProvider] ?? reqProvider;
-  /** @type {Array<{ name: string; kind: string }>} */
+  /** @type {Array<Record<string, unknown>>} */
   let attachmentStrip = [];
   try {
     const j = JSON.parse(String(t.user_attachments_json ?? "null"));
     if (Array.isArray(j)) {
       attachmentStrip = j
         .filter((x) => x && typeof x === "object")
-        .map((x) => ({
-          name: String(x.name ?? "file").slice(0, 512),
-          kind: normalizeStoredUserAttachmentKind(x.kind),
-        }));
+        .map((x) => {
+          const name = String(x.name ?? "file").slice(0, 512);
+          const kind = normalizeStoredUserAttachmentKind(x.kind);
+          const mimeType = typeof x.mimeType === "string" ? x.mimeType.trim().slice(0, 128) : "";
+          const imageBase64 =
+            typeof x.imageBase64 === "string"
+              ? String(x.imageBase64)
+              : typeof x.base64 === "string"
+                ? String(x.base64)
+                : "";
+          const textInline = typeof x.textInline === "string" ? String(x.textInline) : "";
+
+          /** @type {Record<string, unknown>} */
+          const out = { name, kind };
+          if (mimeType) out.mimeType = mimeType;
+          if (imageBase64) out.imageBase64 = imageBase64;
+          if (textInline) out.textInline = textInline;
+
+          const mtBase = mimeType.split(";")[0].trim();
+          let objectUrl = "";
+          let displayAsImage = false;
+          const compactB64 = imageBase64.replace(/\s/g, "");
+          if (compactB64.length > 0 && mtBase.toLowerCase().startsWith("image/")) {
+            objectUrl = `data:${mtBase};base64,${compactB64}`;
+            displayAsImage = true;
+          } else if (textInline.length > 0) {
+            try {
+              const mt = mtBase || "text/plain";
+              objectUrl = URL.createObjectURL(new Blob([textInline], { type: mt }));
+            } catch {
+              objectUrl = "";
+            }
+            displayAsImage = false;
+          }
+          if (objectUrl) {
+            out.objectUrl = objectUrl;
+            out.displayAsImage = displayAsImage;
+          }
+          return out;
+        });
     }
   } catch {
     attachmentStrip = [];
@@ -4851,14 +5082,6 @@ function initChatComposer() {
       modeForSend !== "image" &&
       (userMessageTriggersAccessDataDump(trimmed) || modeForSend === "accessData");
 
-    const attachmentStripMeta =
-      filesSnapshot.length > 0
-        ? filesSnapshot.map((f) => ({
-            name: f.name || "file",
-            kind: classifyComposerAttachmentKind(f),
-          }))
-        : [];
-
     /** Live object URLs for the user bubble (same look as composer). Revoked when `#messages-list` is cleared. */
     const attachmentStripForUi =
       composerAttachmentRows.length > 0
@@ -4934,6 +5157,8 @@ function initChatComposer() {
     let didAppendUserToUi = false;
     /** Caption or synthesized brief for DB / bubble (set after `promptForApi` is built). */
     let turnUserTextForUiAndDb = persistUserText;
+    /** Snapshot for `user_attachments_json` (visible to `finally` / DB save). */
+    let attachmentPersistRowsForSave = [];
 
     chatComposerSending = true;
     syncAllAssistantRetryButtons();
@@ -4972,8 +5197,9 @@ function initChatComposer() {
 
       const attApi =
         filesSnapshot.length > 0
-          ? await prepareComposerAttachmentsForApi(filesSnapshot)
-          : { images: [], textAppend: "", filenames: [] };
+          ? await prepareComposerAttachmentsForApiAndPersist(filesSnapshot)
+          : { images: [], textAppend: "", filenames: [], persistRows: [] };
+      attachmentPersistRowsForSave = attApi.persistRows ?? [];
       if (filesSnapshot.length > 0) {
         clearComposerAttachmentRows();
       }
@@ -4988,7 +5214,7 @@ function initChatComposer() {
 
       /* Create image: API gets text only; attached images become an explicit note in the prompt. */
       if (modeForSend === "image" && attApi.images.length > 0) {
-        const imgNames = attachmentStripMeta
+        const imgNames = attachmentPersistRowsForSave
           .filter((x) => x.kind === "image")
           .map((x) => x.name)
           .filter(Boolean)
@@ -5021,6 +5247,7 @@ function initChatComposer() {
         deepResearch: modeForSend === "research",
         accessData: modeForSend === "accessData",
         attachmentStrip: attachmentStripForUi.length > 0 ? attachmentStripForUi : undefined,
+        persistRecovery: attachmentPersistRowsForSave.length > 0 ? attachmentPersistRowsForSave : undefined,
       });
       didAppendUserToUi = true;
       if (introContextActive && modeForSend !== "image") {
@@ -5311,12 +5538,14 @@ function initChatComposer() {
             assistant_error: hadAssistantError ? 1 : 0,
             ...llmUsageTurnDbFields(turnLlmUsage),
           };
-          if (attachmentStripMeta.length > 0) {
-            turnPayload.user_attachments_json = JSON.stringify(attachmentStripMeta);
+          if (attachmentPersistRowsForSave.length > 0) {
+            turnPayload.user_attachments_json = JSON.stringify(attachmentPersistRowsForSave);
           }
           const saveRes = await saveConversationTurn(persistDialogId, turnPayload);
           tid =
-            saveRes && typeof saveRes === "object" && saveRes.id != null ? String(saveRes.id) : "";
+            saveRes && typeof saveRes === "object"
+              ? String(saveRes.id ?? saveRes.turnId ?? "").trim()
+              : "";
           if (pending && tid) {
             pending.dataset.turnId = tid;
             if (!String(pending.dataset.exchangeRootTurnId ?? "").trim()) {
@@ -5327,6 +5556,7 @@ function initChatComposer() {
             }
             syncAssistantFavoriteStarButton(pending);
             syncAssistantRetryButton(pending);
+            syncAllAssistantRetryButtons();
           }
           await renderThemesSidebar();
         } catch (saveErr) {

@@ -5,6 +5,10 @@ export const MAX_COMPOSER_ATTACHMENTS = 10;
 const MAX_TEXT_READ_BYTES = 512 * 1024;
 const MAX_TEXT_CHARS = 120_000;
 
+/** Stored in SQLite `user_attachments_json` for retry / reload (approx. limits). */
+export const MAX_PERSIST_IMAGE_BASE64_CHARS = 14_000_000;
+export const MAX_PERSIST_TEXT_INLINE_CHARS = MAX_TEXT_CHARS;
+
 const DOCUMENT_EXT = new Set([
   ".pdf",
   ".doc",
@@ -152,22 +156,39 @@ function pushTextBlock(pieces, name, text) {
 }
 
 /**
- * @param {File[]} files
- * @returns {Promise<{ images: Array<{ mimeType: string, base64: string }>, textAppend: string, filenames: string[] }>}
+ * @typedef {{ name: string; kind: string; mimeType?: string; imageBase64?: string; textInline?: string }} UserAttachmentPersistRow
  */
-export async function prepareComposerAttachmentsForApi(files) {
+
+/**
+ * @param {File[]} files
+ * @returns {Promise<{ images: Array<{ mimeType: string, base64: string }>, textAppend: string, filenames: string[], persistRows: UserAttachmentPersistRow[] }>}
+ */
+export async function prepareComposerAttachmentsForApiAndPersist(files) {
   /** @type {Array<{ mimeType: string, base64: string }>} */
   const images = [];
   const textPieces = [];
+  /** @type {UserAttachmentPersistRow[]} */
+  const persistRows = [];
 
   for (const file of files) {
     const kind = classifyComposerAttachmentKind(file);
     const name = file.name || "attachment";
+    const baseRow = /** @type {UserAttachmentPersistRow} */ ({ name, kind });
 
     if (kind === "image") {
       const img = await readImageFileAsBase64(file);
-      if (img) images.push({ mimeType: img.mimeType, base64: img.base64 });
-      else textPieces.push(`[Attached image could not be read: ${name}]`);
+      if (img) {
+        images.push({ mimeType: img.mimeType, base64: img.base64 });
+        const b64 = img.base64.length > MAX_PERSIST_IMAGE_BASE64_CHARS ? "" : img.base64;
+        if (b64) {
+          baseRow.mimeType = img.mimeType;
+          baseRow.imageBase64 = b64;
+        }
+        persistRows.push(baseRow);
+      } else {
+        textPieces.push(`[Attached image could not be read: ${name}]`);
+        persistRows.push(baseRow);
+      }
       continue;
     }
 
@@ -189,17 +210,32 @@ export async function prepareComposerAttachmentsForApi(files) {
       try {
         const text = await file.text();
         pushTextBlock(textPieces, name, text);
+        const clipped =
+          text.length > MAX_TEXT_CHARS ? `${text.slice(0, MAX_TEXT_CHARS)}\n\n[…truncated…]` : text;
+        const mt =
+          String(file.type || "text/plain")
+            .split(";")[0]
+            .trim()
+            .slice(0, 128) || "text/plain";
+        if (clipped.length <= MAX_PERSIST_TEXT_INLINE_CHARS) {
+          baseRow.mimeType = mt;
+          baseRow.textInline = clipped;
+        }
+        persistRows.push(baseRow);
       } catch {
         textPieces.push(`[Attached file could not be read as text: ${name}]`);
+        persistRows.push(baseRow);
       }
     } else if (kind === "document" || kind === "code") {
       textPieces.push(
         `[Attached ${kind === "document" ? "document" : "file"} (binary or too large): ${name}; MIME: ${file.type || "unknown"} — content not inlined.]`,
       );
+      persistRows.push(baseRow);
     } else {
       textPieces.push(
         `[Attached file: ${name}; MIME: ${file.type || "unknown"} — content not inlined.]`,
       );
+      persistRows.push(baseRow);
     }
   }
 
@@ -208,7 +244,17 @@ export async function prepareComposerAttachmentsForApi(files) {
     images,
     textAppend,
     filenames: files.map((f) => f.name || "file"),
+    persistRows,
   };
+}
+
+/**
+ * @param {File[]} files
+ * @returns {Promise<{ images: Array<{ mimeType: string, base64: string }>, textAppend: string, filenames: string[] }>}
+ */
+export async function prepareComposerAttachmentsForApi(files) {
+  const x = await prepareComposerAttachmentsForApiAndPersist(files);
+  return { images: x.images, textAppend: x.textAppend, filenames: x.filenames };
 }
 
 function mimeLooksPlainTable(mime) {

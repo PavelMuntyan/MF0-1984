@@ -54,7 +54,7 @@ const migration011 = path.join(root, "db", "migrations", "011_analytics_aux_llm_
 const PORT = resolveApiPort(process.env.API_PORT);
 
 /** Default max JSON body size for POST/PUT (bytes). Override with API_MAX_BODY_BYTES. */
-const DEFAULT_API_MAX_BODY_BYTES = 10 * 1024 * 1024;
+const DEFAULT_API_MAX_BODY_BYTES = 48 * 1024 * 1024;
 const MIN_API_MAX_BODY_BYTES = 1024 * 1024;
 const MAX_API_MAX_BODY_BYTES = 100 * 1024 * 1024;
 
@@ -250,6 +250,25 @@ function migrateAccessExternalServicesFromJsonIfNeeded(database) {
   }
 }
 
+const MAX_PERSIST_IMAGE_BASE64_CHARS = 14_000_000;
+const MAX_PERSIST_TEXT_INLINE_CHARS = 120_000;
+
+/**
+ * Client normally sends `user_attachments_json` as a JSON string; accept array/object too.
+ * @param {Record<string, unknown>} body
+ * @returns {string}
+ */
+function userAttachmentsJsonFromTurnPostBody(body) {
+  const v = body?.user_attachments_json;
+  if (v == null) return "";
+  if (typeof v === "string") return v;
+  try {
+    return JSON.stringify(v);
+  } catch {
+    return "";
+  }
+}
+
 function parseTurnUserAttachmentsJson(raw) {
   if (raw == null || String(raw).trim() === "") return [];
   try {
@@ -258,10 +277,39 @@ function parseTurnUserAttachmentsJson(raw) {
     return j
       .filter((x) => x && typeof x === "object")
       .slice(0, 10)
-      .map((x) => ({
-        name: String(x.name ?? "file").slice(0, 512),
-        kind: ["image", "document", "code", "other"].includes(String(x.kind)) ? String(x.kind) : "other",
-      }));
+      .map((x) => {
+        const name = String(x.name ?? "file").slice(0, 512);
+        const kind = ["image", "document", "code", "other"].includes(String(x.kind)) ? String(x.kind) : "other";
+        /** @type {Record<string, unknown>} */
+        const out = { name, kind };
+
+        const mimeRaw = String(x.mimeType ?? x.mime ?? "")
+          .trim()
+          .slice(0, 128);
+        if (/^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+\/-]*$/i.test(mimeRaw)) {
+          out.mimeType = mimeRaw;
+        }
+
+        const b64src = x.imageBase64 != null ? String(x.imageBase64) : x.base64 != null ? String(x.base64) : "";
+        const b64 = b64src.replace(/\s/g, "");
+        if (kind === "image" && b64.length > 0 && b64.length <= MAX_PERSIST_IMAGE_BASE64_CHARS) {
+          if (/^[A-Za-z0-9+/]+=*$/.test(b64)) {
+            out.imageBase64 = b64;
+          }
+        }
+
+        const textRaw =
+          x.textInline != null
+            ? String(x.textInline)
+            : x.textSnapshot != null
+              ? String(x.textSnapshot)
+              : "";
+        if (textRaw.length > 0 && textRaw.length <= MAX_PERSIST_TEXT_INLINE_CHARS) {
+          out.textInline = textRaw;
+        }
+
+        return out;
+      });
   } catch {
     return [];
   }
@@ -2719,8 +2767,7 @@ const server = http.createServer(async (req, res) => {
       const turnId = crypto.randomUUID();
       const cloneFrom = String(body.clone_user_from_turn_id ?? "").trim();
       let userText = String(body.user_text ?? "");
-      let userAttachmentsJson =
-        body.user_attachments_json != null ? String(body.user_attachments_json) : "";
+      let userAttachmentsJson = userAttachmentsJsonFromTurnPostBody(body);
       const assistantText = body.assistant_text != null ? String(body.assistant_text) : null;
       let requestedProviderId = String(body.requested_provider_id ?? "");
       const respondingProviderId =
