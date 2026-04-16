@@ -3409,8 +3409,9 @@ async function retryAssistantReply(clickedAssistantWrap) {
   const modeForSend = inferComposerAttachModeFromUserEl(userEl);
   const rebuiltAtt = await rebuildUserBubbleAttachmentsForRetry(userEl);
   if (rebuiltAtt.hadAny && rebuiltAtt.files.length === 0) {
-    appendActivityLog("Reply: attachments are no longer available in this session — cannot retry this message with files.");
-    return;
+    appendActivityLog(
+      "Reply: attachments from this message are no longer available in this session — retrying without files.",
+    );
   }
   if (introChatOpen && getIrPanelLockedSync("intro")) {
     appendActivityLog("Intro is locked — unlock it to retry.");
