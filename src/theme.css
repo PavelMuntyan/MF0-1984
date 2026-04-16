@@ -1595,6 +1595,14 @@ button.btn {
   margin-bottom: 1.5rem;
 }
 
+.analytics-range-badges {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 0 0 1rem;
+}
+
 .analytics-model-card {
   border: 1px solid hsl(var(--border));
   border-radius: 0.75rem;

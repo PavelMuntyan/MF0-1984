@@ -3245,6 +3245,67 @@ function inferComposerAttachModeFromUserEl(userEl) {
 }
 
 /**
+ * Rebuilds user attachments from the user bubble (blob: URLs).
+ * Works only for bubbles created in this session (persisted turns have no blob URLs).
+ * @param {HTMLElement} userEl
+ * @returns {Promise<{ files: File[], filenames: string[], hadAny: boolean }>}
+ */
+async function rebuildUserBubbleAttachmentsForRetry(userEl) {
+  const out = { files: [], filenames: [], hadAny: false };
+  if (!(userEl instanceof HTMLElement)) return out;
+
+  /** @type {Array<{ name: string, objectUrl: string }>} */
+  let items = [];
+  try {
+    const raw = String(userEl.dataset.userAttachmentsJson ?? "").trim();
+    if (raw) {
+      const j = JSON.parse(raw);
+      if (Array.isArray(j)) {
+        items = j
+          .filter((x) => x && typeof x === "object")
+          .map((x) => ({
+            name: String(x.name ?? "file").slice(0, 512) || "file",
+            objectUrl: typeof x.objectUrl === "string" ? String(x.objectUrl) : "",
+          }))
+          .filter((x) => x.objectUrl.startsWith("blob:"));
+      }
+    }
+  } catch {
+    items = [];
+  }
+
+  if (items.length === 0) {
+    const tiles = userEl.querySelectorAll(".msg-user-attachments a.chat-attach-tile--sent-blob");
+    tiles.forEach((a) => {
+      if (!(a instanceof HTMLAnchorElement)) return;
+      const href = String(a.getAttribute("href") ?? "");
+      if (!href.startsWith("blob:")) return;
+      const nm = String(a.getAttribute("download") ?? a.getAttribute("title") ?? "file").trim() || "file";
+      items.push({ name: nm, objectUrl: href });
+    });
+  }
+
+  if (items.length === 0) return out;
+  out.hadAny = true;
+
+  for (const it of items) {
+    const url = String(it.objectUrl ?? "");
+    if (!url.startsWith("blob:")) continue;
+    try {
+      const res = await fetch(url);
+      const blob = await res.blob();
+      const nm = String(it.name ?? "file").trim() || "file";
+      const file = new File([blob], nm, { type: String(blob.type || "") });
+      out.files.push(file);
+      out.filenames.push(nm);
+    } catch {
+      /* ignore */
+    }
+  }
+  return out;
+}
+
+/**
  * How many assistant replies exist after this user bubble until the next user message.
  * @param {HTMLElement} userEl
  */
@@ -3346,8 +3407,9 @@ async function retryAssistantReply(clickedAssistantWrap) {
   }
   const persistUserText = String(userEl.dataset.userMessageRaw ?? "").trim();
   const modeForSend = inferComposerAttachModeFromUserEl(userEl);
-  if (modeForSend === "image") {
-    appendActivityLog("Reply: generated images cannot be retried from here.");
+  const rebuiltAtt = await rebuildUserBubbleAttachmentsForRetry(userEl);
+  if (rebuiltAtt.hadAny && rebuiltAtt.files.length === 0) {
+    appendActivityLog("Reply: attachments are no longer available in this session — cannot retry this message with files.");
     return;
   }
   if (introChatOpen && getIrPanelLockedSync("intro")) {
@@ -3390,14 +3452,33 @@ async function retryAssistantReply(clickedAssistantWrap) {
   const accessDataDumpMode =
     modeForSend !== "image" &&
     (userMessageTriggersAccessDataDump(persistUserText) || modeForSend === "accessData");
-  const promptForApi = buildChatPromptForApi(persistUserText, modeForSend);
+  const attApi =
+    rebuiltAtt.files.length > 0
+      ? await prepareComposerAttachmentsForApi(rebuiltAtt.files)
+      : { images: [], textAppend: "", filenames: [] };
+  let promptForApi = buildChatPromptForApi(persistUserText, modeForSend);
+  if (attApi.textAppend) {
+    promptForApi = promptForApi ? `${promptForApi}\n\n${attApi.textAppend}` : attApi.textAppend;
+  }
+  if (!String(promptForApi).trim() && attApi.images.length > 0) {
+    promptForApi = "(See attached images.)";
+  }
+  if (modeForSend === "image" && attApi.images.length > 0) {
+    const imgNames = rebuiltAtt.filenames.join(", ");
+    const note = `The user attached ${attApi.images.length} reference image(s): ${imgNames || "attached images"}. Use them as visual reference when generating.`;
+    promptForApi = String(promptForApi).trim()
+      ? `${String(promptForApi).trim()}\n\n${note}`
+      : note;
+  }
   const newOrdinal = countAssistantsInUserExchangeBlock(userEl) + 1;
 
   const pending = appendAssistantPending();
   if (!pending) return;
-  const anchorAfter = findLastAssistantInUserExchangeBlock(userEl);
-  if (anchorAfter) {
-    anchorAfter.insertAdjacentElement("afterend", pending);
+  // Retry replies should always appear at the bottom of the chat (not mid-thread),
+  // matching the normal "send" UX and keeping the newest result in view.
+  const list = document.getElementById("messages-list");
+  if (list) {
+    list.appendChild(pending);
   } else {
     userEl.insertAdjacentElement("afterend", pending);
   }
@@ -3405,6 +3486,11 @@ async function retryAssistantReply(clickedAssistantWrap) {
   pending.dataset.assistantDeepResearch = modeForSend === "research" ? "1" : "";
   pending.dataset.exchangeRootTurnId = rootClone;
   pending.dataset.replyOrdinal = String(newOrdinal);
+  if (modeForSend === "image") {
+    pending.dataset.assistantResponseKind = "image";
+    const te0 = pending.querySelector(".msg-assistant-text");
+    if (te0) setAssistantMessagePlain(te0, "Generating image…");
+  }
 
   const ta = document.getElementById("chat-input");
   const sendBtn = document.getElementById("btn-chat-send");
@@ -3412,6 +3498,7 @@ async function retryAssistantReply(clickedAssistantWrap) {
   chatComposerSending = true;
   syncAllAssistantRetryButtons();
   if (sendBtn) sendBtn.disabled = true;
+  scrollMessagesToEnd();
 
   let fullText = "";
   /** @type {{ promptTokens: number, completionTokens: number, totalTokens: number } | null} */
@@ -3419,56 +3506,72 @@ async function retryAssistantReply(clickedAssistantWrap) {
   try {
     appendActivityLog(`Chat → retry (reply #${newOrdinal}): ${attachModeLogLabel(modeForSend)}, model ${modelLabel}`);
     scrollMessagesToEnd();
-    const chatOpts = await buildChatOptsForModelRequest({
-      persistDialogId,
-      promptForApi,
-      providerId,
-      key,
-      modeForSend,
-      accessDataDumpMode,
-      chatAttachments: undefined,
-      introChatOpen,
-      accessChatOpen,
-      rulesChatOpen,
-      helpChatOpen: false,
-    });
-    let buf = "";
-    try {
-      const streamRes = await completeChatMessageStreaming(
-        providerId,
-        promptForApi,
-        key,
-        (piece) => {
-          buf += piece;
-          pending.dataset.assistantMarkdown = buf;
-          const te = pending.querySelector(".msg-assistant-text");
-          if (te) setAssistantMessageMarkdown(te, buf);
-          if (pending) syncAssistantCopyButtonDuringStream(pending);
-          scrollMessagesToEnd();
-        },
-        chatOpts,
-      );
-      fullText = streamRes.text;
-      turnLlmUsage = ensureUsageTotals(streamRes.usage, JSON.stringify(chatOpts), fullText);
-    } catch {
-      appendActivityLog(`Chat: streaming unavailable on retry, full response (${modelLabel})`);
-      const { text, usage } = await completeChatMessage(providerId, promptForApi, key, chatOpts);
+    if (modeForSend === "image") {
+      const imageGenOpts = attApi.images.length > 0 ? { chatAttachments: { images: attApi.images } } : {};
+      const { text, usage } = await completeImageGeneration(providerId, promptForApi, key, imageGenOpts);
       fullText = text;
-      turnLlmUsage = ensureUsageTotals(usage, JSON.stringify(chatOpts), fullText);
+      turnLlmUsage = ensureUsageTotals(usage, promptForApi, fullText);
       const te = pending.querySelector(".msg-assistant-text");
       if (te) setAssistantMessageMarkdown(te, fullText);
       scrollMessagesToEnd();
+      const imgHint = apiImageGenerationModelHint(providerId);
+      pending.dataset.assistantResponseKind = "image";
+      finalizeAssistantBubble(pending, fullText, providerId, imgHint || undefined, newOrdinal);
+      appendActivityLog(`Chat ← retry #${newOrdinal}: image, model ${modelLabel}, OK`);
+    } else {
+      /** @type {{ images: Array<{ mimeType: string, base64: string }> } | undefined} */
+      const chatAttachments = attApi.images.length > 0 ? { images: attApi.images } : undefined;
+      const chatOpts = await buildChatOptsForModelRequest({
+        persistDialogId,
+        promptForApi,
+        providerId,
+        key,
+        modeForSend,
+        accessDataDumpMode,
+        chatAttachments,
+        introChatOpen,
+        accessChatOpen,
+        rulesChatOpen,
+        helpChatOpen: false,
+      });
+      let buf = "";
+      try {
+        const streamRes = await completeChatMessageStreaming(
+          providerId,
+          promptForApi,
+          key,
+          (piece) => {
+            buf += piece;
+            pending.dataset.assistantMarkdown = buf;
+            const te = pending.querySelector(".msg-assistant-text");
+            if (te) setAssistantMessageMarkdown(te, buf);
+            if (pending) syncAssistantCopyButtonDuringStream(pending);
+            scrollMessagesToEnd();
+          },
+          chatOpts,
+        );
+        fullText = streamRes.text;
+        turnLlmUsage = ensureUsageTotals(streamRes.usage, JSON.stringify(chatOpts), fullText);
+      } catch {
+        appendActivityLog(`Chat: streaming unavailable on retry, full response (${modelLabel})`);
+        const { text, usage } = await completeChatMessage(providerId, promptForApi, key, chatOpts);
+        fullText = text;
+        turnLlmUsage = ensureUsageTotals(usage, JSON.stringify(chatOpts), fullText);
+        const te = pending.querySelector(".msg-assistant-text");
+        if (te) setAssistantMessageMarkdown(te, fullText);
+        scrollMessagesToEnd();
+      }
+      finalizeAssistantBubble(
+        pending,
+        fullText,
+        providerId,
+        accessDataDumpMode ? "Access data" : undefined,
+        newOrdinal,
+      );
+      appendActivityLog(
+        `Chat ← retry #${newOrdinal}: text, model ${modelLabel}, reply chars: ${String(fullText).length}`,
+      );
     }
-    finalizeAssistantBubble(
-      pending,
-      fullText,
-      providerId,
-      accessDataDumpMode ? "Access data" : undefined,
-      newOrdinal,
-    );
-    appendActivityLog(
-      `Chat ← retry #${newOrdinal}: text, model ${modelLabel}, reply chars: ${String(fullText).length}`,
-    );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     fullText = msg;
@@ -3775,6 +3878,26 @@ function appendUserMessage(rawText, modelLabel, options) {
   msg.dataset.userMessageRaw = String(rawText ?? "");
   if (attachmentStrip.length) {
     msg.dataset.userAttachmentNames = attachmentStrip.map((x) => x.name).filter(Boolean).join(" ");
+    const withUrls = attachmentStrip.some(
+      (x) => typeof x?.objectUrl === "string" && String(x.objectUrl).startsWith("blob:"),
+    );
+    if (withUrls) {
+      try {
+        msg.dataset.userAttachmentsJson = JSON.stringify(
+          attachmentStrip.map((x) => ({
+            name: String(x?.name ?? "file").slice(0, 512),
+            kind: normalizeStoredUserAttachmentKind(x?.kind),
+            objectUrl:
+              typeof x?.objectUrl === "string" && String(x.objectUrl).startsWith("blob:")
+                ? String(x.objectUrl)
+                : "",
+            displayAsImage: Boolean(x?.displayAsImage),
+          })),
+        );
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   const head = document.createElement("div");
@@ -4100,7 +4223,7 @@ function finalizeAssistantBubble(el, fullText, providerId, modelHintOverride, re
     actions = document.createElement("div");
     actions.className = "msg-bubble-actions";
     actions.appendChild(makeAssistantFavoriteStarButton(el));
-    if (!copyAsImage && !el.classList.contains("msg-assistant--error")) {
+    if (!el.classList.contains("msg-assistant--error")) {
       actions.appendChild(makeAssistantRetryButton(el));
     }
     actions.appendChild(

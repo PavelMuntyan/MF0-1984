@@ -24,10 +24,18 @@ let prepareChatSurface = null;
 /**
  * @param {HTMLElement} root
  * @param {unknown} raw
+ * @param {"all" | "last30d" | "last24h"} activeRange
  */
-function renderAnalytics(root, raw) {
+function renderAnalytics(root, raw, activeRange) {
   const data = raw && typeof raw === "object" ? raw : {};
-  const providers = data.providers && typeof data.providers === "object" ? data.providers : {};
+  const providersByRange =
+    data.providersByRange && typeof data.providersByRange === "object" ? data.providersByRange : {};
+  const providers =
+    providersByRange?.[activeRange] && typeof providersByRange[activeRange] === "object"
+      ? providersByRange[activeRange]
+      : data.providers && typeof data.providers === "object"
+        ? data.providers
+        : {};
   const dailyUsage = Array.isArray(data.dailyUsage) ? data.dailyUsage : [];
   const dailyTokens = Array.isArray(data.dailyTokens) ? data.dailyTokens : [];
   const dailyLlmTokensRaw = Array.isArray(data.dailyLlmTokens) ? data.dailyLlmTokens : [];
@@ -250,12 +258,26 @@ function renderAnalytics(root, raw) {
     })
     .join("");
 
+  const rangeButtons = ([
+    { id: "all", label: "All time" },
+    { id: "last30d", label: "Last 30 days" },
+    { id: "last24h", label: "Last 24 hours" },
+  ]).map((b) => {
+    const isActive = String(activeRange ?? "all") === b.id;
+    return `<button type="button" class="badge analytics-range-badge${isActive ? " active" : ""}" data-analytics-range="${b.id}" aria-pressed="${
+      isActive ? "true" : "false"
+    }">${escapeHtml(b.label)}</button>`;
+  }).join("");
+
   root.innerHTML = `
     <div class="analytics-inner">
       <header class="analytics-header">
         <h2 class="analytics-page-title">Analytics</h2>
         <p class="analytics-sub">Usage includes regular chats and archived counts from cleared Intro / Rules / Access threads and from deleted themes (live DB + archive).</p>
       </header>
+      <div class="analytics-range-badges" role="group" aria-label="Analytics time range">
+        ${rangeButtons}
+      </div>
       <div class="analytics-model-grid">${cardsHtml}</div>
       ${costSummaryHtml}
       <section class="analytics-chart-block">
@@ -324,11 +346,58 @@ export function initAnalyticsDashboard(deps) {
   const { fetchAnalytics, appendActivityLog, prepareChatSurface: prep } = deps;
   prepareChatSurface = typeof prep === "function" ? prep : () => {};
 
+  const RANGE_STORAGE_KEY = "mf0.analytics.range";
+  /** @type {"all" | "last30d" | "last24h"} */
+  let activeRange = "all";
+  try {
+    const r = String(localStorage.getItem(RANGE_STORAGE_KEY) ?? "").trim();
+    if (r === "all" || r === "last30d" || r === "last24h") activeRange = r;
+  } catch {
+    /* ignore */
+  }
+
+  /** @type {unknown} */
+  let lastRaw = null;
+
   const btn = document.getElementById("btn-analytics");
   const chat = document.getElementById("main-chat");
   const view = document.getElementById("chat-analytics-view");
   const root = document.getElementById("analytics-dashboard-root");
   if (!btn || !chat || !view || !root) return;
+
+  function wireRangeButtons() {
+    root.querySelectorAll("[data-analytics-range]").forEach((b) => {
+      const btnEl = b instanceof HTMLElement ? b : null;
+      if (!btnEl) return;
+      btnEl.addEventListener("click", () => {
+        const id = String(btnEl.getAttribute("data-analytics-range") ?? "").trim();
+        if (id !== "all" && id !== "last30d" && id !== "last24h") return;
+        if (activeRange === id) return;
+        activeRange = id;
+        try {
+          localStorage.setItem(RANGE_STORAGE_KEY, id);
+        } catch {
+          /* ignore */
+        }
+        if (lastRaw) {
+          renderAnalytics(root, lastRaw, activeRange);
+        } else {
+          // Fallback: if analytics haven't loaded yet, fetch once.
+          void (async () => {
+            try {
+              lastRaw = await fetchAnalytics();
+              renderAnalytics(root, lastRaw, activeRange);
+            } catch (e) {
+              appendActivityLog(
+                `Analytics: could not reload on range change (${e instanceof Error ? e.message : String(e)})`,
+              );
+            }
+          })();
+        }
+        wireRangeButtons();
+      });
+    });
+  }
 
   async function refresh() {
     try {
@@ -340,8 +409,9 @@ export function initAnalyticsDashboard(deps) {
         root.append(p);
         return;
       }
-      const data = await fetchAnalytics();
-      renderAnalytics(root, data);
+      lastRaw = await fetchAnalytics();
+      renderAnalytics(root, lastRaw, activeRange);
+      wireRangeButtons();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       root.replaceChildren();

@@ -1461,20 +1461,28 @@ function getAnalyticsPayload() {
   applyLlmTokenUsageMigration(db);
   applyAnalyticsAuxLlmUsageMigration(db);
   /** @type {Record<string, { requestsSent: number, responsesOk: number, imageRequests: number, researchRequests: number, webRequests: number, accessRequests: number, tokensPrompt: number, tokensCompletion: number, tokensTotal: number }>} */
-  const providers = {};
-  for (const id of ANALYTICS_PROVIDER_IDS) {
-    providers[id] = {
-      requestsSent: 0,
-      responsesOk: 0,
-      imageRequests: 0,
-      researchRequests: 0,
-      webRequests: 0,
-      accessRequests: 0,
-      tokensPrompt: 0,
-      tokensCompletion: 0,
-      tokensTotal: 0,
-    };
+  function newProviders() {
+    /** @type {Record<string, { requestsSent: number, responsesOk: number, imageRequests: number, researchRequests: number, webRequests: number, accessRequests: number, tokensPrompt: number, tokensCompletion: number, tokensTotal: number }>} */
+    const p = {};
+    for (const id of ANALYTICS_PROVIDER_IDS) {
+      p[id] = {
+        requestsSent: 0,
+        responsesOk: 0,
+        imageRequests: 0,
+        researchRequests: 0,
+        webRequests: 0,
+        accessRequests: 0,
+        tokensPrompt: 0,
+        tokensCompletion: 0,
+        tokensTotal: 0,
+      };
+    }
+    return p;
   }
+
+  const providers = newProviders();
+  const providersLast30d = newProviders();
+  const providersLast24h = newProviders();
 
   const aggRows = db
     .prepare(
@@ -1507,6 +1515,55 @@ function getAnalyticsPayload() {
     providers[pid].tokensPrompt = Number(row.tokens_prompt) || 0;
     providers[pid].tokensCompletion = Number(row.tokens_completion) || 0;
     providers[pid].tokensTotal = Number(row.tokens_total) || 0;
+  }
+
+  const conversationAggForRange = (sinceExpr) =>
+    db
+      .prepare(
+        `SELECT
+           COALESCE(NULLIF(TRIM(t.responding_provider_id), ''), t.requested_provider_id) AS pid,
+           COUNT(*) AS requests_sent,
+           SUM(CASE WHEN t.assistant_message_at IS NOT NULL AND IFNULL(t.assistant_error, 0) = 0 THEN 1 ELSE 0 END) AS responses_ok,
+           SUM(CASE WHEN t.request_type = 'image' THEN 1 ELSE 0 END) AS image_requests,
+           SUM(CASE WHEN t.request_type = 'research' THEN 1 ELSE 0 END) AS research_requests,
+           SUM(CASE WHEN t.request_type = 'web' THEN 1 ELSE 0 END) AS web_requests,
+           SUM(CASE WHEN t.request_type = 'access_data' THEN 1 ELSE 0 END) AS access_requests,
+           SUM(COALESCE(t.llm_prompt_tokens, 0)) AS tokens_prompt,
+           SUM(COALESCE(t.llm_completion_tokens, 0)) AS tokens_completion,
+           SUM(COALESCE(t.llm_total_tokens, 0)) AS tokens_total
+         FROM conversation_turns t
+         INNER JOIN dialogs d ON d.id = t.dialog_id
+         WHERE ${analyticsDialogWhereSql("d")} AND DATETIME(t.user_message_at) >= ${sinceExpr}
+         GROUP BY pid`,
+      )
+      .all();
+
+  for (const row of conversationAggForRange("DATETIME('now', '-30 days')")) {
+    const pid = String(row.pid ?? "").trim();
+    if (!providersLast30d[pid]) continue;
+    providersLast30d[pid].requestsSent = Number(row.requests_sent) || 0;
+    providersLast30d[pid].responsesOk = Number(row.responses_ok) || 0;
+    providersLast30d[pid].imageRequests = Number(row.image_requests) || 0;
+    providersLast30d[pid].researchRequests = Number(row.research_requests) || 0;
+    providersLast30d[pid].webRequests = Number(row.web_requests) || 0;
+    providersLast30d[pid].accessRequests = Number(row.access_requests) || 0;
+    providersLast30d[pid].tokensPrompt = Number(row.tokens_prompt) || 0;
+    providersLast30d[pid].tokensCompletion = Number(row.tokens_completion) || 0;
+    providersLast30d[pid].tokensTotal = Number(row.tokens_total) || 0;
+  }
+
+  for (const row of conversationAggForRange("DATETIME('now', '-24 hours')")) {
+    const pid = String(row.pid ?? "").trim();
+    if (!providersLast24h[pid]) continue;
+    providersLast24h[pid].requestsSent = Number(row.requests_sent) || 0;
+    providersLast24h[pid].responsesOk = Number(row.responses_ok) || 0;
+    providersLast24h[pid].imageRequests = Number(row.image_requests) || 0;
+    providersLast24h[pid].researchRequests = Number(row.research_requests) || 0;
+    providersLast24h[pid].webRequests = Number(row.web_requests) || 0;
+    providersLast24h[pid].accessRequests = Number(row.access_requests) || 0;
+    providersLast24h[pid].tokensPrompt = Number(row.tokens_prompt) || 0;
+    providersLast24h[pid].tokensCompletion = Number(row.tokens_completion) || 0;
+    providersLast24h[pid].tokensTotal = Number(row.tokens_total) || 0;
   }
 
   const archTbl = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='analytics_usage_archive'`).get();
@@ -1557,6 +1614,100 @@ function getAnalyticsPayload() {
         providers[pid].tokensTotal += Number(row.tokens_total) || 0;
       }
     }
+
+    const archAggLast30d = db
+      .prepare(
+        archHasTokens
+          ? `SELECT
+             provider_id AS pid,
+             SUM(turn_count) AS requests_sent,
+             SUM(responses_ok) AS responses_ok,
+             SUM(CASE WHEN request_type = 'image' THEN turn_count ELSE 0 END) AS image_requests,
+             SUM(CASE WHEN request_type = 'research' THEN turn_count ELSE 0 END) AS research_requests,
+             SUM(CASE WHEN request_type = 'web' THEN turn_count ELSE 0 END) AS web_requests,
+             SUM(CASE WHEN request_type = 'access_data' THEN turn_count ELSE 0 END) AS access_requests,
+             SUM(tokens_prompt) AS tokens_prompt,
+             SUM(tokens_completion) AS tokens_completion,
+             SUM(tokens_total) AS tokens_total
+           FROM analytics_usage_archive
+           WHERE datetime(archived_at) >= datetime('now', '-30 days')
+           GROUP BY pid`
+          : `SELECT
+             provider_id AS pid,
+             SUM(turn_count) AS requests_sent,
+             SUM(responses_ok) AS responses_ok,
+             SUM(CASE WHEN request_type = 'image' THEN turn_count ELSE 0 END) AS image_requests,
+             SUM(CASE WHEN request_type = 'research' THEN turn_count ELSE 0 END) AS research_requests,
+             SUM(CASE WHEN request_type = 'web' THEN turn_count ELSE 0 END) AS web_requests,
+             SUM(CASE WHEN request_type = 'access_data' THEN turn_count ELSE 0 END) AS access_requests
+           FROM analytics_usage_archive
+           WHERE datetime(archived_at) >= datetime('now', '-30 days')
+           GROUP BY pid`,
+      )
+      .all();
+
+    for (const row of archAggLast30d) {
+      const pid = String(row.pid ?? "").trim();
+      if (!providersLast30d[pid]) continue;
+      providersLast30d[pid].requestsSent += Number(row.requests_sent) || 0;
+      providersLast30d[pid].responsesOk += Number(row.responses_ok) || 0;
+      providersLast30d[pid].imageRequests += Number(row.image_requests) || 0;
+      providersLast30d[pid].researchRequests += Number(row.research_requests) || 0;
+      providersLast30d[pid].webRequests += Number(row.web_requests) || 0;
+      providersLast30d[pid].accessRequests += Number(row.access_requests) || 0;
+      if (archHasTokens) {
+        providersLast30d[pid].tokensPrompt += Number(row.tokens_prompt) || 0;
+        providersLast30d[pid].tokensCompletion += Number(row.tokens_completion) || 0;
+        providersLast30d[pid].tokensTotal += Number(row.tokens_total) || 0;
+      }
+    }
+
+    const archAggLast24h = db
+      .prepare(
+        archHasTokens
+          ? `SELECT
+             provider_id AS pid,
+             SUM(turn_count) AS requests_sent,
+             SUM(responses_ok) AS responses_ok,
+             SUM(CASE WHEN request_type = 'image' THEN turn_count ELSE 0 END) AS image_requests,
+             SUM(CASE WHEN request_type = 'research' THEN turn_count ELSE 0 END) AS research_requests,
+             SUM(CASE WHEN request_type = 'web' THEN turn_count ELSE 0 END) AS web_requests,
+             SUM(CASE WHEN request_type = 'access_data' THEN turn_count ELSE 0 END) AS access_requests,
+             SUM(tokens_prompt) AS tokens_prompt,
+             SUM(tokens_completion) AS tokens_completion,
+             SUM(tokens_total) AS tokens_total
+           FROM analytics_usage_archive
+           WHERE datetime(archived_at) >= datetime('now', '-24 hours')
+           GROUP BY pid`
+          : `SELECT
+             provider_id AS pid,
+             SUM(turn_count) AS requests_sent,
+             SUM(responses_ok) AS responses_ok,
+             SUM(CASE WHEN request_type = 'image' THEN turn_count ELSE 0 END) AS image_requests,
+             SUM(CASE WHEN request_type = 'research' THEN turn_count ELSE 0 END) AS research_requests,
+             SUM(CASE WHEN request_type = 'web' THEN turn_count ELSE 0 END) AS web_requests,
+             SUM(CASE WHEN request_type = 'access_data' THEN turn_count ELSE 0 END) AS access_requests
+           FROM analytics_usage_archive
+           WHERE datetime(archived_at) >= datetime('now', '-24 hours')
+           GROUP BY pid`,
+      )
+      .all();
+
+    for (const row of archAggLast24h) {
+      const pid = String(row.pid ?? "").trim();
+      if (!providersLast24h[pid]) continue;
+      providersLast24h[pid].requestsSent += Number(row.requests_sent) || 0;
+      providersLast24h[pid].responsesOk += Number(row.responses_ok) || 0;
+      providersLast24h[pid].imageRequests += Number(row.image_requests) || 0;
+      providersLast24h[pid].researchRequests += Number(row.research_requests) || 0;
+      providersLast24h[pid].webRequests += Number(row.web_requests) || 0;
+      providersLast24h[pid].accessRequests += Number(row.access_requests) || 0;
+      if (archHasTokens) {
+        providersLast24h[pid].tokensPrompt += Number(row.tokens_prompt) || 0;
+        providersLast24h[pid].tokensCompletion += Number(row.tokens_completion) || 0;
+        providersLast24h[pid].tokensTotal += Number(row.tokens_total) || 0;
+      }
+    }
   }
 
   const auxTbl = db
@@ -1579,6 +1730,46 @@ function getAnalyticsPayload() {
       providers[pid].tokensPrompt += Number(row.tokens_prompt) || 0;
       providers[pid].tokensCompletion += Number(row.tokens_completion) || 0;
       providers[pid].tokensTotal += Number(row.tokens_total) || 0;
+    }
+
+    const auxTokAggLast30d = db
+      .prepare(
+        `SELECT provider_id AS pid,
+           SUM(COALESCE(llm_prompt_tokens, 0)) AS tokens_prompt,
+           SUM(COALESCE(llm_completion_tokens, 0)) AS tokens_completion,
+           SUM(COALESCE(llm_total_tokens, 0)) AS tokens_total
+         FROM analytics_aux_llm_usage
+         WHERE datetime(created_at) >= datetime('now', '-30 days')
+         GROUP BY provider_id`,
+      )
+      .all();
+
+    for (const row of auxTokAggLast30d) {
+      const pid = String(row.pid ?? "").trim();
+      if (!providersLast30d[pid]) continue;
+      providersLast30d[pid].tokensPrompt += Number(row.tokens_prompt) || 0;
+      providersLast30d[pid].tokensCompletion += Number(row.tokens_completion) || 0;
+      providersLast30d[pid].tokensTotal += Number(row.tokens_total) || 0;
+    }
+
+    const auxTokAggLast24h = db
+      .prepare(
+        `SELECT provider_id AS pid,
+           SUM(COALESCE(llm_prompt_tokens, 0)) AS tokens_prompt,
+           SUM(COALESCE(llm_completion_tokens, 0)) AS tokens_completion,
+           SUM(COALESCE(llm_total_tokens, 0)) AS tokens_total
+         FROM analytics_aux_llm_usage
+         WHERE datetime(created_at) >= datetime('now', '-24 hours')
+         GROUP BY provider_id`,
+      )
+      .all();
+
+    for (const row of auxTokAggLast24h) {
+      const pid = String(row.pid ?? "").trim();
+      if (!providersLast24h[pid]) continue;
+      providersLast24h[pid].tokensPrompt += Number(row.tokens_prompt) || 0;
+      providersLast24h[pid].tokensCompletion += Number(row.tokens_completion) || 0;
+      providersLast24h[pid].tokensTotal += Number(row.tokens_total) || 0;
     }
   }
 
@@ -1854,6 +2045,11 @@ function getAnalyticsPayload() {
 
   return {
     providers,
+    providersByRange: {
+      all: providers,
+      last30d: providersLast30d,
+      last24h: providersLast24h,
+    },
     dailyUsage,
     dailyTokens,
     dailyLlmTokens,
