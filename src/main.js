@@ -3435,7 +3435,8 @@ async function retryAssistantReply(clickedAssistantWrap) {
     closeIrChatPanel();
   }
 
-  const providerId = getActiveProviderId();
+  const providerId =
+    String(clickedAssistantWrap.dataset.assistantProviderId ?? "").trim() || getActiveProviderId();
   if (!providerId) {
     appendActivityLog("Chat → retry cancelled: no selected model with a key (.env)");
     return;
@@ -4195,6 +4196,9 @@ function finalizeAssistantBubble(el, fullText, providerId, modelHintOverride, re
   if (!el) return;
   el.classList.remove("msg-assistant--pending", "msg-assistant--error");
   el.querySelector(".msg-assistant-model")?.remove();
+
+  // Remember the exact provider used for this reply so "Try another reply" can repeat it.
+  el.dataset.assistantProviderId = String(providerId ?? "").trim();
 
   el.dataset.assistantMarkdown = fullText;
 
