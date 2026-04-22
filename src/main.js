@@ -83,7 +83,7 @@ import {
 import { buildModelContext } from "./contextEngine/buildModelContext.js";
 import { fitContextToBudget } from "./contextEngine/fitContextToBudget.js";
 import { fetchMemoryTreeSupplementForPrompt } from "./memoryTreeRouter.js";
-import { renderThemeCards } from "./themesSidebar.js";
+import { renderThemeCards, syncSidebarSelectionState } from "./themesSidebar.js";
 import {
   getFavoriteThemeIdSet,
   removeFavoriteThemeId,
@@ -116,6 +116,13 @@ import { closeHelpChatPanel, openHelpChatPanelDom, isHelpChatOpen } from "./help
 const MAX_LOG_LINES = 400;
 /** Upper bound for estimated input tokens when building thread context (before the model reply). */
 const MF0_MAX_CONTEXT_INPUT_TOKENS = 12000;
+
+/** Last N user exchanges (grouped turns) paint first when reopening a long thread; older rows prepend in idle time. */
+const DIALOG_REPLAY_TAIL_GROUP_COUNT = 12;
+const DIALOG_REPLAY_HEAD_PRELOAD_CHUNK_GROUPS = 4;
+
+/** Bumped whenever a progressive history prepend is superseded by a new thread load. */
+let dialogHistoryPrependGeneration = 0;
 
 /** Active conversation for DB persistence (null = new chat until first send). */
 let activeThemeId = null;
@@ -4018,6 +4025,7 @@ function createDeepResearchBadgeIcon() {
  *     imageBase64?: string;
  *     textInline?: string;
  *   }>;
+ *   listInsertBefore?: ChildNode | null;
  * }} [options]
  * @returns {HTMLElement | null}
  */
@@ -4252,7 +4260,12 @@ function appendUserMessage(rawText, modelLabel, options) {
     msg.appendChild(holder);
   }
 
-  list.appendChild(msg);
+  const insertRef = options?.listInsertBefore;
+  if (insertRef != null && insertRef.parentNode === list) {
+    list.insertBefore(msg, insertRef);
+  } else {
+    list.appendChild(msg);
+  }
 
   requestAnimationFrame(() => {
     requestAnimationFrame(() => updateUserExpandVisibility(msg, textEl, expandBtn));
@@ -4292,6 +4305,19 @@ function scrollMessagesToEnd() {
   if (el) el.scrollTop = el.scrollHeight;
 }
 
+/** Centered overlay in `#messages-viewport` while a thread is being fetched/replayed. */
+function setMessagesViewportLoading(on) {
+  const el = document.getElementById("messages-viewport-loading");
+  if (!el) return;
+  if (on) {
+    el.hidden = false;
+    el.setAttribute("aria-hidden", "false");
+  } else {
+    el.hidden = true;
+    el.setAttribute("aria-hidden", "true");
+  }
+}
+
 function setAssistantMessageMarkdown(el, markdownSource) {
   if (!el) return;
   el.classList.remove("msg-assistant-text--thinking");
@@ -4306,7 +4332,8 @@ function setAssistantMessagePlain(el, text) {
   el.textContent = text;
 }
 
-function appendAssistantPending() {
+/** @param {ChildNode | null} [listInsertBefore] */
+function appendAssistantPending(listInsertBefore = null) {
   const list = document.getElementById("messages-list");
   if (!list) return null;
   const wrap = document.createElement("div");
@@ -4326,7 +4353,11 @@ function appendAssistantPending() {
   textEl.appendChild(lab);
   body.appendChild(textEl);
   wrap.appendChild(body);
-  list.appendChild(wrap);
+  if (listInsertBefore != null && listInsertBefore.parentNode === list) {
+    list.insertBefore(wrap, listInsertBefore);
+  } else {
+    list.appendChild(wrap);
+  }
   return wrap;
 }
 
@@ -4617,11 +4648,19 @@ async function openDialogById(dialogId, themeId, scrollToTurnId) {
   const sendDlg = document.getElementById("btn-chat-send");
   if (taDlg) taDlg.disabled = false;
   if (sendDlg) sendDlg.disabled = false;
+  syncSidebarSelectionState(document.getElementById("dialogue-cards"), activeDialogId, activeThemeId);
+  setMessagesViewportLoading(true);
   try {
     const turns = await fetchTurns(did);
-    replayDialogTurnsGrouped(turns);
+    const scrollIdEarly = scrollToTurnId != null ? String(scrollToTurnId).trim() : "";
+    replayDialogTurnsGrouped(turns, {
+      anchorScrollToTurnId: scrollIdEarly || undefined,
+      expectedActiveDialogId: did,
+    });
   } catch (e) {
     appendActivityLog(`Chat DB: could not load thread (${e instanceof Error ? e.message : String(e)})`);
+  } finally {
+    setMessagesViewportLoading(false);
   }
   await renderThemesSidebar();
   const scrollId = scrollToTurnId != null ? String(scrollToTurnId).trim() : "";
@@ -4658,8 +4697,9 @@ function aiTalksRoundNumberFromTurn(turn) {
 
 /**
  * @param {unknown} turn
+ * @param {{ listInsertBefore?: ChildNode | null }} [bubbleOpts]
  */
-function appendUserBubbleFromTurn(turn) {
+function appendUserBubbleFromTurn(turn, bubbleOpts) {
   const t = turn && typeof turn === "object" ? turn : {};
   const reqProvider = t.requested_provider_id;
   const rt = t.request_type || "default";
@@ -4722,6 +4762,7 @@ function appendUserBubbleFromTurn(turn) {
     deepResearch: rt === "research",
     accessData: rt === "access_data",
     attachmentStrip: attachmentStrip.length > 0 ? attachmentStrip : undefined,
+    ...(bubbleOpts?.listInsertBefore != null ? { listInsertBefore: bubbleOpts.listInsertBefore } : {}),
   });
 }
 
@@ -4729,14 +4770,16 @@ function appendUserBubbleFromTurn(turn) {
  * @param {unknown} turn
  * @param {number} replyOrdinal
  * @param {string} exchangeRootTurnId
+ * @param {{ listInsertBefore?: ChildNode | null }} [bubbleOpts]
  */
-function appendAssistantBubbleFromTurn(turn, replyOrdinal, exchangeRootTurnId) {
+function appendAssistantBubbleFromTurn(turn, replyOrdinal, exchangeRootTurnId, bubbleOpts) {
   const t = turn && typeof turn === "object" ? turn : {};
   const reqProvider = t.requested_provider_id;
   const respProvider = t.responding_provider_id || reqProvider;
   const modelLabel = PROVIDER_DISPLAY[reqProvider] ?? reqProvider;
   const rt = t.request_type || "default";
-  const pending = appendAssistantPending();
+  const ins = bubbleOpts?.listInsertBefore ?? null;
+  const pending = appendAssistantPending(ins);
   if (!pending) return;
   pending.dataset.turnId = String(t.id ?? "");
   pending.dataset.exchangeRootTurnId = String(exchangeRootTurnId || t.id || "").trim();
@@ -4767,9 +4810,15 @@ function appendAssistantBubbleFromTurn(turn, replyOrdinal, exchangeRootTurnId) {
   }
 }
 
-/** @param {unknown[]} turns */
-function replayDialogTurnsGrouped(turns) {
+/**
+ * Chronological exchange groups (one user prompt + assistant row(s)).
+ * @param {unknown[]} turns
+ * @returns {Array<{ group: unknown[], rootId: string, replies: unknown[] }>}
+ */
+function buildDialogTurnGroups(turns) {
   const arr = Array.isArray(turns) ? turns : [];
+  /** @type {Array<{ group: unknown[], rootId: string, replies: unknown[] }>} */
+  const out = [];
   let i = 0;
   while (i < arr.length) {
     const first = arr[i];
@@ -4800,11 +4849,97 @@ function replayDialogTurnsGrouped(turns) {
           })
         : group;
     const rootId = String((group[0] && group[0].id) ?? "").trim();
-    appendUserBubbleFromTurn(group[0]);
-    for (let k = 0; k < replies.length; k += 1) {
-      appendAssistantBubbleFromTurn(replies[k], k + 1, rootId);
-    }
+    out.push({ group, rootId, replies });
   }
+  return out;
+}
+
+/**
+ * @param {{ group: unknown[], rootId: string, replies: unknown[] }} meta
+ * @param {ChildNode | null | undefined} listInsertBefore
+ */
+function replayOneDialogTurnGroup(meta, listInsertBefore) {
+  const { group, rootId, replies } = meta;
+  const ins = listInsertBefore ?? undefined;
+  const bubbleOpts = ins != null ? { listInsertBefore: ins } : undefined;
+  appendUserBubbleFromTurn(group[0], bubbleOpts);
+  for (let k = 0; k < replies.length; k += 1) {
+    appendAssistantBubbleFromTurn(replies[k], k + 1, rootId, bubbleOpts);
+  }
+}
+
+/**
+ * @param {Array<{ group: unknown[], rootId: string, replies: unknown[] }>} headGroups oldest first
+ * @param {number} replayGen
+ * @param {string} [expectedActiveDialogId]
+ */
+function scheduleDialogHistoryHeadPrepend(headGroups, replayGen, expectedActiveDialogId) {
+  if (headGroups.length === 0) return;
+  const exp = String(expectedActiveDialogId ?? "").trim();
+  let idx = 0;
+
+  const stillValid = () => {
+    if (dialogHistoryPrependGeneration !== replayGen) return false;
+    if (exp && String(activeDialogId ?? "").trim() !== exp) return false;
+    return true;
+  };
+
+  const runChunk = () => {
+    if (!stillValid()) return;
+    const list = document.getElementById("messages-list");
+    const viewport = document.getElementById("messages-viewport");
+    if (!list) return;
+    const before = list.scrollHeight;
+    const end = Math.min(idx + DIALOG_REPLAY_HEAD_PRELOAD_CHUNK_GROUPS, headGroups.length);
+    for (; idx < end; idx += 1) {
+      if (!stillValid()) return;
+      const anchor = list.firstChild;
+      replayOneDialogTurnGroup(headGroups[idx], anchor instanceof Node ? anchor : null);
+    }
+    const after = list.scrollHeight;
+    if (viewport) viewport.scrollTop += after - before;
+    if (idx < headGroups.length && stillValid()) {
+      const ric = globalThis.requestIdleCallback;
+      if (typeof ric === "function") {
+        ric(() => runChunk(), { timeout: 1200 });
+      } else {
+        globalThis.setTimeout(runChunk, 0);
+      }
+    }
+  };
+
+  const ric0 = globalThis.requestIdleCallback;
+  if (typeof ric0 === "function") {
+    ric0(() => runChunk(), { timeout: 1200 });
+  } else {
+    globalThis.setTimeout(runChunk, 0);
+  }
+}
+
+/**
+ * @param {unknown[]} turns
+ * @param {{
+ *   anchorScrollToTurnId?: string;
+ *   expectedActiveDialogId?: string;
+ * }} [replayOpts]
+ */
+function replayDialogTurnsGrouped(turns, replayOpts) {
+  dialogHistoryPrependGeneration += 1;
+  const replayGen = dialogHistoryPrependGeneration;
+  const anchorId = String(replayOpts?.anchorScrollToTurnId ?? "").trim();
+  const groups = buildDialogTurnGroups(turns);
+  if (anchorId) {
+    for (const g of groups) replayOneDialogTurnGroup(g, undefined);
+    return;
+  }
+  if (groups.length <= DIALOG_REPLAY_TAIL_GROUP_COUNT) {
+    for (const g of groups) replayOneDialogTurnGroup(g, undefined);
+    return;
+  }
+  const head = groups.slice(0, -DIALOG_REPLAY_TAIL_GROUP_COUNT);
+  const tail = groups.slice(-DIALOG_REPLAY_TAIL_GROUP_COUNT);
+  for (const g of tail) replayOneDialogTurnGroup(g, undefined);
+  scheduleDialogHistoryHeadPrepend(head, replayGen, replayOpts?.expectedActiveDialogId);
 }
 
 /**

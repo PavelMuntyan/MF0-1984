@@ -2041,11 +2041,38 @@ button.btn {
 
 /* Message history: newest at bottom, scroll up for older */
 .messages-viewport {
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
   background: hsl(var(--background));
+}
+
+.messages-viewport-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background: hsl(var(--background) / 0.42);
+}
+
+.messages-viewport-loading[hidden] {
+  display: none !important;
+}
+
+.messages-viewport-loading-spinner {
+  box-sizing: border-box;
+  width: 2.25rem;
+  height: 2.25rem;
+  flex-shrink: 0;
+  border: 3px solid hsl(var(--muted-foreground) / 0.22);
+  border-top-color: hsl(var(--muted-foreground));
+  border-radius: 50%;
+  animation: msg-assistant-thinking-spin 0.7s linear infinite;
 }
 
 .messages-inner {

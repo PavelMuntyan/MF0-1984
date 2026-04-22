@@ -302,3 +302,37 @@ export function renderThemeCards(
     );
   }
 }
+
+/**
+ * Updates theme card + folder row selection from current ids without refetching `/api/themes`
+ * (e.g. right after picking a dialog while turns are still loading).
+ *
+ * @param {HTMLElement | null} root `#dialogue-cards`
+ * @param {string | null} activeDialogId
+ * @param {string | null} [activeThemeId]
+ */
+export function syncSidebarSelectionState(root, activeDialogId, activeThemeId = null) {
+  const r = root ?? document.getElementById("dialogue-cards");
+  if (!r) return;
+  const ad = normId(activeDialogId);
+  const at = normId(activeThemeId);
+  const adSel = ad && typeof CSS !== "undefined" && typeof CSS.escape === "function" ? CSS.escape(ad) : ad;
+
+  for (const item of r.querySelectorAll(".dialog-folder-menu-item")) {
+    const id = normId(item.getAttribute("data-dialog-id"));
+    item.classList.toggle("dialog-folder-menu-item--active", Boolean(ad && id === ad));
+  }
+
+  for (const card of r.querySelectorAll(".dialog-card")) {
+    const tid = normId(card.dataset.themeId);
+    let selectedByDialog = Boolean(
+      ad && card.querySelector(`.dialog-folder-menu-item[data-dialog-id="${adSel}"]`),
+    );
+    /* Folder list is paginated — the open dialog row may not be mounted yet; still mark this theme card. */
+    if (ad && !selectedByDialog && at && tid === at) {
+      selectedByDialog = true;
+    }
+    const selectedByThemeOnly = Boolean(!ad && at && tid === at);
+    card.classList.toggle("dialog-card--selected", selectedByDialog || selectedByThemeOnly);
+  }
+}

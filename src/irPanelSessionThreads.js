@@ -54,7 +54,10 @@ export async function ensureRulesSessionClient() {
 
 /**
  * @param {{
- *   replayDialogTurnsGrouped: (turns: unknown[]) => void,
+ *   replayDialogTurnsGrouped: (
+ *     turns: unknown[],
+ *     replayOpts?: { anchorScrollToTurnId?: string; expectedActiveDialogId?: string },
+ *   ) => void,
  *   scrollMessagesToEnd: () => void,
  *   appendActivityLog: (text: string) => void,
  *   loadMemoryGraphIntoUi: () => Promise<void>,
@@ -88,7 +91,10 @@ export function createIrPanelThreadLoaders(deps) {
       if (list) revokeSentUserAttachmentBlobUrls(list);
       list?.replaceChildren();
       const turns = await fetchTurns(getDialogId());
-      replayDialogTurnsGrouped(turns);
+      const did = getDialogId();
+      replayDialogTurnsGrouped(turns, {
+        expectedActiveDialogId: did ? String(did) : undefined,
+      });
       scrollMessagesToEnd();
       if (afterReplay) await afterReplay();
     } catch (e) {
