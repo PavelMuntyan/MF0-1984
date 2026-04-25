@@ -1,6 +1,6 @@
 {
   "name": "mf-lab",
-  "version": "1.9.7",
+  "version": "1.9.8",
   "private": true,
   "type": "module",
   "scripts": {
@@ -30,8 +30,11 @@
     "better-sqlite3": "^11.8.1",
     "dompurify": "^3.3.3",
     "highlight.js": "^11.11.1",
+    "jszip": "^3.10.1",
     "marked": "^18.0.0",
+    "pdf-parse": "^2.4.5",
     "three": "^0.183.2",
-    "three-spritetext": "^1.10.0"
+    "three-spritetext": "^1.10.0",
+    "xlsx": "^0.18.5"
   }
 }

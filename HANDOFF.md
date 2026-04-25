@@ -4,19 +4,19 @@ This document is a **single-source orientation** for engineers taking over the r
 
 ---
 
-## Release notes (1.9.1)
+## Release notes (1.9.8)
 
-- AI opinion context path fix:
-  - per-speaker panel requests now pass through `buildChatOptsForModelRequest(...)`
-  - this aligns AI opinion with regular chat context assembly (thread context + Memory tree-related context layer)
-  - AI opinion no longer bypasses user-knowledge context while generating panel answers
-- Activity-log diagnostics added for AI opinion:
-  - each speaker logs context message count and whether memory-layer context is active/fallback
-  - easier runtime verification without opening developer tools
-- Keeper ingestion behavior remains enabled for AI opinion:
-  - panel turns continue feeding lightweight interest extraction and Memory tree ingest
-- Added benchmark planning artifact:
-  - `LOCOMO_BENCH_PLAN.md` documents a repeatable long-context evaluation workflow for MF0-1984.
+- Composer attachments: binary document extraction now supported before model send:
+  - server endpoint `POST /api/attachments/extract` added in `server/api.mjs`
+  - new parser module `server/attachmentTextExtract.mjs`
+  - supported formats: `.docx`, `.pdf`, `.xlsx`, `.pptx`, `.odt`, `.ods`, `.rtf`
+  - extracted text is appended to prompt context; fallback marker remains when parse fails
+- Dependencies added for document parsing:
+  - `pdf-parse`, `xlsx`, `jszip`
+- UI density and border harmonization update:
+  - key shell/panel/card/dialog borders normalized to `1px` in both light and dark themes
+  - inter-panel spacing reduced by ~3x for the main framed layout (desktop + mobile overrides)
+  - touched styles: `src/theme.css`, `src/memoryTree.css`
 
 ---
 
@@ -82,7 +82,7 @@ This document is a **single-source orientation** for engineers taking over the r
 |----------|--------|---------|
 | `API_PORT` | API process | Listen port (default **35184**). |
 | `API_SQLITE_PATH` | API process | Optional absolute/relative override for SQLite file. |
-| `API_MAX_BODY_BYTES` | API process | Cap for JSON POST/PUT bodies (default 10 MiB band-clamped). |
+| `API_MAX_BODY_BYTES` | API process | Cap for JSON POST/PUT bodies (default 48 MiB, band-clamped). |
 | `API_PATH_PREFIX` | API + logs | When behind a reverse proxy that strips a prefix; router canonicalizes paths containing `/api/`. |
 | `ACCESS_DATA_DUMP_*` | Server modules | Allowlists / limits for live Access enrichment fetches (see `server/accessDataDump.mjs`). |
 | Provider keys | Vite + Node | Prefixed keys per `vite.config.js` `envPrefix`; consumed in browser for model listing and chat proxy calls. |
@@ -110,6 +110,7 @@ Application code in `server/api.mjs` applies idempotent **PRAGMA / ALTER** guard
 The router is a **large sequential `if` chain** on normalized path + method. Notable groups:
 
 - **Health:** `GET /api/health`
+- **Attachment text extraction:** `POST /api/attachments/extract` (base64 payload, returns extracted text for supported office/document formats)
 - **Purpose sessions (JSON files + SQLite bridge):**  
   `GET /api/intro/session`, `GET /api/access/session`, `GET /api/rules/session`, `GET /api/rules/keeper-files`, `PUT /api/rules/keeper-merge`
 - **Access:**  

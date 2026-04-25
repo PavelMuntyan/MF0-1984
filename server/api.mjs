@@ -35,6 +35,7 @@ import {
   scheduleMemoryGraphKeeperIngestForChatApiTurn,
   shouldRunMemoryGraphKeeperForApiTurnBody,
 } from "./memoryGraphApiTurnKeeper.mjs";
+import { extractAttachmentText } from "./attachmentTextExtract.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "..");
@@ -2278,6 +2279,22 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === "GET" && p === "/api/health") {
       return json(res, 200, { ok: true, mfLabApi: true, port: PORT });
+    }
+
+    if (req.method === "POST" && p === "/api/attachments/extract") {
+      try {
+        const body = await readBody(req);
+        const filename = String(body?.filename ?? "").trim();
+        const mimeType = String(body?.mimeType ?? "").trim();
+        const base64 = String(body?.base64 ?? "").trim();
+        if (!filename || !base64) {
+          return json(res, 400, apiErrorBody("filename and base64 are required"));
+        }
+        const out = await extractAttachmentText({ filename, mimeType, base64 });
+        return json(res, 200, { ok: true, ...out });
+      } catch (e) {
+        return json(res, 400, apiErrorBody(e instanceof Error ? e.message : String(e)));
+      }
     }
 
     if (req.method === "GET" && p === "/api/intro/session") {

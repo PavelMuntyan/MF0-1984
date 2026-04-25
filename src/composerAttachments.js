@@ -4,6 +4,7 @@ export const MAX_COMPOSER_ATTACHMENTS = 10;
 
 const MAX_TEXT_READ_BYTES = 512 * 1024;
 const MAX_TEXT_CHARS = 120_000;
+const MAX_BINARY_PARSE_BYTES = 20 * 1024 * 1024;
 
 /** Stored in SQLite `user_attachments_json` for retry / reload (approx. limits). */
 export const MAX_PERSIST_IMAGE_BASE64_CHARS = 14_000_000;
@@ -24,6 +25,8 @@ const DOCUMENT_EXT = new Set([
   ".tsv",
   ".pages",
 ]);
+
+const EXTRACTABLE_BINARY_DOC_EXT = new Set([".pdf", ".xlsx", ".pptx", ".odt", ".ods", ".rtf", ".docx"]);
 
 const CODE_EXT = new Set([
   ".html",
@@ -155,6 +158,40 @@ function pushTextBlock(pieces, name, text) {
   pieces.push(`### ${name}\n\n${clipped}`);
 }
 
+function bytesToBase64(bytes) {
+  let bin = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(bin);
+}
+
+/**
+ * @param {File} file
+ * @returns {Promise<string>}
+ */
+async function extractBinaryDocumentTextViaApi(file) {
+  const ext = extLower(file.name);
+  if (!EXTRACTABLE_BINARY_DOC_EXT.has(ext)) return "";
+  if (file.size <= 0 || file.size > MAX_BINARY_PARSE_BYTES) return "";
+  const buf = await file.arrayBuffer();
+  const base64 = bytesToBase64(new Uint8Array(buf));
+  const res = await fetch("/api/attachments/extract", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      filename: file.name || "attachment",
+      mimeType: String(file.type || "application/octet-stream"),
+      base64,
+    }),
+  });
+  if (!res.ok) return "";
+  const data = await res.json();
+  if (!data?.ok) return "";
+  return typeof data.text === "string" ? data.text : "";
+}
+
 /**
  * @typedef {{ name: string; kind: string; mimeType?: string; imageBase64?: string; textInline?: string }} UserAttachmentPersistRow
  */
@@ -226,6 +263,33 @@ export async function prepareComposerAttachmentsForApiAndPersist(files) {
         textPieces.push(`[Attached file could not be read as text: ${name}]`);
         persistRows.push(baseRow);
       }
+    } else if (kind === "document" && EXTRACTABLE_BINARY_DOC_EXT.has(ext)) {
+      try {
+        const extracted = await extractBinaryDocumentTextViaApi(file);
+        if (extracted.trim()) {
+          pushTextBlock(textPieces, name, extracted);
+          const clipped =
+            extracted.length > MAX_TEXT_CHARS
+              ? `${extracted.slice(0, MAX_TEXT_CHARS)}\n\n[…truncated…]`
+              : extracted;
+          baseRow.mimeType =
+            String(file.type || "text/plain")
+              .split(";")[0]
+              .trim()
+              .slice(0, 128) || "text/plain";
+          if (clipped.length <= MAX_PERSIST_TEXT_INLINE_CHARS) {
+            baseRow.textInline = clipped;
+          }
+          persistRows.push(baseRow);
+          continue;
+        }
+      } catch {
+        /* fallback marker below */
+      }
+      textPieces.push(
+        `[Attached document could not be parsed: ${name}; MIME: ${file.type || "unknown"} — content not inlined.]`,
+      );
+      persistRows.push(baseRow);
     } else if (kind === "document" || kind === "code") {
       textPieces.push(
         `[Attached ${kind === "document" ? "document" : "file"} (binary or too large): ${name}; MIME: ${file.type || "unknown"} — content not inlined.]`,
