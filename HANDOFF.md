@@ -4,19 +4,34 @@ This document is a **single-source orientation** for engineers taking over the r
 
 ---
 
-## Release notes (1.9.8)
+## Release notes (1.9.9)
 
-- Composer attachments: binary document extraction now supported before model send:
-  - server endpoint `POST /api/attachments/extract` added in `server/api.mjs`
-  - new parser module `server/attachmentTextExtract.mjs`
-  - supported formats: `.docx`, `.pdf`, `.xlsx`, `.pptx`, `.odt`, `.ods`, `.rtf`
-  - extracted text is appended to prompt context; fallback marker remains when parse fails
-- Dependencies added for document parsing:
-  - `pdf-parse`, `xlsx`, `jszip`
-- UI density and border harmonization update:
-  - key shell/panel/card/dialog borders normalized to `1px` in both light and dark themes
-  - inter-panel spacing reduced by ~3x for the main framed layout (desktop + mobile overrides)
-  - touched styles: `src/theme.css`, `src/memoryTree.css`
+- Memory tree Optimization controls added to Settings (`Memory tree optimization`, 2x2 grid):
+  - `Record linkage`
+  - `Knowledge consistency`
+  - `Graph pruning`
+  - `LLM check`
+- Optimizer execution behavior:
+  - each run is launched from Settings but continues while Settings is open/hidden flow-safe (not canceled by closing the modal)
+  - while one optimizer runs, all optimizer buttons are disabled; active button shows spinner
+  - after successful completion, the same button shows a green check in the same icon slot where spinner was
+  - success checkmark persists until Settings closes
+  - all outcomes are appended to Activity log (start, no-op, applied stats, failures)
+- Implemented optimization semantics (current MVP, universal/non-domain-specific):
+  - Record linkage: deterministic duplicate candidates by normalized `(category,label)` with merge commands
+  - Knowledge consistency: resolves relation conflicts per node pair by canonical (most frequent) relation; emits edge cleanup + canonical links
+  - Graph pruning: removes self-loops and duplicate edges; performs relation-scoped transitive reduction (not hardcoded to a single relation)
+  - LLM check: model-based quality gate for high-similarity merge candidates; strict JSON command contract
+- Analytics integration:
+  - optimizer LLM usage now accepted by aux analytics endpoint with request kinds:
+    - `optimizer_record_linkage`
+    - `optimizer_knowledge_consistency`
+    - `optimizer_graph_pruning`
+    - `optimizer_llm_check`
+- Prior release context retained:
+  - document attachment extraction endpoint and parser module (`/api/attachments/extract`, `server/attachmentTextExtract.mjs`)
+  - supported parsed docs: `.docx`, `.pdf`, `.xlsx`, `.pptx`, `.odt`, `.ods`, `.rtf`
+  - 1px border + denser spacing visual update in shared UI shell
 
 ---
 
@@ -118,6 +133,8 @@ The router is a **large sequential `if` chain** on normalized path + method. Not
 - **IR panel lock:** `GET /api/ir-panel-lock` (+ related PIN flows in the same module region)
 - **Memory graph:**  
   `GET /api/memory-graph`, `POST /api/memory-graph/import`, `POST /api/memory-graph/ingest`
+- **Optimizer analytics usage ingestion:**  
+  `POST /api/analytics/aux-llm-usage` accepts optimizer request kinds (`optimizer_*`) in addition to existing memory/context kinds
 - **Project profile:**  
   `POST /api/project-profile/export` (binary `.mf` response), `POST /api/project-profile/import` (multipart buffer + metadata)
 - **Analytics:** `GET /api/analytics`
@@ -162,6 +179,11 @@ The router is a **large sequential `if` chain** on normalized path + method. Not
 - **Export:** tarball / JSON pipeline (`src/memoryTreeExport.js`, settings button).
 - **Import:** separate from project profile; success modal in `main.js`.
 - **Graph:** `3d-force-graph`, **Three.js**; intro chat can detect commands (`src/introMemoryTreeCommands.js`).
+- **Optimization UI in Settings:** four actions under Memory tree section:
+  - `Record linkage`, `Knowledge consistency`, `Graph pruning`, `LLM check`
+  - implemented in `src/main.js` with button ids `settings-memory-opt-*` and related styles in `src/theme.css`
+  - runs produce `commands` / `links` payloads and apply through existing `POST /api/memory-graph/ingest`
+  - all statuses are logged to Activity; successful runs mark the button with a persistent checkmark until Settings closes
 
 ### 7.6 Analytics dashboard
 

@@ -3776,6 +3776,23 @@ html.theme-rename-modal-open {
   min-width: 0;
 }
 
+.settings-memory-opt-title {
+  margin: 0.9rem 0 0.5rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: hsl(var(--muted-foreground));
+}
+
+.settings-memory-opt-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.settings-memory-opt-btn {
+  position: relative;
+}
+
 /* Memory tree Export: spinner while archive is building */
 #settings-memory-tree-export.settings-export-btn--busy {
   position: relative;
@@ -3825,6 +3842,50 @@ html.theme-rename-modal-open {
   border-top-color: hsl(var(--ring));
   border-radius: 50%;
   animation: settings-export-spin 0.65s linear infinite;
+}
+
+.settings-memory-opt-btn.settings-export-btn--busy {
+  position: relative;
+  pointer-events: none;
+  padding-left: 2.1rem;
+}
+
+.settings-memory-opt-btn.settings-export-btn--busy::before {
+  content: "";
+  position: absolute;
+  left: 0.65rem;
+  top: 50%;
+  width: 0.95rem;
+  height: 0.95rem;
+  box-sizing: border-box;
+  border: 2px solid hsl(var(--border));
+  border-top-color: hsl(var(--ring));
+  border-radius: 50%;
+  animation: settings-export-spin 0.65s linear infinite;
+}
+
+.settings-memory-opt-btn.settings-memory-opt-btn--ok::after {
+  content: "✓";
+  position: absolute;
+  left: 0.65rem;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 0.92rem;
+  height: 0.92rem;
+  border-radius: 999px;
+  border: 1px solid #22c55e;
+  background: transparent;
+  color: #22c55e;
+  font-size: 0.62rem;
+  line-height: 1;
+  font-weight: 700;
+}
+
+.settings-memory-opt-btn.settings-memory-opt-btn--ok {
+  padding-left: 2.1rem;
 }
 
 /* Post-import confirmation (above Settings); dismiss with OK only — Escape is swallowed while open */

@@ -79,6 +79,10 @@ const AUX_LLM_USAGE_KINDS = new Set([
   "memory_graph_normalize",
   "intro_graph_extract",
   "ai_talks_round",
+  "optimizer_record_linkage",
+  "optimizer_knowledge_consistency",
+  "optimizer_graph_pruning",
+  "optimizer_llm_check",
 ]);
 
 function applyContextEngineMigration(database) {

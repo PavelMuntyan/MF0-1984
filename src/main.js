@@ -764,6 +764,325 @@ function clearProfileImportSuccessFlash() {
   }
 }
 
+const MEMORY_OPT_MAX_COMMANDS = 50;
+const MEMORY_OPT_MAX_LLM_PAIRS = 24;
+
+function memoryOptNormText(value) {
+  return String(value ?? "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function memoryOptJaroWinkler(a, b) {
+  const s1 = String(a ?? "");
+  const s2 = String(b ?? "");
+  if (!s1 && !s2) return 1;
+  if (!s1 || !s2) return 0;
+  if (s1 === s2) return 1;
+  const l1 = s1.length;
+  const l2 = s2.length;
+  const maxDist = Math.max(0, Math.floor(Math.max(l1, l2) / 2) - 1);
+  const m1 = new Array(l1).fill(false);
+  const m2 = new Array(l2).fill(false);
+  let matches = 0;
+  for (let i = 0; i < l1; i += 1) {
+    const st = Math.max(0, i - maxDist);
+    const en = Math.min(i + maxDist + 1, l2);
+    for (let j = st; j < en; j += 1) {
+      if (m2[j] || s1[i] !== s2[j]) continue;
+      m1[i] = true;
+      m2[j] = true;
+      matches += 1;
+      break;
+    }
+  }
+  if (matches === 0) return 0;
+  let t = 0;
+  for (let i = 0, k = 0; i < l1; i += 1) {
+    if (!m1[i]) continue;
+    while (!m2[k]) k += 1;
+    if (s1[i] !== s2[k]) t += 1;
+    k += 1;
+  }
+  const transpositions = t / 2;
+  const jaro = (matches / l1 + matches / l2 + (matches - transpositions) / matches) / 3;
+  let prefix = 0;
+  for (let i = 0; i < Math.min(4, l1, l2); i += 1) {
+    if (s1[i] !== s2[i]) break;
+    prefix += 1;
+  }
+  return jaro + prefix * 0.1 * (1 - jaro);
+}
+
+function memoryOptNodeByIdMap(raw) {
+  const m = new Map();
+  const nodes = Array.isArray(raw?.nodes) ? raw.nodes : [];
+  for (const n of nodes) {
+    const id = String(n?.id ?? "").trim();
+    if (!id) continue;
+    m.set(id, {
+      id,
+      category: String(n?.category ?? "").trim(),
+      label: String(n?.label ?? "").trim(),
+    });
+  }
+  return m;
+}
+
+function memoryOptPushDeleteEdge(commands, fromNode, toNode, relation) {
+  if (!fromNode || !toNode || commands.length >= MEMORY_OPT_MAX_COMMANDS) return false;
+  commands.push({
+    op: "deleteEdge",
+    from: { category: fromNode.category, label: fromNode.label },
+    to: { category: toNode.category, label: toNode.label },
+    relation: String(relation ?? "").trim().slice(0, 200),
+  });
+  return true;
+}
+
+function buildRecordLinkageOptimizationPayload(rawGraph) {
+  const nodes = Array.isArray(rawGraph?.nodes) ? rawGraph.nodes : [];
+  const byGroup = new Map();
+  for (const n of nodes) {
+    const id = String(n?.id ?? "").trim();
+    const category = String(n?.category ?? "").trim();
+    const label = String(n?.label ?? "").trim();
+    const key = memoryOptNormText(label);
+    if (!id || !category || !label || !key) continue;
+    const gk = `${category}::${key}`;
+    if (!byGroup.has(gk)) byGroup.set(gk, []);
+    byGroup.get(gk).push({ id, category, label });
+  }
+  const commands = [];
+  let mergeCount = 0;
+  for (const group of byGroup.values()) {
+    if (group.length < 2) continue;
+    const sorted = [...group].sort((a, b) => a.label.localeCompare(b.label));
+    const into = sorted[0];
+    for (const from of sorted.slice(1)) {
+      if (commands.length >= MEMORY_OPT_MAX_COMMANDS) break;
+      commands.push({
+        op: "mergeNodes",
+        from: { category: from.category, label: from.label },
+        into: { category: into.category, label: into.label },
+      });
+      mergeCount += 1;
+    }
+    if (commands.length >= MEMORY_OPT_MAX_COMMANDS) break;
+  }
+  return {
+    payload: { entities: [], links: [], commands },
+    summary: `Record linkage: ${mergeCount} merge command(s) prepared.`,
+  };
+}
+
+function buildKnowledgeConsistencyOptimizationPayload(rawGraph) {
+  const nodesById = memoryOptNodeByIdMap(rawGraph);
+  const links = Array.isArray(rawGraph?.links) ? rawGraph.links : [];
+  const commands = [];
+  let relationFixes = 0;
+  const pairBuckets = new Map();
+  for (const ln of links) {
+    const fromNode = nodesById.get(String(ln?.source ?? "").trim());
+    const toNode = nodesById.get(String(ln?.target ?? "").trim());
+    const relation = String(ln?.label ?? "").trim().slice(0, 200) || "related";
+    if (!fromNode || !toNode) continue;
+    const pk = `${fromNode.id}\u0000${toNode.id}`;
+    if (!pairBuckets.has(pk)) {
+      pairBuckets.set(pk, {
+        fromNode,
+        toNode,
+        counts: new Map(),
+      });
+    }
+    const bucket = pairBuckets.get(pk);
+    bucket.counts.set(relation, (bucket.counts.get(relation) ?? 0) + 1);
+  }
+  const linksToAdd = [];
+  for (const bucket of pairBuckets.values()) {
+    const entries = [...bucket.counts.entries()].sort((a, b) => b[1] - a[1]);
+    if (entries.length === 0) continue;
+    const canonicalRelation = String(entries[0][0] ?? "related").trim() || "related";
+    if (entries.length > 1) {
+      for (const [rel] of entries.slice(1)) {
+        if (memoryOptPushDeleteEdge(commands, bucket.fromNode, bucket.toNode, rel)) {
+          relationFixes += 1;
+        }
+      }
+    }
+    linksToAdd.push({
+      from: { category: bucket.fromNode.category, label: bucket.fromNode.label },
+      to: { category: bucket.toNode.category, label: bucket.toNode.label },
+      relation: canonicalRelation,
+    });
+    if (commands.length >= MEMORY_OPT_MAX_COMMANDS) break;
+  }
+  return {
+    payload: { entities: [], links: linksToAdd, commands },
+    summary: `Knowledge consistency: ${relationFixes} relation conflict fix(es), ${linksToAdd.length} canonical edge(s).`,
+  };
+}
+
+function buildGraphPruningOptimizationPayload(rawGraph) {
+  const nodesById = memoryOptNodeByIdMap(rawGraph);
+  const links = Array.isArray(rawGraph?.links) ? rawGraph.links : [];
+  const commands = [];
+  let duplicateEdges = 0;
+  let selfLoops = 0;
+  let transitiveDrops = 0;
+  const seen = new Set();
+  const relationEdges = [];
+  for (const ln of links) {
+    const fromNode = nodesById.get(String(ln?.source ?? "").trim());
+    const toNode = nodesById.get(String(ln?.target ?? "").trim());
+    const relation = String(ln?.label ?? "").trim().slice(0, 200) || "related";
+    if (!fromNode || !toNode) continue;
+    if (fromNode.id === toNode.id) {
+      if (memoryOptPushDeleteEdge(commands, fromNode, toNode, relation)) selfLoops += 1;
+      continue;
+    }
+    const key = `${fromNode.id}\u0000${toNode.id}\u0000${relation}`;
+    if (seen.has(key)) {
+      if (memoryOptPushDeleteEdge(commands, fromNode, toNode, relation)) duplicateEdges += 1;
+      continue;
+    }
+    seen.add(key);
+    relationEdges.push({ fromNode, toNode, relation });
+  }
+  if (commands.length < MEMORY_OPT_MAX_COMMANDS && relationEdges.length > 1) {
+    const byRelation = new Map();
+    for (const e of relationEdges) {
+      if (!byRelation.has(e.relation)) byRelation.set(e.relation, []);
+      byRelation.get(e.relation).push(e);
+    }
+    for (const relGroup of byRelation.values()) {
+      if (relGroup.length < 2) continue;
+      const byFrom = new Map();
+      for (const e of relGroup) {
+        if (!byFrom.has(e.fromNode.id)) byFrom.set(e.fromNode.id, []);
+        byFrom.get(e.fromNode.id).push(e.toNode.id);
+      }
+      const edgeSet = new Set(relGroup.map((e) => `${e.fromNode.id}\u0000${e.toNode.id}`));
+      for (const ab of relGroup) {
+        const mids = byFrom.get(ab.toNode.id) ?? [];
+      for (const cId of mids) {
+        const directKey = `${ab.fromNode.id}\u0000${cId}`;
+        if (!edgeSet.has(directKey)) continue;
+        const cNode = nodesById.get(cId);
+        if (!cNode) continue;
+        if (memoryOptPushDeleteEdge(commands, ab.fromNode, cNode, ab.relation)) {
+          transitiveDrops += 1;
+        }
+        if (commands.length >= MEMORY_OPT_MAX_COMMANDS) break;
+      }
+        if (commands.length >= MEMORY_OPT_MAX_COMMANDS) break;
+      }
+      if (commands.length >= MEMORY_OPT_MAX_COMMANDS) break;
+    }
+  }
+  return {
+    payload: { entities: [], links: [], commands },
+    summary:
+      `Graph pruning: ${duplicateEdges} duplicate edge(s), ${selfLoops} self-loop(s), ` +
+      `${transitiveDrops} transitive edge(s) removed.`,
+  };
+}
+
+function sanitizeLlmOptimizationCommands(raw, candidateKeySet) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const c of raw) {
+    if (!c || typeof c !== "object") continue;
+    if (String(c.op ?? "").trim() !== "mergeNodes") continue;
+    const from = c.from;
+    const into = c.into;
+    if (!from || !into || typeof from !== "object" || typeof into !== "object") continue;
+    const fc = String(from.category ?? "").trim();
+    const fl = String(from.label ?? "").trim().slice(0, 200);
+    const tc = String(into.category ?? "").trim();
+    const tl = String(into.label ?? "").trim().slice(0, 200);
+    if (!fc || !fl || !tc || !tl) continue;
+    const k1 = `${fc}\u0000${fl}\u0000${tc}\u0000${tl}`;
+    const k2 = `${tc}\u0000${tl}\u0000${fc}\u0000${fl}`;
+    if (!candidateKeySet.has(k1) && !candidateKeySet.has(k2)) continue;
+    out.push({
+      op: "mergeNodes",
+      from: { category: fc, label: fl },
+      into: { category: tc, label: tl },
+    });
+    if (out.length >= MEMORY_OPT_MAX_COMMANDS) break;
+  }
+  return out;
+}
+
+function parseLlmOptimizationJson(text) {
+  let s = String(text ?? "").trim();
+  const fenced = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced) s = fenced[1].trim();
+  return JSON.parse(s);
+}
+
+async function buildLlmCheckOptimizationPayload(rawGraph, providerId, apiKey) {
+  const nodes = Array.isArray(rawGraph?.nodes) ? rawGraph.nodes : [];
+  const pairs = [];
+  for (let i = 0; i < nodes.length; i += 1) {
+    const a = nodes[i];
+    const ac = String(a?.category ?? "").trim();
+    const al = String(a?.label ?? "").trim();
+    const an = memoryOptNormText(al);
+    if (!ac || !al || !an) continue;
+    for (let j = i + 1; j < nodes.length; j += 1) {
+      const b = nodes[j];
+      const bc = String(b?.category ?? "").trim();
+      const bl = String(b?.label ?? "").trim();
+      const bn = memoryOptNormText(bl);
+      if (!bc || !bl || !bn || ac !== bc) continue;
+      const sim = memoryOptJaroWinkler(an, bn);
+      if (sim < 0.94) continue;
+      pairs.push({
+        from: { category: ac, label: al },
+        into: { category: bc, label: bl },
+        score: Number(sim.toFixed(4)),
+      });
+      if (pairs.length >= MEMORY_OPT_MAX_LLM_PAIRS) break;
+    }
+    if (pairs.length >= MEMORY_OPT_MAX_LLM_PAIRS) break;
+  }
+  if (pairs.length === 0) {
+    return {
+      payload: { entities: [], links: [], commands: [] },
+      summary: "LLM check: no high-similarity candidates found.",
+      usage: null,
+    };
+  }
+  const candidateKeySet = new Set(
+    pairs.map(
+      (p) =>
+        `${p.from.category}\u0000${p.from.label}\u0000${p.into.category}\u0000${p.into.label}`,
+    ),
+  );
+  const systemInstruction =
+    "You are a strict graph quality gate. " +
+    "Input contains candidate duplicate node pairs from a memory graph. " +
+    "Return JSON only with shape {\"commands\":[{\"op\":\"mergeNodes\",\"from\":{\"category\":\"...\",\"label\":\"...\"},\"into\":{\"category\":\"...\",\"label\":\"...\"}}]}. " +
+    "Choose merges only when two labels clearly denote the same real-world entity. " +
+    "If unsure, do not merge.";
+  const userPayload = JSON.stringify({ candidates: pairs });
+  const { text, usage } = await completeChatMessage(providerId, userPayload, apiKey, {
+    systemInstruction,
+  });
+  const parsed = parseLlmOptimizationJson(text);
+  const commands = sanitizeLlmOptimizationCommands(parsed?.commands, candidateKeySet);
+  return {
+    payload: { entities: [], links: [], commands },
+    summary: `LLM check: ${pairs.length} candidate pair(s), ${commands.length} merge command(s) approved.`,
+    usage: usage ?? null,
+  };
+}
+
 /** Centered Settings dialog (UI shell only; no Escape close — unlike Activity / Favorites). */
 function initSettingsModal() {
   const modal = document.getElementById("settings-modal");
@@ -956,6 +1275,9 @@ function initSettingsModal() {
       memoryTreeExportAbort = null;
       memoryTreeImportAbort?.abort();
       memoryTreeImportAbort = null;
+      for (const btn of memoryOptButtons) {
+        btn.classList.remove("settings-memory-opt-btn--ok");
+      }
       if (settingsAiLoading instanceof HTMLElement) {
         settingsAiLoading.hidden = true;
       }
@@ -1073,6 +1395,129 @@ function initSettingsModal() {
       })();
     });
   }
+
+  const memoryOptRecordLinkageBtn = document.getElementById("settings-memory-opt-record-linkage");
+  const memoryOptKnowledgeBtn = document.getElementById("settings-memory-opt-knowledge-consistency");
+  const memoryOptPruningBtn = document.getElementById("settings-memory-opt-graph-pruning");
+  const memoryOptLlmCheckBtn = document.getElementById("settings-memory-opt-llm-check");
+  const memoryOptButtons = [
+    memoryOptRecordLinkageBtn,
+    memoryOptKnowledgeBtn,
+    memoryOptPruningBtn,
+    memoryOptLlmCheckBtn,
+  ].filter((x) => x instanceof HTMLButtonElement);
+  let memoryOptimizationRunning = false;
+  /** @type {string} */
+  let memoryOptimizationActiveId = "";
+
+  function syncMemoryOptimizationButtons() {
+    for (const btn of memoryOptButtons) {
+      const isActive = memoryOptimizationRunning && btn.id === memoryOptimizationActiveId;
+      if (isActive) {
+        btn.classList.add("settings-export-btn--busy");
+        btn.setAttribute("aria-busy", "true");
+      } else {
+        btn.classList.remove("settings-export-btn--busy");
+        btn.removeAttribute("aria-busy");
+      }
+      btn.disabled = memoryOptimizationRunning;
+    }
+  }
+
+  function showMemoryOptimizationSuccess(buttonId) {
+    for (const btn of memoryOptButtons) {
+      if (btn.id === buttonId) btn.classList.add("settings-memory-opt-btn--ok");
+    }
+  }
+
+  async function runMemoryOptimization(kind, buttonId) {
+    if (memoryOptimizationRunning) return;
+    const activeBtn = memoryOptButtons.find((b) => b.id === buttonId);
+    activeBtn?.classList.remove("settings-memory-opt-btn--ok");
+    memoryOptimizationRunning = true;
+    memoryOptimizationActiveId = buttonId;
+    syncMemoryOptimizationButtons();
+    appendActivityLog(`Memory tree optimization: ${kind} started.`);
+    try {
+      const rawGraph = await fetchMemoryGraphFromApi();
+      /** @type {{ payload: {entities: unknown[], links: unknown[], commands: unknown[]}, summary: string, usage?: { promptTokens: number, completionTokens: number, totalTokens: number } | null }} */
+      let out;
+      if (kind === "record linkage") {
+        out = buildRecordLinkageOptimizationPayload(rawGraph);
+      } else if (kind === "knowledge consistency") {
+        out = buildKnowledgeConsistencyOptimizationPayload(rawGraph);
+      } else if (kind === "graph pruning") {
+        out = buildGraphPruningOptimizationPayload(rawGraph);
+      } else {
+        const keeperPick = pickKeeperProviderWithKey();
+        const pid = String(keeperPick.providerId ?? "").trim();
+        const key = String(keeperPick.apiKey ?? "").trim();
+        if (!pid || !key) {
+          throw new Error("LLM check requires at least one model API key in .env");
+        }
+        out = await buildLlmCheckOptimizationPayload(rawGraph, pid, key);
+        if (out.usage && Number(out.usage.totalTokens) > 0) {
+          await recordAuxLlmUsage({
+            provider_id: pid,
+            request_kind: "optimizer_llm_check",
+            llm_prompt_tokens: out.usage.promptTokens,
+            llm_completion_tokens: out.usage.completionTokens,
+            llm_total_tokens: out.usage.totalTokens,
+          });
+        }
+      }
+      const commandsCount = Array.isArray(out.payload?.commands) ? out.payload.commands.length : 0;
+      const linksCount = Array.isArray(out.payload?.links) ? out.payload.links.length : 0;
+      if (commandsCount === 0 && linksCount === 0) {
+        appendActivityLog(`${out.summary} No graph changes to apply.`);
+        showMemoryOptimizationSuccess(buttonId);
+        return;
+      }
+      const ingest = await ingestMemoryGraphPayload(out.payload);
+      const refreshed = await fetchMemoryGraphFromApi();
+      setMemoryGraphData(enrichMemoryGraphFromApi(refreshed));
+      const cmdApplied = ingest?.commandsApplied
+        ? Object.entries(ingest.commandsApplied)
+            .filter(([, v]) => Number(v) > 0)
+            .map(([k, v]) => `${k}: ${v}`)
+            .join(", ")
+        : "";
+      appendActivityLog(
+        `${out.summary} Applied (upserted: ${Number(ingest?.upsertedEntities) || 0}, inserted links: ${Number(ingest?.insertedLinks) || 0}${cmdApplied ? `; commands ${cmdApplied}` : ""}).`,
+      );
+      showMemoryOptimizationSuccess(buttonId);
+    } catch (e) {
+      appendActivityLog(
+        `Memory tree optimization (${kind}) failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    } finally {
+      memoryOptimizationRunning = false;
+      memoryOptimizationActiveId = "";
+      syncMemoryOptimizationButtons();
+    }
+  }
+
+  if (memoryOptRecordLinkageBtn instanceof HTMLButtonElement) {
+    memoryOptRecordLinkageBtn.addEventListener("click", () => {
+      void runMemoryOptimization("record linkage", memoryOptRecordLinkageBtn.id);
+    });
+  }
+  if (memoryOptKnowledgeBtn instanceof HTMLButtonElement) {
+    memoryOptKnowledgeBtn.addEventListener("click", () => {
+      void runMemoryOptimization("knowledge consistency", memoryOptKnowledgeBtn.id);
+    });
+  }
+  if (memoryOptPruningBtn instanceof HTMLButtonElement) {
+    memoryOptPruningBtn.addEventListener("click", () => {
+      void runMemoryOptimization("graph pruning", memoryOptPruningBtn.id);
+    });
+  }
+  if (memoryOptLlmCheckBtn instanceof HTMLButtonElement) {
+    memoryOptLlmCheckBtn.addEventListener("click", () => {
+      void runMemoryOptimization("llm check", memoryOptLlmCheckBtn.id);
+    });
+  }
+  syncMemoryOptimizationButtons();
 
   if (
     projectProfileExportModal instanceof HTMLElement &&
