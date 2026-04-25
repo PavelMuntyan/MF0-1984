@@ -126,9 +126,8 @@ Settings → **Project Cache** no longer shows a single combined **“files & pi
 
 ## Release notes (1.9.9)
 
-- Memory tree Optimization controls added to Settings (`Memory tree optimization`, 2x2 grid):
+- Memory tree Optimization controls added to Settings (`Memory tree optimization`, 2×2 grid):
   - `Record linkage`
-  - `Knowledge consistency`
   - `Graph pruning`
   - `LLM check`
 - Optimizer execution behavior:
@@ -139,13 +138,11 @@ Settings → **Project Cache** no longer shows a single combined **“files & pi
   - all outcomes are appended to Activity log (start, no-op, applied stats, failures)
 - Implemented optimization semantics (current MVP, universal/non-domain-specific):
   - Record linkage: deterministic duplicate candidates by normalized `(category,label)` with merge commands
-  - Knowledge consistency: resolves relation conflicts per node pair by canonical (most frequent) relation; emits edge cleanup + canonical links
   - Graph pruning: removes self-loops and duplicate edges; performs relation-scoped transitive reduction (not hardcoded to a single relation)
   - LLM check: model-based quality gate for high-similarity merge candidates; strict JSON command contract
 - Analytics integration:
   - optimizer LLM usage now accepted by aux analytics endpoint with request kinds:
     - `optimizer_record_linkage`
-    - `optimizer_knowledge_consistency`
     - `optimizer_graph_pruning`
     - `optimizer_llm_check`
 - Prior release context retained:
@@ -311,8 +308,8 @@ The router is a **large sequential `if` chain** on normalized path + method. Not
 - **Export:** tarball / JSON pipeline (`src/memoryTreeExport.js`, settings button).
 - **Import:** separate from project profile; success modal in `main.js`.
 - **Graph:** `3d-force-graph`, **Three.js**; intro chat can detect commands (`src/introMemoryTreeCommands.js`).
-- **Optimization UI in Settings:** four actions under Memory tree section:
-  - `Record linkage`, `Knowledge consistency`, `Graph pruning`, `LLM check`
+- **Optimization UI in Settings:** actions under Memory tree section:
+  - `Record linkage`, `Graph pruning`, `LLM check`, `Interests reconnect`
   - implemented in `src/main.js` with button ids `settings-memory-opt-*` and related styles in `src/theme.css`
   - runs produce `commands` / `links` payloads and apply through existing `POST /api/memory-graph/ingest`
   - all statuses are logged to Activity; successful runs mark the button with a persistent checkmark until Settings closes

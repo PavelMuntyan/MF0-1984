@@ -35,6 +35,7 @@ import { setTheme } from "./theme.js";
 import {
   closeMemoryTree,
   enrichMemoryGraphFromApi,
+  findMemoryGraphHubPairFromProfileEdge,
   initMemoryTree,
   memoryTreeCoversIntroChat,
   openMemoryTree,
@@ -768,6 +769,8 @@ function clearProfileImportSuccessFlash() {
 
 const MEMORY_OPT_MAX_COMMANDS = 50;
 const MEMORY_OPT_MAX_LLM_PAIRS = 24;
+/** Merges + hub links in one Interests reconnect run (may exceed merge-only cap). */
+const MEMORY_OPT_MAX_INTERESTS_RECONNECT_OPS = 200;
 
 function memoryOptNormText(value) {
   return String(value ?? "")
@@ -881,53 +884,6 @@ function buildRecordLinkageOptimizationPayload(rawGraph) {
   };
 }
 
-function buildKnowledgeConsistencyOptimizationPayload(rawGraph) {
-  const nodesById = memoryOptNodeByIdMap(rawGraph);
-  const links = Array.isArray(rawGraph?.links) ? rawGraph.links : [];
-  const commands = [];
-  let relationFixes = 0;
-  const pairBuckets = new Map();
-  for (const ln of links) {
-    const fromNode = nodesById.get(String(ln?.source ?? "").trim());
-    const toNode = nodesById.get(String(ln?.target ?? "").trim());
-    const relation = String(ln?.label ?? "").trim().slice(0, 200) || "related";
-    if (!fromNode || !toNode) continue;
-    const pk = `${fromNode.id}\u0000${toNode.id}`;
-    if (!pairBuckets.has(pk)) {
-      pairBuckets.set(pk, {
-        fromNode,
-        toNode,
-        counts: new Map(),
-      });
-    }
-    const bucket = pairBuckets.get(pk);
-    bucket.counts.set(relation, (bucket.counts.get(relation) ?? 0) + 1);
-  }
-  const linksToAdd = [];
-  for (const bucket of pairBuckets.values()) {
-    const entries = [...bucket.counts.entries()].sort((a, b) => b[1] - a[1]);
-    if (entries.length === 0) continue;
-    const canonicalRelation = String(entries[0][0] ?? "related").trim() || "related";
-    if (entries.length > 1) {
-      for (const [rel] of entries.slice(1)) {
-        if (memoryOptPushDeleteEdge(commands, bucket.fromNode, bucket.toNode, rel)) {
-          relationFixes += 1;
-        }
-      }
-    }
-    linksToAdd.push({
-      from: { category: bucket.fromNode.category, label: bucket.fromNode.label },
-      to: { category: bucket.toNode.category, label: bucket.toNode.label },
-      relation: canonicalRelation,
-    });
-    if (commands.length >= MEMORY_OPT_MAX_COMMANDS) break;
-  }
-  return {
-    payload: { entities: [], links: linksToAdd, commands },
-    summary: `Knowledge consistency: ${relationFixes} relation conflict fix(es), ${linksToAdd.length} canonical edge(s).`,
-  };
-}
-
 function buildGraphPruningOptimizationPayload(rawGraph) {
   const nodesById = memoryOptNodeByIdMap(rawGraph);
   const links = Array.isArray(rawGraph?.links) ? rawGraph.links : [];
@@ -990,6 +946,140 @@ function buildGraphPruningOptimizationPayload(rawGraph) {
     summary:
       `Graph pruning: ${duplicateEdges} duplicate edge(s), ${selfLoops} self-loop(s), ` +
       `${transitiveDrops} transitive edge(s) removed.`,
+  };
+}
+
+/**
+ * @param {Array<{ source?: string, target?: string }>} rawLinks
+ * @param {string} idA
+ * @param {string} idB
+ */
+function memoryGraphUndirectedEdgeExists(rawLinks, idA, idB) {
+  const a = String(idA ?? "").trim();
+  const b = String(idB ?? "").trim();
+  if (!a || !b) return false;
+  for (const ln of rawLinks) {
+    const s = String(ln?.source ?? "").trim();
+    const t = String(ln?.target ?? "").trim();
+    if ((s === a && t === b) || (s === b && t === a)) return true;
+  }
+  return false;
+}
+
+/**
+ * Re-links Interests-category topic nodes that have **no** incident edges to the topic hub
+ * (identified by the People↔Interests `profile and interests` edge). If another node in the
+ * same normalized-label group already has edges, merges orphans into that canonical node
+ * instead of attaching duplicates to the hub.
+ * @param {{ nodes?: unknown[], links?: unknown[] }} rawGraph
+ */
+function buildInterestsOrphanReconnectPayload(rawGraph) {
+  const nodes = Array.isArray(rawGraph?.nodes) ? rawGraph.nodes : [];
+  const links = Array.isArray(rawGraph?.links) ? rawGraph.links : [];
+  const { interestsHubId } = findMemoryGraphHubPairFromProfileEdge(nodes, links);
+  if (!interestsHubId) {
+    return {
+      payload: { entities: [], links: [], commands: [] },
+      summary:
+        "Interests reconnect: no topic hub found (add a People↔Interests edge with relation “profile and interests”).",
+    };
+  }
+  const nodesById = memoryOptNodeByIdMap(rawGraph);
+  const hubNode = nodesById.get(interestsHubId);
+  if (!hubNode || hubNode.category !== "Interests" || !hubNode.label) {
+    return {
+      payload: { entities: [], links: [], commands: [] },
+      summary: "Interests reconnect: hub node missing or invalid.",
+    };
+  }
+
+  /** @type {Map<string, number>} */
+  const degree = new Map();
+  for (const ln of links) {
+    const s = String(ln?.source ?? "").trim();
+    const t = String(ln?.target ?? "").trim();
+    if (!s || !t) continue;
+    degree.set(s, (degree.get(s) ?? 0) + 1);
+    degree.set(t, (degree.get(t) ?? 0) + 1);
+  }
+
+  /** @type {Array<{ id: string, category: string, label: string, norm: string }>} */
+  const interestTopics = [];
+  for (const n of nodes) {
+    const id = String(n?.id ?? "").trim();
+    const category = String(n?.category ?? "").trim();
+    const label = String(n?.label ?? "").trim();
+    if (!id || category !== "Interests" || !label) continue;
+    if (id === interestsHubId) continue;
+    const norm = memoryOptNormText(label);
+    interestTopics.push({ id, category, label, norm: norm || label });
+  }
+
+  /** @type {Map<string, typeof interestTopics>} */
+  const byNorm = new Map();
+  for (const row of interestTopics) {
+    if (!byNorm.has(row.norm)) byNorm.set(row.norm, []);
+    byNorm.get(row.norm).push(row);
+  }
+
+  const linksOut = [];
+  const commands = [];
+  let merges = 0;
+  let hubLinks = 0;
+  let mergeCapHit = false;
+  let totalCapHit = false;
+
+  /** Phase 1: merges (server applies max ${MEMORY_OPT_MAX_COMMANDS} graph commands per ingest). */
+  mergePass: for (const [, members] of byNorm) {
+    const connected = members.filter((m) => (degree.get(m.id) ?? 0) > 0);
+    const orphans = members.filter((m) => (degree.get(m.id) ?? 0) === 0);
+    if (orphans.length === 0 || connected.length === 0) continue;
+    const canonical = [...connected].sort((a, b) =>
+      a.label.localeCompare(b.label, undefined, { sensitivity: "base" }),
+    )[0];
+    for (const o of orphans) {
+      if (o.id === canonical.id) continue;
+      if (commands.length >= MEMORY_OPT_MAX_COMMANDS) {
+        mergeCapHit = true;
+        break mergePass;
+      }
+      commands.push({
+        op: "mergeNodes",
+        from: { category: o.category, label: o.label },
+        into: { category: canonical.category, label: canonical.label },
+      });
+      merges += 1;
+    }
+  }
+
+  /** Phase 2: link isolated topics to hub (`related`, same direction as existing topic→hub edges). */
+  linkPass: for (const [, members] of byNorm) {
+    const connected = members.filter((m) => (degree.get(m.id) ?? 0) > 0);
+    const orphans = members.filter((m) => (degree.get(m.id) ?? 0) === 0);
+    if (orphans.length === 0) continue;
+    if (connected.length > 0) continue;
+    for (const o of orphans) {
+      if (linksOut.length + commands.length >= MEMORY_OPT_MAX_INTERESTS_RECONNECT_OPS) {
+        totalCapHit = true;
+        break linkPass;
+      }
+      if (memoryGraphUndirectedEdgeExists(links, o.id, interestsHubId)) continue;
+      linksOut.push({
+        from: { category: o.category, label: o.label },
+        to: { category: hubNode.category, label: hubNode.label },
+        relation: "related",
+      });
+      hubLinks += 1;
+    }
+  }
+
+  let tail = ".";
+  if (mergeCapHit) tail = ` (merge cap ${MEMORY_OPT_MAX_COMMANDS}; re-run to apply more merges).`;
+  else if (totalCapHit) tail = ` (link batch cap ${MEMORY_OPT_MAX_INTERESTS_RECONNECT_OPS}; re-run if needed).`;
+
+  return {
+    payload: { entities: [], links: linksOut, commands },
+    summary: `Interests reconnect: ${merges} merge(s) for normalized-label duplicates, ${hubLinks} hub link(s)${tail}`,
   };
 }
 
@@ -1508,14 +1598,14 @@ function initSettingsModal() {
   }
 
   const memoryOptRecordLinkageBtn = document.getElementById("settings-memory-opt-record-linkage");
-  const memoryOptKnowledgeBtn = document.getElementById("settings-memory-opt-knowledge-consistency");
   const memoryOptPruningBtn = document.getElementById("settings-memory-opt-graph-pruning");
   const memoryOptLlmCheckBtn = document.getElementById("settings-memory-opt-llm-check");
+  const memoryOptInterestsReconnectBtn = document.getElementById("settings-memory-opt-interests-reconnect");
   const memoryOptButtons = [
     memoryOptRecordLinkageBtn,
-    memoryOptKnowledgeBtn,
     memoryOptPruningBtn,
     memoryOptLlmCheckBtn,
+    memoryOptInterestsReconnectBtn,
   ].filter((x) => x instanceof HTMLButtonElement);
   let memoryOptimizationRunning = false;
   /** @type {string} */
@@ -1555,10 +1645,10 @@ function initSettingsModal() {
       let out;
       if (kind === "record linkage") {
         out = buildRecordLinkageOptimizationPayload(rawGraph);
-      } else if (kind === "knowledge consistency") {
-        out = buildKnowledgeConsistencyOptimizationPayload(rawGraph);
       } else if (kind === "graph pruning") {
         out = buildGraphPruningOptimizationPayload(rawGraph);
+      } else if (kind === "interests reconnect") {
+        out = buildInterestsOrphanReconnectPayload(rawGraph);
       } else {
         const keeperPick = pickKeeperProviderWithKey();
         const pid = String(keeperPick.providerId ?? "").trim();
@@ -1613,11 +1703,6 @@ function initSettingsModal() {
       void runMemoryOptimization("record linkage", memoryOptRecordLinkageBtn.id);
     });
   }
-  if (memoryOptKnowledgeBtn instanceof HTMLButtonElement) {
-    memoryOptKnowledgeBtn.addEventListener("click", () => {
-      void runMemoryOptimization("knowledge consistency", memoryOptKnowledgeBtn.id);
-    });
-  }
   if (memoryOptPruningBtn instanceof HTMLButtonElement) {
     memoryOptPruningBtn.addEventListener("click", () => {
       void runMemoryOptimization("graph pruning", memoryOptPruningBtn.id);
@@ -1626,6 +1711,11 @@ function initSettingsModal() {
   if (memoryOptLlmCheckBtn instanceof HTMLButtonElement) {
     memoryOptLlmCheckBtn.addEventListener("click", () => {
       void runMemoryOptimization("llm check", memoryOptLlmCheckBtn.id);
+    });
+  }
+  if (memoryOptInterestsReconnectBtn instanceof HTMLButtonElement) {
+    memoryOptInterestsReconnectBtn.addEventListener("click", () => {
+      void runMemoryOptimization("interests reconnect", memoryOptInterestsReconnectBtn.id);
     });
   }
   syncMemoryOptimizationButtons();

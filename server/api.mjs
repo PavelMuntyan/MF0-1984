@@ -84,7 +84,6 @@ const AUX_LLM_USAGE_KINDS = new Set([
   "voice_transcription",
   "voice_reply_tts",
   "optimizer_record_linkage",
-  "optimizer_knowledge_consistency",
   "optimizer_graph_pruning",
   "optimizer_llm_check",
   "theme_dialog_title",

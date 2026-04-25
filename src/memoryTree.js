@@ -246,8 +246,10 @@ function memoryGraphHubLabelNorm(s) {
 /**
  * Graph anchor nodes only from a fixed edge type from the API (no label-language matching).
  * Edge relation "profile and interests": People (profile) ↔ Interests (topic hub).
+ * @param {Array<{ id?: string, category?: string, label?: string }>} rawNodes
+ * @param {Array<{ source?: string, target?: string, label?: string }>} rawLinks
  */
-function findMemoryGraphHubPairFromProfileEdge(rawNodes, rawLinks) {
+export function findMemoryGraphHubPairFromProfileEdge(rawNodes, rawLinks) {
   const wantRel = "profile and interests";
   for (const l of rawLinks) {
     if (memoryGraphHubLabelNorm(l.label ?? "") !== wantRel) continue;
