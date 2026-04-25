@@ -4,6 +4,24 @@ This document is a **single-source orientation** for engineers taking over the r
 
 ---
 
+## Release notes (1.9.16)
+
+### Composer — paste files from clipboard
+
+Users can attach **images and other files** via **Ctrl/Cmd+V** into the main chat textarea (`#chat-input`), in addition to drag-and-drop onto `#main-chat` and **Add photos & files** from the attach menu.
+
+- **`paste` handler** in `initChatComposer()` (`src/main.js`): reads `clipboardData.items` (`kind === "file"`, `getAsFile()`) and `clipboardData.files`, dedupes by `name` + `size` + `lastModified`, then calls **`addComposerAttachmentsFromFileList`** (same pipeline as file picker / drop).
+- If the clipboard contains **both files and `text/plain`**, the handler **`preventDefault`s** (avoids garbage/binary in the textarea for image-only pastes) and then **`insertTextAtCaret`** inserts the plain text at the caret (`setRangeText` when available).
+- **Help** chat: file paste is blocked with the same policy as send — **no attachments**; Activity log message matches the existing send guard.
+- While **`chat-input` is disabled** (send in flight), clipboard file paste is ignored.
+- Helpers: **`collectClipboardFiles`**, **`insertTextAtCaret`** in `src/main.js` (near `addComposerAttachmentsFromFileList`).
+
+### Version bump
+
+- `package.json` / `package-lock.json` → **1.9.16**.
+
+---
+
 ## Release notes (1.9.15)
 
 ### Project Cache — split disk / database stats
@@ -264,7 +282,7 @@ The router is a **large sequential `if` chain** on normalized path + method. Not
 
 ### 7.2 Chat pipeline (simplified)
 
-1. User composes message + optional attach modes (web, research, image, Access `#data`, etc.).
+1. User composes message + optional attach modes (web, research, image, Access `#data`, etc.). **File attachments** can come from the attach menu, drag-and-drop onto `#main-chat`, or **paste into `#chat-input`** (see **Release notes (1.9.16)**); logic lives in `src/main.js` / `src/composerAttachments.js`.
 2. `chatApi.js` selects provider order, builds model context (`src/contextEngine/*`), may call LLM via **Vite dev proxies** (`/llm/openai`, …) using keys from `import.meta.env`.
 3. Responses rendered as markdown (`src/markdown.js`) with optional **syntax highlighting** (`src/markdownCodeHighlight.js`, highlight.js).
 4. Turns persisted through `chatPersistence.js` → `/api/dialogs/.../turns`.

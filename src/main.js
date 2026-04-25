@@ -3342,6 +3342,65 @@ function renderComposerAttachmentsStrip() {
   }
 }
 
+/**
+ * Files offered by the system clipboard (screenshots, copied files from Finder/Explorer, etc.).
+ * @param {DataTransfer | null | undefined} clipboardData
+ * @returns {File[]}
+ */
+function collectClipboardFiles(clipboardData) {
+  if (!clipboardData) return [];
+  /** @type {File[]} */
+  const out = [];
+  const seen = new Set();
+  /** @param {File | null | undefined} f */
+  function addFile(f) {
+    if (!(f instanceof File) || f.size <= 0) return;
+    const key = `${f.name}\0${f.size}\0${f.lastModified}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(f);
+  }
+  try {
+    const items = clipboardData.items ? Array.from(clipboardData.items) : [];
+    for (const item of items) {
+      if (item.kind !== "file") continue;
+      addFile(item.getAsFile());
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    const fl = clipboardData.files;
+    if (fl?.length) {
+      for (const f of Array.from(fl)) {
+        addFile(f);
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return out;
+}
+
+/**
+ * @param {HTMLTextAreaElement} ta
+ * @param {string} insertion
+ */
+function insertTextAtCaret(ta, insertion) {
+  const t = String(insertion ?? "");
+  if (!t) return;
+  const start = ta.selectionStart ?? 0;
+  const end = ta.selectionEnd ?? 0;
+  if (typeof ta.setRangeText === "function") {
+    ta.setRangeText(t, start, end, "end");
+  } else {
+    ta.value = ta.value.slice(0, start) + t + ta.value.slice(end);
+    ta.selectionStart = ta.selectionEnd = start + t.length;
+  }
+  syncChatInputHeight(ta);
+  syncComposerSendButtonState();
+}
+
 function addComposerAttachmentsFromFileList(fileList) {
   const incoming = Array.from(fileList ?? []).filter((f) => f instanceof File);
   if (incoming.length === 0) return;
@@ -5766,6 +5825,30 @@ function initChatComposer() {
     syncComposerSendButtonState();
   });
   syncComposerSendButtonState();
+
+  ta.addEventListener("paste", (e) => {
+    if (!(e instanceof ClipboardEvent)) return;
+    if (ta.disabled) return;
+    const files = collectClipboardFiles(e.clipboardData);
+    if (files.length === 0) return;
+
+    const mainChatEl = document.getElementById("main-chat");
+    const helpChatOpen = Boolean(mainChatEl?.classList.contains("chat--help"));
+    if (helpChatOpen) {
+      e.preventDefault();
+      appendActivityLog("Help does not support attachments — clipboard file not added.");
+      return;
+    }
+
+    e.preventDefault();
+    addComposerAttachmentsFromFileList(files);
+    appendActivityLog(`Add photos & files: ${files.length} file(s) from clipboard`);
+
+    const plain = e.clipboardData?.getData("text/plain") ?? "";
+    if (plain) {
+      insertTextAtCaret(ta, plain);
+    }
+  });
 
   async function submitChat() {
     if (chatComposerSending) return;
