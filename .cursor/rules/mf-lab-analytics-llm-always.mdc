@@ -1,0 +1,21 @@
+---
+description: Every LLM inference call must be reflected in project analytics (turns or aux).
+alwaysApply: true
+---
+
+# Analytics: all model usage is counted
+
+## Policy
+
+Any **inference** call to an AI provider (chat completion, `generateContent`, image generation with an LLM, background extractors, Help panel, theme title, memory router, etc.) must end up in analytics:
+
+1. **Primary chat** — persist token fields on `conversation_turns` when saving a turn (`llm_*` fields via `llmUsageTurnDbFields` / server turn handler). Intro, Rules, Access, and main project dialogs all use the same persistence; **do not** exclude those `purpose` values from analytics aggregation (`analyticsDialogWhereSql` in `server/api.mjs` is intentionally all dialogs).
+
+2. **Calls that do not create a conversation turn** (Help, theme title, keepers, memory tree router, optimizers, voice pipeline, AI-opinion rounds, etc.) — call **`recordAuxLlmUsage`** (`src/chatPersistence.js` → `POST /api/analytics/aux-llm-usage`) with a **`request_kind`** that is listed in **`AUX_LLM_USAGE_KINDS`** in `server/api.mjs`. When adding a new background flow, **extend that Set** and the client in the same change.
+
+3. **Not required** — read-only provider APIs with no generation (e.g. listing models for the model picker) unless product explicitly asks to meter them.
+
+## Checklist for new code paths
+
+- If the path uses `completeChatMessage` / `completeChatMessageStreaming` / direct `/llm/*` fetches: ensure either a persisted turn records usage, or **`reportAuxLlmUsage` / `recordAuxLlmUsage`** runs with a registered `request_kind`.
+- After editing `server/api.mjs` analytics or aux contract, restart the API per **`mf-lab-restart-api.mdc`**.

@@ -4,6 +4,47 @@ This document is a **single-source orientation** for engineers taking over the r
 
 ---
 
+## Release notes (1.9.14)
+
+- **Analytics includes all dialog purposes:** aggregates over `conversation_turns` no longer filter out Intro / Rules / Access (`analyticsDialogWhereSql` in `server/api.mjs` is always true). Token charts, spend estimates, and dialog counts reflect those threads like any other.
+- **Background (aux) LLM usage in the same dashboards:** `analytics_aux_llm_usage` rows now also increment **per-provider request counts** (`requestsSent` / `responsesOk`) and the **daily “requests” chart** (`dailyUsage`), not only token totals and token-by-day series.
+- **New aux `request_kind` values** (allowlisted in `server/api.mjs` → `AUX_LLM_USAGE_KINDS`, recorded from the client where applicable):
+  - `theme_dialog_title` — `generateThemeDialogTitle` in `src/chatApi.js`
+  - `help_chat_turn` — Help panel completions in `src/main.js` (no persisted dialog turn)
+  - `rules_keeper_extract`, `access_keeper2_extract` — keeper extractors in `src/chatApi.js`
+- **Cursor rule:** `.cursor/rules/mf-lab-analytics-llm-always.mdc` — every inference path must land in analytics (turn fields or `recordAuxLlmUsage` + allowlist).
+- Version bump: `package.json` / `package-lock.json` → `1.9.14`.
+
+---
+
+## Release notes (1.9.13)
+
+- **Voice input v1 (record -> transcribe -> send):** composer mic now records audio, auto-finishes after ~2s of silence, and also finishes on second mic tap.
+- **Provider priority for transcription:** server route `POST /api/voice/transcribe` uses **Gemini first** (`gemini-flash`), then falls back to **ChatGPT/OpenAI** (`openai`) when needed.
+- **UX during transcription:** a pending user bubble is shown immediately with spinner (`Transcribing voice…`); on success it is replaced with transcript text and sent through the normal chat pipeline; on error, the bubble stays and shows the failure message (does not disappear).
+- **Implementation:** `src/main.js`, `src/chatPersistence.js`, `server/api.mjs`, `src/theme.css`.
+- Version bump: `package.json` / `package-lock.json` -> `1.9.13`.
+
+---
+
+## Release notes (1.9.12)
+
+- **Chat file drag-and-drop affordance:** when dragging files over the main chat column (`#main-chat`), the **entire dialogue area** is framed by a **dashed border** plus a light inset tint.
+- **Implementation:** `#main-chat.main-chat--drag-over-files::after` in `src/theme.css` (`position: relative` on the host, `inset: 0`, `pointer-events: none`, `z-index: 8`); drop detection unchanged in `initChatFileDropZone` (`src/main.js`, class `main-chat--drag-over-files`).
+- Version bump: `package.json` / `package-lock.json` → `1.9.12`.
+
+---
+
+## Release notes (1.9.11)
+
+- **Mobile-only (`max-width: 767px`, same breakpoint as the Themes dropdown):** Intro / Rules / Access are no longer shown as a separate always-visible block under the Themes header.
+- Those three controls now appear **inside the Themes list** (`#dialogue-cards`): a top row `#mobile-ir-in-theme-list`, visible when the user opens the Themes chevron dropdown — same interaction surface as picking a theme/dialog.
+- **Implementation:** real DOM nodes (`#btn-ir-intro`, `#btn-ir-rules`, `#btn-ir-access`) are **reparented** between the desktop IR panel body and the mobile slot on viewport changes and after each `renderThemeCards` refresh (`src/main.js`, `src/themesSidebar.js`, `src/theme.css`). Event handlers and PIN lock UI stay attached to the original buttons.
+- **Desktop (`min-width: 768px`):** layout unchanged; the in-list slot stays hidden.
+- Version bump: `package.json` / `package-lock.json` → `1.9.11`.
+
+---
+
 ## Release notes (1.9.10)
 
 - Settings now includes a new **AI priority** block (placed before **AI settings**) with chat-style provider badges:
@@ -76,6 +117,7 @@ This document is a **single-source orientation** for engineers taking over the r
 | `src/chatApi.js` | Provider routing, prompt assembly, streaming/non-streaming completion, image generation, web-search/research modes, Access `#data` enrichment behavior in prompts. |
 | `src/chatPersistence.js` | `fetch` client for `/api/*`, theme/dialog bootstrap, memory graph CRUD, favorites, analytics, project profile HTTP helpers. |
 | `src/memoryTree.js` | 3D graph UI (force-graph + three-spritetext), open/close, theme sync, export trigger integration. |
+| `src/themesSidebar.js` | Theme cards + dialog folder menus in `#dialogue-cards`; preserves `#mobile-ir-in-theme-list` slot for mobile Intro/Rules/Access row. |
 | `src/settingsModelsUi.js` | Dynamic AI model pickers in Settings; remote model list fetch; dirty detection for **Save AI models**; serialized refresh queue. |
 | `src/userChatModels.js` | Defaults and `localStorage` keys under `mf0.settings.aiModel.*` (and legacy `mf0.settings.chatModel.*` for dialogue). |
 | `src/fetchRemoteModelLists.js` | Provider-specific “list models” HTTP calls from the browser (keys from `import.meta.env` in dev). |
@@ -98,6 +140,7 @@ This document is a **single-source orientation** for engineers taking over the r
 
 - **Node.js** (LTS recommended) with `npm`.
 - **`npm install`** at repo root (postinstall fixes `7zip-bin` binary permissions for profile archives).
+- **`ffmpeg`** installed on the machine that runs **`mf-lab-api`** and available on **`PATH`** (the API invokes `ffmpeg` for **Gemini text-to-speech** output: PCM/WAV → MP3 for voice-reply downloads; without it, long-reply Gemini audio paths fail with a clear server error). Typical installs: `brew install ffmpeg` (macOS), `apt install ffmpeg` (Debian/Ubuntu), or the [official builds](https://ffmpeg.org/download.html). Verify with `ffmpeg -version`.
 - **API keys** in a root **`.env`** file for development (Vite `envPrefix` exposes `OPENAI_*`, `ANTHROPIC_*`, `GEMINI_*`, `PERPLEXITY_*`, `VITE_*`). See `src/modelEnv.js` and `vite.config.js`.
 
 ### 3.2 Commands
@@ -184,6 +227,12 @@ The router is a **large sequential `if` chain** on normalized path + method. Not
 2. `chatApi.js` selects provider order, builds model context (`src/contextEngine/*`), may call LLM via **Vite dev proxies** (`/llm/openai`, …) using keys from `import.meta.env`.
 3. Responses rendered as markdown (`src/markdown.js`) with optional **syntax highlighting** (`src/markdownCodeHighlight.js`, highlight.js).
 4. Turns persisted through `chatPersistence.js` → `/api/dialogs/.../turns`.
+
+### 7.2a Themes sidebar and mobile Intro / Rules / Access
+
+- Theme cards are rendered into `#dialogue-cards` via `src/themesSidebar.js` (`renderThemeCards`, `syncSidebarSelectionState`).
+- On **narrow viewports** (`max-width: 767px`), the dedicated IR panel `#sidebar-intro-rules-access` is hidden in CSS; Intro / Rules / Access bubbles are **moved** into `#mobile-ir-in-theme-list` at the **top** of `#dialogue-cards`, so they only appear together with the theme list inside the mobile Themes dropdown (`initDialoguesMenu` in `src/main.js`).
+- On **wide viewports**, the same buttons are moved back into `#sidebar-intro-rules-access .sidebar-ir-panel-body`; the in-list slot is hidden.
 
 ### 7.3 Settings modal
 

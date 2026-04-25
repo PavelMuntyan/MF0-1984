@@ -30,7 +30,7 @@ export const PROVIDER_DISPLAY = {
 
 /**
  * @param {string} providerId
- * @param {"memory_tree_router" | "interests_sketch" | "memory_graph_normalize" | "intro_graph_extract"} requestKind
+ * @param {string} requestKind — must match server `AUX_LLM_USAGE_KINDS` in `server/api.mjs`
  * @param {LlmUsageTotals | null | undefined} usage
  */
 function reportAuxLlmUsage(providerId, requestKind, usage) {
@@ -791,6 +791,8 @@ export async function generateThemeDialogTitle(providerId, userMessage, apiKey) 
 
   try {
     let text = "";
+    /** @type {LlmUsageTotals | null} */
+    let usageOut = null;
     switch (providerId) {
       case "openai": {
         const res = await fetch("/llm/openai/v1/chat/completions", {
@@ -814,6 +816,7 @@ export async function generateThemeDialogTitle(providerId, userMessage, apiKey) 
         const content = data.choices?.[0]?.message?.content;
         text = openAiChatCompletionMessageContentToString(content);
         if (!text.trim()) throw new Error("Empty API response");
+        usageOut = withUsageFallback(usageFromOpenAiStyleUsage(data.usage), snippet, text);
         break;
       }
       case "anthropic": {
@@ -842,13 +845,20 @@ export async function generateThemeDialogTitle(providerId, userMessage, apiKey) 
           .join("\n")
           .trim();
         if (!text) throw new Error("Empty API response");
+        usageOut = withUsageFallback(usageFromAnthropicResponse(data), snippet, text);
         break;
       }
       case "gemini-flash": {
         const combined =
           `${THEME_TITLE_SYSTEM}\n\nUser message:\n${snippet}`;
-        const { text: g } = await geminiGenerateContent(geminiDialogue(), combined, key, false);
+        const { text: g, usage: gemUsage } = await geminiGenerateContent(
+          geminiDialogue(),
+          combined,
+          key,
+          false,
+        );
         text = g;
+        usageOut = withUsageFallback(gemUsage, combined, text);
         break;
       }
       case "perplexity": {
@@ -873,11 +883,13 @@ export async function generateThemeDialogTitle(providerId, userMessage, apiKey) 
         const content = data.choices?.[0]?.message?.content;
         text = openAiChatCompletionMessageContentToString(content);
         if (!text.trim()) throw new Error("Empty API response");
+        usageOut = withUsageFallback(usageFromOpenAiStyleUsage(data.usage), snippet, text);
         break;
       }
       default:
         return titleFromUserMessage(userMessage);
     }
+    reportAuxLlmUsage(providerId, "theme_dialog_title", usageOut);
     const normalized = normalizeThemeDialogTitle(text);
     return normalized === "New conversation" ? titleFromUserMessage(userMessage) : normalized;
   } catch {
@@ -1256,12 +1268,22 @@ export async function extractAccessKeeper2EntriesFromTranscript(
       const content = data.choices?.[0]?.message?.content;
       const rawText = openAiChatCompletionMessageContentToString(content);
       if (!rawText.trim()) throw new Error("Empty API response");
+      reportAuxLlmUsage(
+        providerId,
+        "access_keeper2_extract",
+        withUsageFallback(usageFromOpenAiStyleUsage(data.usage), userBlock, rawText),
+      );
       return parseAccessKeeperJsonFromModelText(rawText);
     }
 
-    const { text } = await completeChatMessage(providerId, userBlock, key, {
+    const { text, usage } = await completeChatMessage(providerId, userBlock, key, {
       systemInstruction: `${ACCESS_KEEPER2_EXTRACT_SYSTEM}\nRespond with a single JSON object only, no markdown fences.`,
     });
+    reportAuxLlmUsage(
+      providerId,
+      "access_keeper2_extract",
+      withUsageFallback(usage, userBlock, text),
+    );
     return parseAccessKeeperJsonFromModelText(text);
   } catch (e) {
     console.warn("[Access Keeper 2] extract request failed:", e instanceof Error ? e.message : String(e));
@@ -1471,12 +1493,22 @@ export async function extractRulesKeeper3FromTranscript(
       const content = data.choices?.[0]?.message?.content;
       const rawText = openAiChatCompletionMessageContentToString(content);
       if (!rawText.trim()) throw new Error("Empty API response");
+      reportAuxLlmUsage(
+        providerId,
+        "rules_keeper_extract",
+        withUsageFallback(usageFromOpenAiStyleUsage(data.usage), userBlock, rawText),
+      );
       return parseRulesKeeper3JsonFromModelText(rawText);
     }
 
-    const { text } = await completeChatMessage(providerId, userBlock, key, {
+    const { text, usage } = await completeChatMessage(providerId, userBlock, key, {
       systemInstruction: `${RULES_KEEPER3_EXTRACT_SYSTEM}\nRespond with a single JSON object only, no markdown fences.`,
     });
+    reportAuxLlmUsage(
+      providerId,
+      "rules_keeper_extract",
+      withUsageFallback(usage, userBlock, text),
+    );
     return parseRulesKeeper3JsonFromModelText(text);
   } catch (e) {
     console.warn("[Rules extract] request failed:", e instanceof Error ? e.message : String(e));

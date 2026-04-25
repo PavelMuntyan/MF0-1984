@@ -6170,6 +6170,14 @@ function initChatComposer() {
             { role: "user", content: turnUserTextForUiAndDb },
             { role: "assistant", content: String(assistantOutHelp ?? "") },
           );
+          const uHelp = ensureUsageTotals(turnLlmUsage, turnUserTextForUiAndDb, String(assistantOutHelp ?? ""));
+          void recordAuxLlmUsage({
+            provider_id: providerId,
+            request_kind: "help_chat_turn",
+            llm_prompt_tokens: uHelp.promptTokens,
+            llm_completion_tokens: uHelp.completionTokens,
+            llm_total_tokens: uHelp.totalTokens,
+          }).catch(() => {});
         }
       }
       if (persistDialogId && didAppendUserToUi) {
