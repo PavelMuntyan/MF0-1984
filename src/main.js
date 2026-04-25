@@ -73,6 +73,8 @@ import {
   fetchAnalytics,
   fetchThemesPayload,
   fetchTurns,
+  fetchProjectCacheStats,
+  clearProjectMultimediaCache,
   ingestMemoryGraphPayload,
   requestTypeFromAttachMode,
   recordAuxLlmUsage,
@@ -1114,6 +1116,62 @@ function initSettingsModal() {
   });
 
   const settingsAiLoading = document.getElementById("settings-ai-loading");
+  const settingsModalMainPanel = document.getElementById("settings-modal-main-panel");
+  const settingsProjectCacheConfirm = document.getElementById("settings-project-cache-confirm");
+  const settingsProjectCacheClearBtn = document.getElementById("settings-project-cache-clear-btn");
+  const settingsProjectCacheConfirmNo = document.getElementById("settings-project-cache-confirm-no");
+  const settingsProjectCacheConfirmYes = document.getElementById("settings-project-cache-confirm-yes");
+  const settingsProjectCacheDbOtherMb = document.getElementById("settings-project-cache-db-other-mb");
+  const settingsProjectCacheDbMediaMb = document.getElementById("settings-project-cache-db-media-mb");
+  const settingsProjectCacheDataDirMb = document.getElementById("settings-project-cache-data-dir-mb");
+  const settingsProjectCacheSoundMb = document.getElementById("settings-project-cache-sound-mb");
+
+  /** @param {number} bytes */
+  function formatProjectCacheMegabytes(bytes) {
+    const n = Number(bytes);
+    const mb = Number.isFinite(n) && n > 0 ? n / (1024 * 1024) : 0;
+    return `${mb.toFixed(1)} Mb`;
+  }
+
+  async function refreshProjectCacheStatsUi() {
+    const cacheCells = [
+      settingsProjectCacheDbOtherMb,
+      settingsProjectCacheDbMediaMb,
+      settingsProjectCacheDataDirMb,
+      settingsProjectCacheSoundMb,
+    ];
+    if (!cacheCells.every((c) => c instanceof HTMLElement)) return;
+    for (const c of cacheCells) c.textContent = "…";
+    try {
+      const s = await fetchProjectCacheStats();
+      settingsProjectCacheDbOtherMb.textContent = formatProjectCacheMegabytes(s.chatDbOtherApproxBytes);
+      settingsProjectCacheDbMediaMb.textContent = formatProjectCacheMegabytes(s.chatEmbeddedMediaBytes);
+      settingsProjectCacheDataDirMb.textContent = formatProjectCacheMegabytes(s.dataDirCacheBytes);
+      settingsProjectCacheSoundMb.textContent = formatProjectCacheMegabytes(s.soundFilesBytes);
+    } catch {
+      for (const c of cacheCells) {
+        if (c instanceof HTMLElement) c.textContent = "—";
+      }
+    }
+  }
+
+  function hideProjectCacheConfirmView() {
+    if (settingsProjectCacheConfirm instanceof HTMLElement) {
+      settingsProjectCacheConfirm.hidden = true;
+    }
+    if (settingsModalMainPanel instanceof HTMLElement) {
+      settingsModalMainPanel.hidden = false;
+    }
+  }
+
+  function showProjectCacheConfirmView() {
+    if (settingsModalMainPanel instanceof HTMLElement) {
+      settingsModalMainPanel.hidden = true;
+    }
+    if (settingsProjectCacheConfirm instanceof HTMLElement) {
+      settingsProjectCacheConfirm.hidden = false;
+    }
+  }
 
   const projectProfileExportModal = document.getElementById("project-profile-export-modal");
   const projectProfilePass1 = document.getElementById("project-profile-export-pass1");
@@ -1256,6 +1314,7 @@ function initSettingsModal() {
 
   function setOpen(open) {
     if (open) {
+      hideProjectCacheConfirmView();
       resetProjectProfileExportModalToIdle();
       refreshSettingsAiPriorityBadges();
       /**
@@ -1272,6 +1331,7 @@ function initSettingsModal() {
       }
     }
     if (!open) {
+      hideProjectCacheConfirmView();
       closeAllSettingsModelPickers();
       memoryTreeExportAbort?.abort();
       memoryTreeExportAbort = null;
@@ -1294,6 +1354,7 @@ function initSettingsModal() {
     setOpen(modal.hidden);
     if (opening) {
       refreshChatAnalysisPrioritySettings();
+      void refreshProjectCacheStatsUi();
       if (settingsAiLoading instanceof HTMLElement) {
         settingsAiLoading.hidden = false;
       }
@@ -1308,6 +1369,54 @@ function initSettingsModal() {
   closeBtn.addEventListener("click", () => {
     setOpen(false);
   });
+
+  if (settingsProjectCacheClearBtn instanceof HTMLButtonElement) {
+    settingsProjectCacheClearBtn.addEventListener("click", () => {
+      showProjectCacheConfirmView();
+      if (settingsProjectCacheConfirmNo instanceof HTMLButtonElement) {
+        settingsProjectCacheConfirmNo.focus();
+      }
+    });
+  }
+  if (settingsProjectCacheConfirmNo instanceof HTMLButtonElement) {
+    settingsProjectCacheConfirmNo.addEventListener("click", () => {
+      hideProjectCacheConfirmView();
+    });
+  }
+  if (settingsProjectCacheConfirmYes instanceof HTMLButtonElement) {
+    settingsProjectCacheConfirmYes.addEventListener("click", async () => {
+      const y = settingsProjectCacheConfirmYes;
+      const n = settingsProjectCacheConfirmNo;
+      if (y instanceof HTMLButtonElement) {
+        y.disabled = true;
+        y.classList.add("settings-export-btn--busy");
+        y.setAttribute("aria-busy", "true");
+      }
+      if (n instanceof HTMLButtonElement) n.disabled = true;
+      try {
+        const { filesRemoved, bytesFreed, turnsUpdated, vacuumWarning } = await clearProjectMultimediaCache();
+        hideProjectCacheConfirmView();
+        await refreshProjectCacheStatsUi();
+        appendActivityLog(
+          `Project multimedia cache cleared (${filesRemoved} on-disk file(s), ${turnsUpdated} chat turn(s) updated, ${formatProjectCacheMegabytes(bytesFreed)} estimated payload freed).`,
+        );
+        if (vacuumWarning) {
+          appendActivityLog(`Database compact (VACUUM) did not complete: ${vacuumWarning}`);
+        }
+      } catch (e) {
+        appendActivityLog(
+          `Clear multimedia cache failed: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      } finally {
+        if (y instanceof HTMLButtonElement) {
+          y.disabled = false;
+          y.classList.remove("settings-export-btn--busy");
+          y.removeAttribute("aria-busy");
+        }
+        if (n instanceof HTMLButtonElement) n.disabled = false;
+      }
+    });
+  }
 
   const memoryTreeExportBtn = document.getElementById("settings-memory-tree-export");
   if (memoryTreeExportBtn instanceof HTMLButtonElement) {

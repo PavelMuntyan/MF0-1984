@@ -4,6 +4,44 @@ This document is a **single-source orientation** for engineers taking over the r
 
 ---
 
+## Release notes (1.9.15)
+
+### Project Cache — split disk / database stats
+
+Settings → **Project Cache** no longer shows a single combined **“files & pictures”** number (which mixed `data/` file caches with the whole SQLite file and confused users after clearing embedded media). The table now has **four rows** with separate meanings:
+
+| UI label | JSON field (GET stats) | Meaning |
+|----------|------------------------|---------|
+| **chat database — other (approx.)** | `chatDbOtherApproxBytes` | `chatDatabaseBytes` (on-disk size of the main SQLite file, usually `data/mf-lab.sqlite` or `API_SQLITE_PATH`) **minus** `chatEmbeddedMediaBytes`, floored at zero. This is **not** a precise accounting of “non-media tables”; it is everything in the DB file that is **not** counted by the embedded-media heuristic (plain chat text, Memory graph, analytics, indexes, SQLite free-list space after deletes, etc.). |
+| **chat database — embedded media (approx.)** | `chatEmbeddedMediaBytes` | **Estimate** computed by scanning **only** `conversation_turns`: UTF-8 byte length of `imageBase64` / `base64` strings inside `user_attachments_json` arrays, plus regex matches for inline `data:image/...;base64,...` in `user_text`, `assistant_text`, and `assistant_favorite_markdown`. Capped so it never exceeds `chatDatabaseBytes`. **May overcount** if the same image appears both in JSON attachments and inside markdown text. |
+| **data folder (excl. database)** | `dataDirCacheBytes` | Recursive sum of regular files under `data/` **excluding** `*.sqlite` (e.g. `ai-model-lists-cache.json`, other JSON caches). |
+| **sound files** | `soundFilesBytes` | Recursive byte sum under the voice-replies directory (`.mp3` / `.wav` on disk). |
+
+**Backward compatibility:** `GET /api/settings/project-cache-stats` still returns `filesAndPicturesBytes` (= `dataDirCacheBytes + chatDatabaseBytes`, same as the old combined metric) for any external consumer; new clients should use the split fields.
+
+**Implementation:** `getProjectCacheStatsPayload`, `estimateEmbeddedMediaBytesInConversationTurns`, helpers `utf8ByteLength`, `estimateMediaBytesFromAttachmentsJson`, `estimateDataImageBytesInPlainText` in `server/api.mjs`. Client: `fetchProjectCacheStats` in `src/chatPersistence.js`; `refreshProjectCacheStatsUi` and element ids `settings-project-cache-db-other-mb`, `settings-project-cache-db-media-mb`, `settings-project-cache-data-dir-mb`, `settings-project-cache-sound-mb` in `src/main.js`; table + `title` tooltips in `index.html`.
+
+**Performance note:** opening Settings triggers a **full-table iterate** over `conversation_turns` for the media estimate. Acceptable for typical DB sizes; if this becomes hot, consider caching with TTL or incremental maintenance later.
+
+### Project Cache — clear multimedia (disk + SQLite + VACUUM)
+
+- **`POST /api/settings/project-cache-clear-multimedia`** runs `clearProjectMultimediaCacheFull()` in `server/api.mjs`:
+  1. **`clearProjectMultimediaCacheDiskOnly()`** — deletes `.mp3`/`.wav` under the voice-replies directory and removes `data/tts-selftest/` recursively.
+  2. **`stripEmbeddedMultimediaFromConversationTurns(db)`** — for matching rows, strips image payloads from `user_attachments_json` (via `stripImagePayloadsFromUserAttachmentsJson`), strips `data:image/...;base64,...` from the three text columns (via `stripDataImagePayloadsFromTextField`); keeps plain dialog text and non-image attachment metadata; if `user_text` becomes empty after stripping, replaces with a short placeholder string.
+  3. **`VACUUM`** on the open DB connection so the SQLite **file size shrinks** on disk (otherwise Project Cache stats would still show a huge DB after clearing blobs). On failure, the JSON response may include **`vacuumWarning`** (string); the client logs this to Activity log (`src/main.js`).
+- **Response shape:** `{ ok: true, filesRemoved, bytesFreed, turnsUpdated, vacuumWarning? }`.
+
+### Project Cache — UX
+
+- Clearing uses a **confirmation panel** (English copy) in `index.html`; **Yes** uses the same busy/spinner pattern as other Settings export actions (`settings-export-btn--busy`, `#settings-project-cache-confirm-yes` rules in `src/theme.css`).
+- After success, stats refresh so users see updated Mb values.
+
+### Version bump
+
+- `package.json` / `package-lock.json` → **1.9.15**.
+
+---
+
 ## Release notes (1.9.14)
 
 - **Analytics includes all dialog purposes:** aggregates over `conversation_turns` no longer filter out Intro / Rules / Access (`analyticsDialogWhereSql` in `server/api.mjs` is always true). Token charts, spend estimates, and dialog counts reflect those threads like any other.
@@ -204,6 +242,9 @@ The router is a **large sequential `if` chain** on normalized path + method. Not
 - **Project profile:**  
   `POST /api/project-profile/export` (binary `.mf` response), `POST /api/project-profile/import` (multipart buffer + metadata)
 - **Analytics:** `GET /api/analytics`
+- **Settings — project cache:**  
+  `GET /api/settings/project-cache-stats` (disk + DB size breakdown; see **Release notes (1.9.15)**),  
+  `POST /api/settings/project-cache-clear-multimedia` (voice cache + strip embedded images in `conversation_turns` + `VACUUM`)
 - **Assistant favorites:** `GET/POST` variants under `/api/assistant-favorite(s)` and `/api/dialogs/assistant-favorite(s)` (legacy path compatibility)
 - **Themes / dialogs / turns:**  
   `GET /api/themes`, `POST /api/themes/bootstrap`, `POST /api/themes/new-dialog`, `POST /api/themes/delete`, `POST /api/themes/rename`,  
@@ -237,6 +278,7 @@ The router is a **large sequential `if` chain** on normalized path + method. Not
 ### 7.3 Settings modal
 
 - Centered modal (`#settings-modal`): Memory tree import/export, project profile import/export, **AI settings** section.
+- **Project Cache** (section `settings-project-cache-section` in `index.html`): table of four usage rows (chat DB “other” vs embedded media estimate, `data/` caches excluding `.sqlite`, sound files); **Clear project cache** opens a confirm step then calls `clearProjectMultimediaCache()` in `src/chatPersistence.js` (`POST /api/settings/project-cache-clear-multimedia`). Stats load via `fetchProjectCacheStats` when the modal opens / after clear.
 - **AI models:** built only for providers that have keys; lists fetched live where possible; **Save AI models** persists to `localStorage` keys `mf0.settings.aiModel.<provider>.<role>`.
 - **Disabled Save styling:** `src/theme.css` — `.settings-ai-save-btn` muted state when `disabled`.
 

@@ -69,6 +69,71 @@ export async function apiHealth() {
   return data.ok === true && data.mfLabApi === true;
 }
 
+/**
+ * Server-side voice transcription (Gemini preferred, OpenAI fallback).
+ * @param {{
+ *   audioBase64: string,
+ *   mimeType: string,
+ *   geminiApiKey?: string,
+ *   openAiApiKey?: string,
+ * }} payload
+ * @returns {Promise<{ text: string, providerId: string }>}
+ */
+export async function transcribeVoiceMessage(payload) {
+  const audioBase64 = String(payload?.audioBase64 ?? "").trim();
+  const mimeType = String(payload?.mimeType ?? "").trim() || "audio/webm";
+  const geminiApiKey = String(payload?.geminiApiKey ?? "").trim();
+  const openAiApiKey = String(payload?.openAiApiKey ?? "").trim();
+  if (!audioBase64) throw new Error("Voice transcription: empty audio payload.");
+  const res = await fetch(apiUrl("api/voice/transcribe"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ audioBase64, mimeType, geminiApiKey, openAiApiKey }),
+  });
+  const data = await assertOkOrThrow(res, "Voice transcribe");
+  const text = String(data?.text ?? "").trim();
+  const providerId = String(data?.providerId ?? "").trim();
+  if (!text) throw new Error("Voice transcription returned empty text.");
+  return { text, providerId };
+}
+
+/**
+ * @param {string} turnId
+ * @returns {Promise<{ exists: boolean, url: string }>}
+ */
+export async function fetchVoiceReplyStatus(turnId) {
+  const tid = String(turnId ?? "").trim();
+  if (!tid) return { exists: false, url: "" };
+  const res = await fetch(apiUrl(`api/voice/replies/${encodeURIComponent(tid)}`));
+  const data = await assertOkOrThrow(res, "Voice reply status");
+  return {
+    exists: data?.exists === true,
+    url: String(data?.url ?? "").trim(),
+  };
+}
+
+/**
+ * @param {string} turnId
+ * @param {{ geminiApiKey?: string, openAiApiKey?: string }} [opts] — forwarded to API when keys are not set on the server process.
+ * @returns {Promise<{ url: string, providerId: string }>}
+ */
+export async function ensureVoiceReplyMp3(turnId, opts) {
+  const tid = String(turnId ?? "").trim();
+  if (!tid) throw new Error("Voice reply requires turn id.");
+  const geminiApiKey = String(opts?.geminiApiKey ?? "").trim();
+  const openAiApiKey = String(opts?.openAiApiKey ?? "").trim();
+  const res = await fetch(apiUrl(`api/voice/replies/${encodeURIComponent(tid)}`), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ geminiApiKey, openAiApiKey }),
+  });
+  const data = await assertOkOrThrow(res, "Voice reply create");
+  const url = String(data?.url ?? "").trim();
+  const providerId = String(data?.providerId ?? "").trim();
+  if (!url) throw new Error("Voice reply URL missing.");
+  return { url, providerId };
+}
+
 export async function fetchThemesPayload() {
   const res = await fetch(apiUrl("api/themes"));
   if (!res.ok) throw new Error(`Themes ${res.status}`);
@@ -257,6 +322,56 @@ export async function recordAuxLlmUsage(payload) {
   if (data?.ok !== true) {
     throw new Error(apiErrMessage(data, "Aux LLM usage rejected"));
   }
+}
+
+/**
+ * @returns {Promise<{
+ *   filesAndPicturesBytes: number,
+ *   soundFilesBytes: number,
+ *   dataDirCacheBytes: number,
+ *   chatDatabaseBytes: number,
+ *   chatEmbeddedMediaBytes: number,
+ *   chatDbOtherApproxBytes: number,
+ * }>}
+ */
+export async function fetchProjectCacheStats() {
+  const zero = {
+    filesAndPicturesBytes: 0,
+    soundFilesBytes: 0,
+    dataDirCacheBytes: 0,
+    chatDatabaseBytes: 0,
+    chatEmbeddedMediaBytes: 0,
+    chatDbOtherApproxBytes: 0,
+  };
+  const res = await fetch(apiUrl("api/settings/project-cache-stats"));
+  const data = await readJsonSafe(res);
+  if (!res.ok || data?.ok !== true) {
+    return zero;
+  }
+  return {
+    filesAndPicturesBytes: Number(data.filesAndPicturesBytes) || 0,
+    soundFilesBytes: Number(data.soundFilesBytes) || 0,
+    dataDirCacheBytes: Number(data.dataDirCacheBytes) || 0,
+    chatDatabaseBytes: Number(data.chatDatabaseBytes) || 0,
+    chatEmbeddedMediaBytes: Number(data.chatEmbeddedMediaBytes) || 0,
+    chatDbOtherApproxBytes: Number(data.chatDbOtherApproxBytes) || 0,
+  };
+}
+
+/**
+ * Removes on-disk multimedia (voice-reply audio, tts self-test) and strips embedded images from chat turns in SQLite
+ * (`user_attachments_json` image payloads and inline `data:image/...` in stored text fields). Plain dialog text is kept.
+ * @returns {Promise<{ filesRemoved: number, bytesFreed: number, turnsUpdated: number, vacuumWarning?: string }>}
+ */
+export async function clearProjectMultimediaCache() {
+  const res = await fetch(apiUrl("api/settings/project-cache-clear-multimedia"), { method: "POST" });
+  const data = await assertOkOrThrow(res, "Clear multimedia cache");
+  return {
+    filesRemoved: Number(data.filesRemoved) || 0,
+    bytesFreed: Number(data.bytesFreed) || 0,
+    turnsUpdated: Number(data.turnsUpdated) || 0,
+    vacuumWarning: typeof data.vacuumWarning === "string" && data.vacuumWarning.trim() ? data.vacuumWarning.trim() : "",
+  };
 }
 
 export async function fetchAiModelListsCache() {

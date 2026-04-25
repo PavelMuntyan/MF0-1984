@@ -137,7 +137,8 @@
               </button>
             </div>
           </div>
-          <div class="settings-modal-body">
+          <div class="settings-modal-panels">
+            <div class="settings-modal-body" id="settings-modal-main-panel">
             <section class="settings-modal-section" aria-labelledby="settings-heading-memory-tree">
               <h3 class="settings-modal-section-title" id="settings-heading-memory-tree">Memory tree</h3>
               <div class="settings-modal-row-btns">
@@ -242,6 +243,110 @@
                 </button>
               </div>
             </section>
+            <section
+              class="settings-modal-section settings-project-cache-section"
+              aria-labelledby="settings-heading-project-cache"
+            >
+              <div class="settings-project-cache-rule" aria-hidden="true"></div>
+              <h3 class="settings-modal-section-title settings-project-cache-title" id="settings-heading-project-cache">
+                Project Cache
+              </h3>
+              <table class="settings-project-cache-table" aria-label="Project cache disk usage">
+                <tbody>
+                  <tr>
+                    <th
+                      scope="row"
+                      title="SQLite file size minus estimated embedded media in chat turns; includes memory graph, analytics, indexes, and internal free pages. Approximate."
+                    >
+                      chat database — other (approx.)
+                    </th>
+                    <td id="settings-project-cache-db-other-mb">—</td>
+                  </tr>
+                  <tr>
+                    <th
+                      scope="row"
+                      title="UTF-8 size of base64 in user_attachments_json plus inline data:image/... in stored messages. May slightly overestimate if the same image appears in JSON and in text."
+                    >
+                      chat database — embedded media (approx.)
+                    </th>
+                    <td id="settings-project-cache-db-media-mb">—</td>
+                  </tr>
+                  <tr>
+                    <th
+                      scope="row"
+                      title="Files under data/ excluding *.sqlite (model lists cache, etc.)."
+                    >
+                      data folder (excl. database)
+                    </th>
+                    <td id="settings-project-cache-data-dir-mb">—</td>
+                  </tr>
+                  <tr>
+                    <th scope="row">sound files</th>
+                    <td id="settings-project-cache-sound-mb">—</td>
+                  </tr>
+                </tbody>
+              </table>
+              <div class="settings-project-cache-clear-wrap">
+                <button
+                  type="button"
+                  class="settings-project-cache-clear-btn"
+                  id="settings-project-cache-clear-btn"
+                  aria-label="Clear project cache"
+                >
+                  <svg
+                    class="settings-project-cache-clear-icon"
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="20"
+                    height="20"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <polyline points="3 6 5 6 21 6" />
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                    <line x1="10" x2="10" y1="11" y2="17" />
+                    <line x1="14" x2="14" y1="11" y2="17" />
+                  </svg>
+                </button>
+              </div>
+            </section>
+            </div>
+            <div
+              id="settings-project-cache-confirm"
+              class="settings-modal-cache-confirm"
+              hidden
+              role="region"
+              aria-labelledby="settings-project-cache-confirm-title"
+            >
+              <h3 class="settings-modal-cache-confirm-title" id="settings-project-cache-confirm-title">
+                Clear multimedia cache
+              </h3>
+              <p class="settings-modal-cache-confirm-text">
+                Plain chat text, Memory tree data, rules, and settings stay intact. This action removes on-disk
+                multimedia (for example under <code class="settings-modal-cache-confirm-code">voice-rerplies</code> and
+                <code class="settings-modal-cache-confirm-code">data/tts-selftest</code>) and strips embedded image
+                payloads from chat turns (base64 in <code class="settings-modal-cache-confirm-code"
+                  >user_attachments_json</code
+                >
+                and inline <code class="settings-modal-cache-confirm-code">data:image/…</code> in stored messages).
+                Other SQLite tables and JSON caches are not deleted.
+              </p>
+              <p class="settings-modal-cache-confirm-text settings-modal-cache-confirm-text--emph">
+                Are you sure you want to delete the entire application multimedia cache?
+              </p>
+              <div class="settings-modal-cache-confirm-actions">
+                <button type="button" class="btn settings-modal-action" id="settings-project-cache-confirm-no">
+                  No
+                </button>
+                <button type="button" class="btn settings-modal-action" id="settings-project-cache-confirm-yes">
+                  Yes
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -1133,6 +1238,34 @@
                   </button>
                 </div>
                 <button type="button" class="send-btn" id="btn-chat-send" aria-label="Send message">↑</button>
+                <button
+                  type="button"
+                  class="composer-voice-btn"
+                  id="btn-composer-voice"
+                  aria-label="Voice message"
+                  title="Voice message"
+                  aria-pressed="false"
+                  disabled
+                >
+                  <svg
+                    class="composer-voice-btn-svg"
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 24 24"
+                    width="20"
+                    height="20"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                    <path d="M19 10v1a7 7 0 0 1-14 0v-1" />
+                    <line x1="12" x2="12" y1="19" y2="22" />
+                    <path d="M8 22h8" />
+                  </svg>
+                </button>
                 <button
                   type="button"
                   class="ir-panel-archive-btn"

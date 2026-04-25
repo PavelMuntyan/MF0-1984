@@ -18,6 +18,9 @@ const MENU_TRASH_SVG = `<svg class="dialog-theme-actions-icon-svg" xmlns="http:/
 
 const DIALOGS_PAGE_SIZE = 5;
 
+/** Mobile-only: Intro/Rules/Access bubbles live here inside the themes dropdown (`#dialogue-cards`). */
+export const MOBILE_IR_THEME_LIST_ID = "mobile-ir-in-theme-list";
+
 /**
  * @param {object} theme
  * @param {string | null} activeDialogId
@@ -288,7 +291,14 @@ export function renderThemeCards(
   expandedFolderThemeId = null,
   favoriteThemeIds = null,
 ) {
+  let irSlot = root.querySelector(`#${MOBILE_IR_THEME_LIST_ID}`);
+  if (!irSlot) {
+    irSlot = document.createElement("div");
+    irSlot.id = MOBILE_IR_THEME_LIST_ID;
+    irSlot.className = "mobile-ir-in-theme-list";
+  }
   root.replaceChildren();
+  root.prepend(irSlot);
   for (const t of themes) {
     root.appendChild(
       buildThemeCard(

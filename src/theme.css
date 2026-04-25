@@ -1146,6 +1146,11 @@ button.btn {
   padding-top: 0.65rem;
 }
 
+/* Populated on mobile only; IR bubbles are moved here from `#sidebar-intro-rules-access`. */
+.mobile-ir-in-theme-list {
+  display: none;
+}
+
 .sidebar-ir-bubble {
   display: flex;
   align-items: center;
@@ -2033,10 +2038,21 @@ button.btn {
   --input-bar-row-height: calc(1rem + 0.875rem * 1.25 + 1rem);
 }
 
+/* File drag over chat: dashed frame around the whole dialogue column (see initChatFileDropZone). */
 #main-chat.main-chat--drag-over-files {
-  outline: 2px dashed hsl(var(--primary) / 0.55);
-  outline-offset: -2px;
-  box-shadow: inset 0 0 0 9999px hsl(var(--primary) / 0.07);
+  position: relative;
+}
+
+#main-chat.main-chat--drag-over-files::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  box-sizing: border-box;
+  border: 2px dashed hsl(var(--primary) / 0.82);
+  border-radius: 0.5rem;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 9999px hsl(var(--primary) / 0.08);
 }
 
 /* Message history: newest at bottom, scroll up for older */
@@ -2440,11 +2456,35 @@ a.chat-attach-tile--sent-blob {
 
 .msg-bubble-copy-icon,
 .msg-bubble-chevron-icon,
-.msg-bubble-retry-icon {
+.msg-bubble-retry-icon,
+.msg-bubble-speaker-icon {
   display: block;
   width: 0.95rem;
   height: 0.95rem;
   transition: transform 0.2s ease;
+}
+
+.msg-bubble-speaker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.75rem;
+  height: 1.75rem;
+  color: hsl(var(--muted-foreground));
+  flex-shrink: 0;
+}
+
+.msg-bubble-speaker.msg-bubble-speaker--loading {
+  cursor: wait;
+}
+
+.msg-bubble-inline-spinner {
+  width: 0.86rem;
+  height: 0.86rem;
+  border: 2px solid hsl(var(--muted-foreground) / 0.35);
+  border-top-color: hsl(var(--muted-foreground));
+  border-radius: 999px;
+  animation: msg-assistant-thinking-spin 0.65s linear infinite;
 }
 
 /* User bubble: collapsed by default — chevron down; expanded — up (like AI) */
@@ -3124,6 +3164,84 @@ html:not(.dark) .msg-assistant-text.msg-assistant-text--md .msg-md-code-block pr
     0 0 0 4px hsl(var(--ring) / 0.35);
 }
 
+/* Voice input (Web Speech API) — round mic after Send */
+.composer-voice-btn {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  align-self: flex-end;
+  box-sizing: border-box;
+  width: var(--input-bar-row-height);
+  min-width: var(--input-bar-row-height);
+  height: var(--input-bar-row-height);
+  min-height: var(--input-bar-row-height);
+  padding: 0;
+  border: 1px solid hsl(var(--border));
+  border-radius: 50%;
+  background: hsl(var(--muted) / 0.4);
+  color: hsl(var(--foreground));
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.composer-voice-btn:hover:not(:disabled) {
+  background: hsl(var(--muted) / 0.65);
+  border-color: hsl(var(--border) / 0.9);
+}
+
+.composer-voice-btn:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px hsl(var(--background)),
+    0 0 0 4px hsl(var(--ring) / 0.35);
+}
+
+.composer-voice-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.composer-voice-btn--listening {
+  background: hsl(var(--primary) / 0.18);
+  border-color: hsl(var(--primary) / 0.45);
+  color: hsl(var(--primary));
+  box-shadow: 0 0 0 2px hsl(var(--primary) / 0.2);
+}
+
+.composer-voice-btn-svg {
+  display: block;
+}
+
+.msg-user-text--voice-pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: hsl(var(--muted-foreground));
+}
+
+.msg-user-voice-spinner {
+  width: 0.95rem;
+  height: 0.95rem;
+  border: 2px solid hsl(var(--muted-foreground) / 0.35);
+  border-top-color: hsl(var(--muted-foreground));
+  border-radius: 50%;
+  flex-shrink: 0;
+  animation: msg-assistant-thinking-spin 0.65s linear infinite;
+}
+
+.msg-user-voice-pending-label {
+  font-size: 0.8125rem;
+}
+
+.msg-user-text--voice-error {
+  color: hsl(var(--destructive));
+}
+
 /* Intro / Rules / Access: archive (to the right of send); behavior wired later */
 .ir-panel-archive-btn {
   display: none;
@@ -3621,6 +3739,21 @@ html.theme-rename-modal-open {
     overflow: visible;
   }
 
+  /* Intro / Rules / Access: only inside the mobile themes dropdown (top of `#dialogue-cards`). */
+  #sidebar-intro-rules-access {
+    display: none !important;
+  }
+
+  .mobile-ir-in-theme-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    flex: 0 0 auto;
+    padding: 0 0 0.55rem;
+    margin: 0 0 0.55rem;
+    border-bottom: 1px solid hsl(var(--border));
+  }
+
   .sidebar-panel-header {
     display: flex;
     flex-direction: row;
@@ -3642,7 +3775,7 @@ html.theme-rename-modal-open {
     display: inline-flex;
   }
 
-  /* Dialog list only — not Intro/Rules/Access panel */
+  /* Themes dropdown: theme cards + (mobile) Intro/Rules/Access row at top of `#dialogue-cards` */
   #dialogues-panel > .sidebar-panel-body {
     position: absolute;
     left: 0;
@@ -3745,6 +3878,13 @@ html.theme-rename-modal-open {
   flex-shrink: 0;
 }
 
+.settings-modal-panels {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .settings-modal-body {
   flex: 1;
   min-height: 0;
@@ -3752,10 +3892,169 @@ html.theme-rename-modal-open {
   padding: 1rem 1.1rem 1.15rem;
 }
 
+.settings-modal-cache-confirm {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1rem 1.1rem 1.35rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.75rem;
+}
+
+.settings-modal-cache-confirm[hidden] {
+  display: none !important;
+}
+
+.settings-modal-cache-confirm-title {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: hsl(var(--foreground));
+}
+
+.settings-modal-cache-confirm-text {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: hsl(var(--foreground));
+}
+
+.settings-modal-cache-confirm-text--emph {
+  font-weight: 600;
+  margin-top: 0.15rem;
+}
+
+.settings-modal-cache-confirm-code {
+  font-size: 0.78em;
+  word-break: break-all;
+}
+
+.settings-modal-cache-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.35rem;
+}
+
+.settings-modal-cache-confirm-actions .settings-modal-action {
+  flex: 1 1 6rem;
+}
+
+/* Clear multimedia cache — Yes: spinner while server runs strip + VACUUM */
+#settings-project-cache-confirm-yes.settings-export-btn--busy {
+  position: relative;
+  pointer-events: none;
+  padding-left: 2.1rem;
+}
+
+#settings-project-cache-confirm-yes.settings-export-btn--busy::before {
+  content: "";
+  position: absolute;
+  left: 0.65rem;
+  top: 50%;
+  width: 0.95rem;
+  height: 0.95rem;
+  box-sizing: border-box;
+  border: 2px solid hsl(var(--border));
+  border-top-color: hsl(var(--ring));
+  border-radius: 50%;
+  animation: settings-export-spin 0.65s linear infinite;
+}
+
 .settings-modal-section + .settings-modal-section {
   margin-top: 1.1rem;
   padding-top: 1rem;
   border-top: 1px solid hsl(var(--border) / 0.55);
+}
+
+/* Project cache: thick separator + table + round clear */
+.settings-modal-section.settings-project-cache-section {
+  margin-top: 1.35rem;
+  padding-top: 0;
+  border-top: none;
+}
+
+.settings-project-cache-rule {
+  height: 5px;
+  margin: 0 0 1rem;
+  border-radius: 3px;
+  /* Light theme: card is near-white — use a strong neutral bar (white reads as “off” here). */
+  background: hsl(var(--foreground) / 0.12);
+  box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.35);
+}
+
+.dark .settings-project-cache-rule {
+  background: hsl(0 0% 100% / 0.92);
+  box-shadow: inset 0 -1px 0 hsl(0 0% 100% / 0.12);
+}
+
+.settings-project-cache-title {
+  margin-bottom: 0.65rem;
+}
+
+.settings-project-cache-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+  color: hsl(var(--foreground));
+}
+
+.settings-project-cache-table th {
+  font-weight: 500;
+  text-align: left;
+  padding: 0.35rem 0.5rem 0.35rem 0;
+  color: hsl(var(--muted-foreground));
+  vertical-align: baseline;
+}
+
+.settings-project-cache-table td {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  padding: 0.35rem 0 0.35rem 0.5rem;
+  white-space: nowrap;
+  vertical-align: baseline;
+}
+
+.settings-project-cache-table tr + tr th,
+.settings-project-cache-table tr + tr td {
+  padding-top: 0.5rem;
+}
+
+.settings-project-cache-clear-wrap {
+  display: flex;
+  justify-content: center;
+  margin-top: 1rem;
+}
+
+.settings-project-cache-clear-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  padding: 0;
+  border-radius: 9999px;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--muted) / 0.35);
+  color: hsl(var(--foreground));
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.settings-project-cache-clear-btn:hover {
+  background: hsl(var(--muted) / 0.5);
+  border-color: hsl(var(--border));
+}
+
+.settings-project-cache-clear-icon {
+  display: block;
+  flex-shrink: 0;
 }
 
 .settings-modal-section-title {
