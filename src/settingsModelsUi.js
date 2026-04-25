@@ -5,6 +5,7 @@ import {
   mergeModelIdOptions,
   setUserAiModel,
 } from "./userChatModels.js";
+import { fetchAiModelListsCache, saveAiModelListsCache } from "./chatPersistence.js";
 import * as fetchLists from "./fetchRemoteModelLists.js";
 
 /** @typedef {import("./userChatModels.js").AiSettingsProvider} AiSettingsProvider */
@@ -37,6 +38,7 @@ let settingsAiSavedSnapshot = "";
 
 /** Two overlapping refreshes (e.g. init + open Settings) must not interleave `await` and reset the baseline. */
 let settingsModelRefreshQueue = Promise.resolve();
+let settingsModelRefreshToken = 0;
 
 /**
  * @param {HTMLElement} root
@@ -292,6 +294,20 @@ async function refreshSettingsModelSelectsImpl() {
     if (!container) return;
 
     const keys = getModelApiKeys();
+    const refreshToken = ++settingsModelRefreshToken;
+    /** @type {{ version: number, updatedAt: string, lists: Record<string, Record<string, string[]>> }} */
+    let cache = { version: 1, updatedAt: "", lists: {} };
+    try {
+      const c = await fetchAiModelListsCache();
+      const lists = c?.lists && typeof c.lists === "object" ? c.lists : {};
+      cache = {
+        version: 1,
+        updatedAt: String(c?.updatedAt ?? ""),
+        lists: /** @type {Record<string, Record<string, string[]>>} */ (lists),
+      };
+    } catch {
+      cache = { version: 1, updatedAt: "", lists: {} };
+    }
     container.replaceChildren();
 
     let anyProvider = false;
@@ -354,15 +370,11 @@ async function refreshSettingsModelSelectsImpl() {
         /** @type {AiSettingsProvider} */
         const prov = /** @type {AiSettingsProvider} */ (p.provider);
 
-        let remote = [];
-        try {
-          remote = await fetchIdsForRole(prov, role, apiKey);
-        } catch {
-          remote = [];
-        }
+        const cached =
+          Array.isArray(cache.lists?.[prov]?.[role]) ? cache.lists[prov][role] : [];
         const fallback = FALLBACK_AI_MODEL_LISTS[prov]?.[role] ?? [];
         const stored = getUserAiModel(prov, role);
-        const merged = mergeModelIdOptions(remote, fallback, stored);
+        const merged = mergeModelIdOptions(cached, fallback, stored);
         fillPicker(root, prov, role, merged, stored);
       }
 
@@ -381,10 +393,71 @@ async function refreshSettingsModelSelectsImpl() {
     if (saveWrap && anyProvider) {
       saveWrap.hidden = false;
     }
+
+    if (anyProvider) {
+      void refreshSettingsModelSelectsBackground(keys, refreshToken, cache);
+    }
   } finally {
     settingsAiSavedSnapshot = collectSettingsAiPickerSnapshot();
     syncSettingsAiSaveButtonState();
   }
+}
+
+/**
+ * @param {Record<string, string>} keys
+ * @param {number} refreshToken
+ * @param {{ version: number, updatedAt: string, lists: Record<string, Record<string, string[]>> }} initialCache
+ */
+async function refreshSettingsModelSelectsBackground(keys, refreshToken, initialCache) {
+  const nextLists = structuredClone(initialCache.lists ?? {});
+  let touched = false;
+  for (const p of AI_SETTINGS_PROVIDERS) {
+    if (refreshToken !== settingsModelRefreshToken) return;
+    const apiKey = String(keys[p.envKey] ?? "").trim();
+    if (!apiKey) continue;
+    /** @type {AiSettingsProvider} */
+    const prov = /** @type {AiSettingsProvider} */ (p.provider);
+    const rowsDef = ROLE_ROWS.filter((r) => !r.needsImages || p.images);
+    if (!nextLists[prov]) nextLists[prov] = {};
+    for (const r of rowsDef) {
+      if (refreshToken !== settingsModelRefreshToken) return;
+      /** @type {AiModelRole} */
+      const role = /** @type {AiModelRole} */ (r.role);
+      let remote = [];
+      try {
+        remote = await fetchIdsForRole(prov, role, apiKey);
+      } catch {
+        remote = [];
+      }
+      if (!remote.length) continue;
+      const fallback = FALLBACK_AI_MODEL_LISTS[prov]?.[role] ?? [];
+      const existing =
+        Array.isArray(nextLists?.[prov]?.[role]) ? nextLists[prov][role] : [];
+      const mergedForCache = mergeModelIdOptions(remote, fallback, "");
+      nextLists[prov][role] = mergedForCache;
+      const beforeKey = JSON.stringify(existing);
+      const afterKey = JSON.stringify(mergedForCache);
+      if (beforeKey !== afterKey) touched = true;
+      const root = document.getElementById(`settings-ai-${prov}-${role}`);
+      if (root instanceof HTMLElement) {
+        const current = readPickerModelId(root) || getUserAiModel(prov, role);
+        const mergedForUi = mergeModelIdOptions(remote, fallback, current);
+        fillPicker(root, prov, role, mergedForUi, current);
+      }
+    }
+  }
+  if (!touched || refreshToken !== settingsModelRefreshToken) {
+    syncSettingsAiSaveButtonState();
+    return;
+  }
+  try {
+    await saveAiModelListsCache({ version: 1, lists: nextLists });
+  } catch {
+    /* ignore cache write errors */
+  }
+  if (refreshToken !== settingsModelRefreshToken) return;
+  settingsAiSavedSnapshot = collectSettingsAiPickerSnapshot();
+  syncSettingsAiSaveButtonState();
 }
 
 /**

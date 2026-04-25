@@ -1106,6 +1106,7 @@ function initSettingsModal() {
       appendActivityLog("AI models saved");
     },
   });
+  initSettingsAiPriorityBadges();
   initChatAnalysisPrioritySettings({
     onSave() {
       appendActivityLog("Chat analysis priority saved");
@@ -1256,6 +1257,7 @@ function initSettingsModal() {
   function setOpen(open) {
     if (open) {
       resetProjectProfileExportModalToIdle();
+      refreshSettingsAiPriorityBadges();
       /**
        * Opening Settings: cancel an in-progress import (password step only).
        * Do not reset while success / wrong-password screens are shown — those close only with OK.
@@ -1767,9 +1769,29 @@ if (versionEl) {
 
 /** Default order for picking the active provider */
 const PROVIDER_ORDER = ["openai", "perplexity", "gemini-flash", "anthropic"];
+const DEFAULT_CHAT_PROVIDER_STORAGE_KEY = "mf0.settings.defaultChatProvider";
 
 function providerHasKey(keys, id) {
   return Boolean(String(keys[id] ?? "").trim());
+}
+
+function getDefaultChatProvider() {
+  try {
+    const raw = String(localStorage.getItem(DEFAULT_CHAT_PROVIDER_STORAGE_KEY) ?? "").trim();
+    return PROVIDER_ORDER.includes(raw) ? raw : "";
+  } catch {
+    return "";
+  }
+}
+
+function setDefaultChatProvider(providerId) {
+  const pid = String(providerId ?? "").trim();
+  if (!PROVIDER_ORDER.includes(pid)) return;
+  try {
+    localStorage.setItem(DEFAULT_CHAT_PROVIDER_STORAGE_KEY, pid);
+  } catch {
+    /* ignore */
+  }
 }
 
 /**
@@ -2188,12 +2210,15 @@ function initProviderBadges() {
   for (const btn of buttons) {
     btn.classList.remove("active");
   }
-  const firstOk = PROVIDER_ORDER.find((id) => {
+  const preferred = getDefaultChatProvider();
+  const firstOk = [preferred, ...PROVIDER_ORDER].find((id) => {
+    if (!id) return false;
     const b = wrap.querySelector(`[data-provider="${id}"]`);
     return b && !b.disabled;
   });
   if (firstOk) {
     wrap.querySelector(`[data-provider="${firstOk}"]`)?.classList.add("active");
+    setDefaultChatProvider(firstOk);
   }
 
   wrap.addEventListener("click", (e) => {
@@ -2206,7 +2231,57 @@ function initProviderBadges() {
     }
     t.classList.add("active");
     const pid = t.getAttribute("data-provider");
+    if (pid) setDefaultChatProvider(pid);
     appendActivityLog(`Model: ${PROVIDER_DISPLAY[pid] ?? pid ?? "—"}`);
+  });
+}
+
+function refreshSettingsAiPriorityBadges() {
+  const wrap = document.getElementById("settings-ai-priority-badges");
+  if (!(wrap instanceof HTMLElement)) return;
+  const keys = getModelApiKeys();
+  const defaultProvider = getDefaultChatProvider();
+  /** @type {HTMLButtonElement[]} */
+  const buttons = [...wrap.querySelectorAll("[data-provider]")].filter((el) => el instanceof HTMLButtonElement);
+
+  for (const btn of buttons) {
+    const id = String(btn.getAttribute("data-provider") ?? "").trim();
+    if (!id) continue;
+    const enabled = providerHasKey(keys, id);
+    btn.classList.toggle("badge--no-key", !enabled);
+    btn.disabled = !enabled;
+    if (enabled) btn.removeAttribute("aria-disabled");
+    else btn.setAttribute("aria-disabled", "true");
+    btn.classList.remove("active");
+  }
+
+  const activeId =
+    [defaultProvider, ...PROVIDER_ORDER].find((id) => {
+      if (!id || !providerHasKey(keys, id)) return false;
+      return buttons.some((btn) => btn.getAttribute("data-provider") === id);
+    }) ?? "";
+
+  if (activeId) {
+    setDefaultChatProvider(activeId);
+    const activeBtn = buttons.find((btn) => btn.getAttribute("data-provider") === activeId);
+    activeBtn?.classList.add("active");
+  }
+}
+
+function initSettingsAiPriorityBadges() {
+  const wrap = document.getElementById("settings-ai-priority-badges");
+  if (!(wrap instanceof HTMLElement) || wrap.dataset.bound === "1") return;
+  wrap.dataset.bound = "1";
+  wrap.addEventListener("click", (e) => {
+    const t = e.target?.closest?.("[data-provider]");
+    if (!(t instanceof HTMLButtonElement) || t.disabled || t.classList.contains("badge--no-key")) return;
+    const pid = String(t.getAttribute("data-provider") ?? "").trim();
+    if (!pid) return;
+    setDefaultChatProvider(pid);
+    setActiveProviderBadge(pid);
+    refreshModelBadges();
+    refreshSettingsAiPriorityBadges();
+    appendActivityLog(`Default chat model: ${PROVIDER_DISPLAY[pid] ?? pid}`);
   });
 }
 
@@ -6722,6 +6797,7 @@ function bootApp() {
   initFavoritesPanel();
   initSettingsModal();
   initProviderBadges();
+  refreshSettingsAiPriorityBadges();
   initThemeCardActions();
   initDialoguesMenu();
   initThemeFolderMenus();

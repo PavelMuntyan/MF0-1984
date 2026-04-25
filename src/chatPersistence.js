@@ -259,6 +259,33 @@ export async function recordAuxLlmUsage(payload) {
   }
 }
 
+export async function fetchAiModelListsCache() {
+  const res = await fetch(apiUrl("api/settings/ai-model-lists-cache"));
+  const data = await readJsonSafe(res);
+  if (!res.ok || data?.ok !== true) {
+    throw new Error(apiErrMessage(data, `AI model lists cache ${res.status}`));
+  }
+  return data?.cache && typeof data.cache === "object"
+    ? data.cache
+    : { version: 1, updatedAt: "", lists: {} };
+}
+
+/**
+ * @param {unknown} cache
+ */
+export async function saveAiModelListsCache(cache) {
+  const res = await fetch(apiUrl("api/settings/ai-model-lists-cache"), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cache }),
+  });
+  const data = await readJsonSafe(res);
+  if (!res.ok || data?.ok !== true) {
+    throw new Error(apiErrMessage(data, `Save AI model lists cache ${res.status}`));
+  }
+  return data.cache;
+}
+
 /**
  * Favorite assistant reply: markdown snapshot in the DB.
  * @param {string} turnId

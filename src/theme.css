@@ -4192,6 +4192,14 @@ html.theme-rename-modal-open {
   font-weight: 500;
 }
 
+.settings-ai-priority-badges {
+  justify-content: flex-start;
+  border-top: 0;
+  border-bottom: 0;
+  padding: 0.1rem 0;
+  background: transparent;
+}
+
 .settings-ai-section-title {
   margin: 0;
 }

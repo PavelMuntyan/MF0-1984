@@ -4,6 +4,29 @@ This document is a **single-source orientation** for engineers taking over the r
 
 ---
 
+## Release notes (1.9.10)
+
+- Settings now includes a new **AI priority** block (placed before **AI settings**) with chat-style provider badges:
+  - `ChatGPT`
+  - `Perplexity`
+  - `Gemini`
+  - `Claude`
+- Badge behavior:
+  - providers without API keys in `.env` are shown as inactive (`badge--no-key`) and cannot be selected
+  - clicking an active badge sets that provider as the **default chat model** for new sends
+  - default provider choice is persisted in `localStorage` (`mf0.settings.defaultChatProvider`)
+  - the selected provider is synchronized with the top chat provider badges and reflected in Activity log
+- AI model lists loading in Settings is now cache-first + background refresh:
+  - server-side JSON cache file: `data/ai-model-lists-cache.json`
+  - new API routes:
+    - `GET /api/settings/ai-model-lists-cache`
+    - `PUT /api/settings/ai-model-lists-cache`
+  - Settings UI first renders cached model ids immediately, then fetches provider lists in the background and updates both UI and cache
+  - refresh token guards prevent stale async refreshes from overriding newer state
+- Updated version source of truth in `package.json` / `package-lock.json` to `1.9.10`.
+
+---
+
 ## Release notes (1.9.9)
 
 - Memory tree Optimization controls added to Settings (`Memory tree optimization`, 2x2 grid):

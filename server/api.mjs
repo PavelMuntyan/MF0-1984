@@ -52,6 +52,7 @@ const migration008 = path.join(root, "db", "migrations", "008_access_external_se
 const migration009 = path.join(root, "db", "migrations", "009_analytics_usage_archive.sql");
 const migration010 = path.join(root, "db", "migrations", "010_llm_token_usage.sql");
 const migration011 = path.join(root, "db", "migrations", "011_analytics_aux_llm_usage.sql");
+const aiModelListsCachePath = path.join(root, "data", "ai-model-lists-cache.json");
 const PORT = resolveApiPort(process.env.API_PORT);
 
 /** Default max JSON body size for POST/PUT (bytes). Override with API_MAX_BODY_BYTES. */
@@ -405,6 +406,58 @@ function json(res, status, body) {
 /** Standard API error body (`error` for clients; `ok: false` when success checks use `data.ok === true`). */
 function apiErrorBody(message) {
   return { ok: false, error: String(message ?? "") };
+}
+
+const AI_MODEL_CACHE_PROVIDERS = new Set(["openai", "perplexity", "gemini", "anthropic"]);
+const AI_MODEL_CACHE_ROLES = new Set(["dialogue", "images", "search", "research"]);
+
+function sanitizeAiModelListsCache(raw) {
+  const out = { version: 1, updatedAt: "", lists: {} };
+  const src = raw && typeof raw === "object" ? raw : {};
+  out.updatedAt = String(src.updatedAt ?? "").trim().slice(0, 64);
+  const lists = src.lists && typeof src.lists === "object" ? src.lists : {};
+  for (const [provider, roles] of Object.entries(lists)) {
+    if (!AI_MODEL_CACHE_PROVIDERS.has(provider)) continue;
+    const roleObj = roles && typeof roles === "object" ? roles : {};
+    const cleanRoleObj = {};
+    for (const [role, ids] of Object.entries(roleObj)) {
+      if (!AI_MODEL_CACHE_ROLES.has(role) || !Array.isArray(ids)) continue;
+      const unique = [];
+      const seen = new Set();
+      for (const id of ids) {
+        const v = String(id ?? "").trim().slice(0, 200);
+        if (!v || seen.has(v)) continue;
+        seen.add(v);
+        unique.push(v);
+        if (unique.length >= 500) break;
+      }
+      cleanRoleObj[role] = unique;
+    }
+    out.lists[provider] = cleanRoleObj;
+  }
+  return out;
+}
+
+function readAiModelListsCachePayload() {
+  if (!fs.existsSync(aiModelListsCachePath)) {
+    return { version: 1, updatedAt: "", lists: {} };
+  }
+  try {
+    const raw = fs.readFileSync(aiModelListsCachePath, "utf8");
+    const parsed = JSON.parse(raw);
+    return sanitizeAiModelListsCache(parsed);
+  } catch {
+    return { version: 1, updatedAt: "", lists: {} };
+  }
+}
+
+function writeAiModelListsCachePayload(body) {
+  const src = body && typeof body === "object" ? body.cache : null;
+  const base = sanitizeAiModelListsCache(src);
+  base.updatedAt = new Date().toISOString();
+  fs.mkdirSync(path.dirname(aiModelListsCachePath), { recursive: true });
+  fs.writeFileSync(aiModelListsCachePath, `${JSON.stringify(base, null, 2)}\n`, "utf8");
+  return base;
 }
 
 class BodyTooLargeError extends Error {
@@ -2341,6 +2394,20 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && p === "/api/access/external-services/catalog") {
       return json(res, 200, { ok: true, ...readAccessExternalServicesCatalogPayload() });
+    }
+
+    if (req.method === "GET" && p === "/api/settings/ai-model-lists-cache") {
+      return json(res, 200, { ok: true, cache: readAiModelListsCachePayload() });
+    }
+
+    if (req.method === "PUT" && p === "/api/settings/ai-model-lists-cache") {
+      try {
+        const body = await readBody(req);
+        const cache = writeAiModelListsCachePayload(body);
+        return json(res, 200, { ok: true, cache });
+      } catch (e) {
+        return json(res, 400, apiErrorBody(e instanceof Error ? e.message : String(e)));
+      }
     }
 
     if (req.method === "GET" && p === "/api/access/data-dump-enrichment") {
