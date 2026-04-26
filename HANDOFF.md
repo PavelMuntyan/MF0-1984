@@ -4,6 +4,29 @@ This document is a **single-source orientation** for engineers taking over the r
 
 ---
 
+## Release notes (1.9.20)
+
+### Memory tree retrieval bug fixes in chat
+
+- Fixed several retrieval-path bugs where chat could answer as if Memory tree had no relevant data even when matching nodes existed.
+- `src/memoryTreeRouter.js` now uses a more robust two-phase flow (title scan + detail rerank), plus deterministic graph fallback that does not depend on router LLM availability.
+- Added graph-neighbor expansion safeguards so connected leaf nodes (including short/empty-note entity nodes) are preserved in supplement generation.
+- Added compact all-node title index append for compact graphs, improving visibility of label-only facts in main chat context.
+- Strengthened supplement retention through context fitting (`src/contextEngine/fitContextToBudget.js`) to reduce over-shrinking of Memory tree context.
+- In `src/main.js`, when router output is empty or router call fails, chat now falls back to deterministic Memory tree supplement assembly.
+
+### Important maintenance rule (do not remove)
+
+- **Memory tree retrieval for chat is a required subsystem.**  
+  The pre-turn Memory tree supplement path (`fetchMemoryTreeSupplementForPrompt` + deterministic fallback) must stay enabled for normal chat requests.
+- Do not remove or bypass this retrieval block during refactors. If behavior changes are needed, update this section and validate against real graph-backed prompts before release.
+
+### Version bump
+
+- `package.json` / `package-lock.json` -> **1.9.20**.
+
+---
+
 ## Release notes (1.9.18)
 
 ### Memory tree optimization and analytics hardening
@@ -357,9 +380,10 @@ The router is a **large sequential `if` chain** on normalized path + method. Not
 ### 7.2 Chat pipeline (simplified)
 
 1. User composes message + optional attach modes (web, research, image, Access `#data`, etc.). **File attachments** can come from the attach menu, drag-and-drop onto `#main-chat`, or **paste into `#chat-input`** (see **Release notes (1.9.16)**); logic lives in `src/main.js` / `src/composerAttachments.js`.
-2. `chatApi.js` selects provider order, builds model context (`src/contextEngine/*`), may call LLM via **Vite dev proxies** (`/llm/openai`, …) using keys from `import.meta.env`.
-3. Responses rendered as markdown (`src/markdown.js`) with optional **syntax highlighting** (`src/markdownCodeHighlight.js`, highlight.js).
-4. Turns persisted through `chatPersistence.js` → `/api/dialogs/.../turns`.
+2. Pre-turn context build in `src/main.js` always attempts Memory tree supplement retrieval for regular chat (`fetchMemoryTreeSupplementForPrompt`), and falls back to deterministic graph supplement if router output is empty or router call fails.
+3. `chatApi.js` selects provider order, builds model context (`src/contextEngine/*`), may call LLM via **Vite dev proxies** (`/llm/openai`, …) using keys from `import.meta.env`.
+4. Responses rendered as markdown (`src/markdown.js`) with optional **syntax highlighting** (`src/markdownCodeHighlight.js`, highlight.js).
+5. Turns persisted through `chatPersistence.js` → `/api/dialogs/.../turns`.
 
 ### 7.2a Themes sidebar and mobile Intro / Rules / Access
 

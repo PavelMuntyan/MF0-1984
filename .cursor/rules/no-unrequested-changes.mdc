@@ -1,0 +1,11 @@
+---
+description: Never remove implemented project behavior without explicit user approval
+alwaysApply: true
+---
+
+# No removals without explicit approval
+
+- **ABSOLUTE RULE:** Do not delete, disable, bypass, or silently revert any implemented project behavior unless the user explicitly asks for that exact removal in the current chat.
+- If you think removal/refactor is needed, propose it first and wait for explicit approval before making destructive edits.
+- Default to additive and backward-compatible changes.
+- If a feature looks broken, fix it in place; do not remove it as a shortcut.

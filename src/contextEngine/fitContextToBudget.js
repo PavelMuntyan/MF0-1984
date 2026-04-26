@@ -1,6 +1,7 @@
 /**
  * Fit assembled context into a token budget.
  * Shrink RAG retrieved block, then Memory tree supplement, then compact MEMORY in system; keep core/rules/recent and the final user intact.
+ * Memory graph excerpts are placed immediately before the final user turn so the model treats them like grounded context for the latest question.
  */
 
 import { estimateTokens } from "./tokenEstimate.js";
@@ -69,9 +70,9 @@ export function fitContextToBudget(built, maxInputTokens) {
     dropped.push("retrieved_shrink");
   }
 
-  while (remaining < 0 && memTreeTok > 120 && memTreeMsg) {
+  while (remaining < 0 && memTreeTok > 200 && memTreeMsg) {
     const c = memTreeMsg.content;
-    const newLen = Math.max(160, Math.floor(c.length * 0.62));
+    const newLen = Math.max(2800, Math.floor(c.length * 0.72));
     memTreeMsg = { ...memTreeMsg, content: c.slice(0, newLen) + (newLen < c.length ? "\n…" : "") };
     const newTok = estimateTokens(memTreeMsg.content);
     remaining += memTreeTok - newTok;
@@ -105,6 +106,29 @@ export function fitContextToBudget(built, maxInputTokens) {
     dropped.push("user_profile_shrink");
   }
 
+  const memTreeForApi =
+    memTreeMsg && String(memTreeMsg.content ?? "").trim().length > 80 ? memTreeMsg : null;
+
+  const memoryBehaviorDirective = [
+    "=== MEMORY GRAPH BEHAVIOR ===",
+    "Memory graph retrieval is automatic for each user message.",
+    "Never instruct the user to write a special memory-tree query, to paste a list, or to provide the same facts again just so you can answer.",
+    "If retrieved memory data is present, use it directly and answer from it.",
+    "If retrieved memory data is absent or insufficient, state that briefly and do not invent details.",
+  ].join("\n");
+
+  const memoryTreeDirective = memTreeForApi
+    ? [
+        "=== MEMORY GRAPH (retrieved for this turn) ===",
+        "A user-role message in this request begins with the marker MF0_MEMORY_TREE_SUPPLEMENT. That block was filled automatically from the user's personal Memory graph for the latest user question.",
+        "Read it before you answer.",
+        "When it contains the facts the user needs (lists, titles, names, dates, constraints, preferences), ground your reply in that text.",
+        "Do not say you lack context, cannot see the graph, or cannot produce a list when that block already includes the requested facts.",
+        "Never tell the user they must phrase a special query to the memory tree; retrieval is automatic on every message.",
+        "If there is no such block, it is empty, or it still lacks what is needed, say briefly that stored notes do not cover it — without inventing details.",
+      ].join("\n")
+    : "";
+
   const systemInstruction = [
     "=== CORE ===",
     built.systemCore,
@@ -115,6 +139,8 @@ export function fitContextToBudget(built, maxInputTokens) {
     built.activeRulesDigest || "(none)",
     accessText.trim() ? "=== ACCESS CATALOG (metadata only; no API keys) ===\n" + accessText : "",
     memoryText.trim() ? "=== MEMORY ===\n" + memoryText.trim() : "",
+    memoryBehaviorDirective,
+    memoryTreeDirective,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -124,10 +150,10 @@ export function fitContextToBudget(built, maxInputTokens) {
   if (retrievedMsg && String(retrievedMsg.content ?? "").trim().length > 60) {
     messagesForApi.push(retrievedMsg);
   }
-  if (memTreeMsg && String(memTreeMsg.content ?? "").trim().length > 80) {
-    messagesForApi.push(memTreeMsg);
-  }
   messagesForApi.push(...recentMsgs);
+  if (memTreeForApi) {
+    messagesForApi.push(memTreeForApi);
+  }
   messagesForApi.push(final);
 
   const debug = {

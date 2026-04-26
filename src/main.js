@@ -88,7 +88,10 @@ import {
 } from "./chatPersistence.js";
 import { buildModelContext } from "./contextEngine/buildModelContext.js";
 import { fitContextToBudget } from "./contextEngine/fitContextToBudget.js";
-import { fetchMemoryTreeSupplementForPrompt } from "./memoryTreeRouter.js";
+import {
+  buildMemoryTreeDeterministicSupplement,
+  fetchMemoryTreeSupplementForPrompt,
+} from "./memoryTreeRouter.js";
 import { renderThemeCards, syncSidebarSelectionState } from "./themesSidebar.js";
 import {
   getFavoriteThemeIdSet,
@@ -6116,6 +6119,10 @@ async function buildChatOptsForModelRequest(p) {
             appendActivityLog(
               `Memory tree router: ${rErr instanceof Error ? rErr.message : String(rErr)}`,
             );
+            memoryTreeSupplement = buildMemoryTreeDeterministicSupplement(graphPayload, promptForApi);
+          }
+          if (!String(memoryTreeSupplement ?? "").trim() && graphNodes.length > 0) {
+            memoryTreeSupplement = buildMemoryTreeDeterministicSupplement(graphPayload, promptForApi);
           }
         }
         const built = buildModelContext({
