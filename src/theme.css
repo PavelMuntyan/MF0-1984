@@ -546,6 +546,13 @@ body {
   opacity: 0.48;
 }
 
+/* AI opinion — same pill as provider badges; disabled when unavailable or attach mode conflicts */
+.badge.badge-ai-opinion:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+  filter: grayscale(0.2);
+}
+
 /* Text buttons — outline */
 .btn {
   display: inline-flex;

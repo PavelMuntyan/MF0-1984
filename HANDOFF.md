@@ -4,6 +4,27 @@ This document is a **single-source orientation** for engineers taking over the r
 
 ---
 
+## Release notes (1.9.22)
+
+### AI opinion entry and model selection
+
+- **AI opinion** is no longer under the **`+`** attach menu. It appears as **`#btn-ai-opinion`** in **`#model-badges`** (after the Claude badge), with disabled styling when fewer than two model keys exist or when attach modes that conflict with multi-model flow are active (`src/theme.css`, `index.html`, `src/main.js`).
+- Entering **Create image**, **Deep research**, **Web search**, or **Access data** from **`+`** while in AI opinion restores the default chat provider (and image mode still picks a capable model when required). Leaving those modes does not silently re-enable AI opinion.
+- **Mutual exclusivity:** In AI opinion mode, provider badges no longer show a misleading **`.active`** state; **`getActiveProviderId()`** resolves the primary speaker from **`getDefaultChatProvider()`** + **`PROVIDER_ORDER`**. Before entering AI opinion, the current badge selection is persisted via **`setDefaultChatProvider`**. A second click on **AI opinion** exits to default chat and calls **`restoreDefaultChatProviderBadge()`**.
+- Clicking a **model badge** clears AI opinion and refreshes badges so a single model can be selected again.
+
+### Composer Send button
+
+- **`syncComposerSendButtonState()`** now disables Send while **`chatComposerSending`** (explicit **`disabled`**, not a no-op return).
+- Send state is recomputed after **model badge** clicks, **AI opinion** toggle, and **attach menu** actions (so text or files already in the composer re-enable Send without requiring another keystroke).
+- **`compositionend`** on **`#chat-input`** updates Send after IME composition (same eligibility as **`submitChat`**: trimmed text, attachment rows, or **Access data** mode).
+
+### Version bump
+
+- `package.json` / `package-lock.json` → **1.9.22**.
+
+---
+
 ## Release notes (1.9.21)
 
 ### Memory graph keeper and aux analytics for API-saved turns

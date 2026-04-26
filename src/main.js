@@ -2307,6 +2307,46 @@ function setActiveProviderBadge(providerId) {
   return true;
 }
 
+/** Restores highlighted model to the user’s default (or first available). */
+function restoreDefaultChatProviderBadge() {
+  const wrap = document.getElementById("model-badges");
+  if (!wrap) return;
+  const preferred = getDefaultChatProvider();
+  const firstOk = [preferred, ...PROVIDER_ORDER].find((id) => {
+    if (!id) return false;
+    const b = wrap.querySelector(`[data-provider="${id}"]`);
+    return b && !b.disabled && !b.classList.contains("badge--no-key");
+  });
+  if (firstOk) {
+    setActiveProviderBadge(firstOk);
+    setDefaultChatProvider(firstOk);
+  }
+}
+
+/** AI opinion toggle next to provider badges — disabled when fewer than two keys or attach mode blocks it. */
+function syncAiOpinionBadge() {
+  const btn = document.getElementById("btn-ai-opinion");
+  if (!(btn instanceof HTMLButtonElement)) return;
+  const keysOk = hasAtLeastTwoModelKeys();
+  const blocked =
+    composerAttachMode === "image" ||
+    composerAttachMode === "research" ||
+    composerAttachMode === "web" ||
+    composerAttachMode === "accessData";
+  const enabled = keysOk && !blocked;
+  btn.disabled = !enabled;
+  btn.setAttribute("aria-disabled", enabled ? "false" : "true");
+  btn.classList.toggle("active", composerAttachMode === "aiTalks");
+  btn.setAttribute("aria-pressed", composerAttachMode === "aiTalks" ? "true" : "false");
+  if (!keysOk) {
+    btn.title = "AI opinion requires at least 2 model keys in .env";
+  } else if (blocked) {
+    btn.title = "Turn off Create image, Deep research, Web search, or Access data to use AI opinion";
+  } else {
+    btn.title = "AI opinion — several models answer in one panel";
+  }
+}
+
 /** Activates the first provider in the priority list that has a key in .env */
 function activateProviderForWebSearch() {
   const keys = getModelApiKeys();
@@ -2370,12 +2410,7 @@ function refreshModelBadges() {
       continue;
     }
     btn.classList.remove("badge--no-key");
-    if (composerAttachMode === "aiTalks") {
-      btn.classList.add("badge--mode-locked");
-      btn.disabled = false;
-      btn.setAttribute("aria-disabled", "true");
-      btn.title = "In AI opinion mode model selection is locked";
-    } else if (composerAttachMode === "image" && IMAGE_MODE_DISABLED_PROVIDERS.has(id)) {
+    if (composerAttachMode === "image" && IMAGE_MODE_DISABLED_PROVIDERS.has(id)) {
       btn.classList.add("badge--mode-locked");
       btn.disabled = true;
       btn.setAttribute("aria-disabled", "true");
@@ -2383,7 +2418,11 @@ function refreshModelBadges() {
     } else {
       btn.disabled = false;
       btn.removeAttribute("aria-disabled");
-      btn.removeAttribute("title");
+      if (composerAttachMode === "aiTalks") {
+        btn.title = "Single model (exits AI opinion)";
+      } else {
+        btn.removeAttribute("title");
+      }
     }
   }
 
@@ -2396,6 +2435,10 @@ function refreshModelBadges() {
       .find((b) => b && !b.disabled);
     next?.classList.add("active");
   }
+  if (composerAttachMode === "aiTalks") {
+    wrap.querySelectorAll("[data-provider].active").forEach((b) => b.classList.remove("active"));
+  }
+  syncAiOpinionBadge();
 }
 
 function initProviderBadges() {
@@ -2425,12 +2468,18 @@ function initProviderBadges() {
     if (!t || t.disabled || t.classList.contains("badge--no-key") || t.classList.contains("badge--mode-locked")) {
       return;
     }
+    if (composerAttachMode === "aiTalks") {
+      composerAttachMode = "";
+      syncAttachButtonExternal?.();
+    }
     for (const b of buttons) {
       b.classList.remove("active");
     }
     t.classList.add("active");
     const pid = t.getAttribute("data-provider");
     if (pid) setDefaultChatProvider(pid);
+    refreshModelBadges();
+    syncComposerSendButtonState();
     appendActivityLog(`Model: ${PROVIDER_DISPLAY[pid] ?? pid ?? "—"}`);
   });
 }
@@ -3531,7 +3580,10 @@ function syncComposerSendButtonState() {
   const ta = document.getElementById("chat-input");
   const sendBtn = document.getElementById("btn-chat-send");
   if (!(ta instanceof HTMLTextAreaElement) || !sendBtn) return;
-  if (chatComposerSending) return;
+  if (chatComposerSending) {
+    sendBtn.disabled = true;
+    return;
+  }
   const hasText = ta.value.trim().length > 0;
   const hasFiles = composerAttachmentRows.length > 0;
   const accessDataReady = composerAttachMode === "accessData";
@@ -3613,7 +3665,6 @@ function initAttachMenu() {
   const inputField = document.querySelector(".input-bar-field");
   const resetBtn = document.getElementById("attach-menu-reset");
   const resetSep = menu?.querySelector(".attach-menu-reset-sep");
-  const aiOpinionItem = menu?.querySelector('[data-action="aiTalks"]');
   if (!btn || !menu || !visual) return;
 
   /** Plain text input only when the main button is no longer "+" (mode icon shown). */
@@ -3629,6 +3680,24 @@ function initAttachMenu() {
   }
 
   function cloneMenuIconSvg(action) {
+    if (action === "aiTalks") {
+      const svg = elSvg("svg", {
+        viewBox: "0 0 24 24",
+        width: "18",
+        height: "18",
+        fill: "none",
+        stroke: "currentColor",
+        "stroke-width": "2",
+        "stroke-linecap": "round",
+        "stroke-linejoin": "round",
+      });
+      svg.appendChild(
+        elSvg("path", {
+          d: "M12 3 13.8 10.2 21 12 13.8 13.8 12 21 10.2 13.8 3 12 10.2 10.2 12 3z",
+        }),
+      );
+      return svg;
+    }
     const item = menu.querySelector(`[data-action="${action}"]`);
     const src = item?.querySelector(".attach-menu-icon svg");
     if (!src) return null;
@@ -3671,14 +3740,7 @@ function initAttachMenu() {
       inputField.classList.toggle("input-bar-field--ai-talks-stop", aiTalksActive);
     }
     syncResetRow();
-  }
-
-  function syncAiOpinionItemAvailability() {
-    if (!(aiOpinionItem instanceof HTMLButtonElement)) return;
-    const ok = hasAtLeastTwoModelKeys();
-    aiOpinionItem.disabled = !ok;
-    aiOpinionItem.setAttribute("aria-disabled", ok ? "false" : "true");
-    aiOpinionItem.title = ok ? "AI opinion" : "AI opinion requires at least 2 model keys in .env";
+    syncAiOpinionBadge();
   }
 
   function close() {
@@ -3687,7 +3749,7 @@ function initAttachMenu() {
   }
 
   function open() {
-    syncAiOpinionItemAvailability();
+    syncAiOpinionBadge();
     syncResetRow();
     menu.hidden = false;
     btn.setAttribute("aria-expanded", "true");
@@ -3713,6 +3775,7 @@ function initAttachMenu() {
         composerAttachMode = "";
         syncAttachButton();
         refreshModelBadges();
+        syncComposerSendButtonState();
         appendActivityLog('Attach menu: default input');
         close();
         return;
@@ -3722,38 +3785,46 @@ function initAttachMenu() {
         fileInput?.click();
         appendActivityLog("Add photos & files: file picker opened");
         refreshModelBadges();
+        syncComposerSendButtonState();
         close();
         return;
       }
 
+      const wasAiTalks = composerAttachMode === "aiTalks";
       composerAttachMode = action ?? "";
       syncAttachButton();
 
+      if (
+        wasAiTalks &&
+        action &&
+        (action === "image" || action === "research" || action === "web" || action === "accessData")
+      ) {
+        restoreDefaultChatProviderBadge();
+      }
+
       if (action === "image") {
         appendActivityLog('Attach menu: Create image');
-        activateProviderForImageCreation();
-        appendActivityLog("In this mode only ChatGPT and Gemini are available (other models disabled)");
-      } else if (action === "aiTalks") {
-        if (!hasAtLeastTwoModelKeys()) {
-          composerAttachMode = "";
-          syncAttachButton();
-          refreshModelBadges();
-          appendActivityLog("AI opinion requires at least 2 model keys in .env.");
-          close();
-          return;
+        if (wasAiTalks) {
+          const pid = getActiveProviderId();
+          if (!pid || IMAGE_MODE_DISABLED_PROVIDERS.has(pid)) {
+            activateProviderForImageCreation();
+          }
+        } else {
+          activateProviderForImageCreation();
         }
-        appendActivityLog("Attach menu: AI opinion");
+        appendActivityLog("In this mode only ChatGPT and Gemini are available (other models disabled)");
       } else if (action === "research") {
         appendActivityLog('Attach menu: Deep research');
-        activateProviderForDeepResearch();
+        if (!wasAiTalks) activateProviderForDeepResearch();
       } else if (action === "web") {
         appendActivityLog('Attach menu: Web search');
-        activateProviderForWebSearch();
+        if (!wasAiTalks) activateProviderForWebSearch();
       } else if (action === "accessData") {
         clearComposerAttachmentRows();
         appendActivityLog("Attach menu: Access data");
       }
       refreshModelBadges();
+      syncComposerSendButtonState();
       close();
     });
   });
@@ -3802,13 +3873,56 @@ function initAttachMenu() {
   });
 
   syncAttachButtonExternal = syncAttachButton;
-  syncAiOpinionItemAvailability();
+  syncAiOpinionBadge();
   syncAttachButton();
+}
+
+function initAiOpinionButton() {
+  const btn = document.getElementById("btn-ai-opinion");
+  if (!(btn instanceof HTMLButtonElement) || btn.dataset.bound === "1") return;
+  btn.dataset.bound = "1";
+  btn.addEventListener("click", () => {
+    if (btn.disabled || !hasAtLeastTwoModelKeys()) return;
+    const wrap = document.getElementById("model-badges");
+    if (composerAttachMode === "aiTalks") {
+      composerAttachMode = "";
+      syncAttachButtonExternal?.();
+      refreshModelBadges();
+      restoreDefaultChatProviderBadge();
+      syncComposerSendButtonState();
+      appendActivityLog("Default chat (exited AI opinion)");
+      return;
+    }
+    const activeEl = wrap?.querySelector("[data-provider].active:not(.badge--no-key)");
+    const cur = activeEl?.getAttribute("data-provider");
+    if (cur && PROVIDER_ORDER.includes(cur)) {
+      setDefaultChatProvider(cur);
+    }
+    composerAttachMode = "aiTalks";
+    syncAttachButtonExternal?.();
+    refreshModelBadges();
+    syncComposerSendButtonState();
+    appendActivityLog("AI opinion");
+  });
 }
 
 const CHAT_MAX_LINES = 20;
 
 function getActiveProviderId() {
+  const wrap = document.getElementById("model-badges");
+  if (composerAttachMode === "aiTalks" && wrap) {
+    const keys = getModelApiKeys();
+    const preferred = getDefaultChatProvider();
+    for (const id of [preferred, ...PROVIDER_ORDER]) {
+      if (!id) continue;
+      if (!providerHasKey(keys, id)) continue;
+      const b = wrap.querySelector(`[data-provider="${id}"]`);
+      if (b instanceof HTMLElement && !b.disabled && !b.classList.contains("badge--no-key")) {
+        return id;
+      }
+    }
+    return null;
+  }
   const el = document.querySelector("#model-badges .badge.active[data-provider]");
   if (!el || el.disabled || el.classList.contains("badge--no-key")) return null;
   return el.getAttribute("data-provider");
@@ -6399,6 +6513,10 @@ function initChatComposer() {
     syncChatInputHeight(ta);
     syncComposerSendButtonState();
   });
+  ta.addEventListener("compositionend", () => {
+    syncChatInputHeight(ta);
+    syncComposerSendButtonState();
+  });
   syncComposerSendButtonState();
 
   ta.addEventListener("paste", (e) => {
@@ -7810,6 +7928,7 @@ function bootApp() {
   });
   initNewDialogueButton();
   initAttachMenu();
+  initAiOpinionButton();
   initChatComposer();
   initChatFileDropZone();
   initChatImageLightbox();

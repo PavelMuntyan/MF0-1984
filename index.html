@@ -1119,6 +1119,17 @@
                 <button type="button" class="badge" data-provider="perplexity">Perplexity</button>
                 <button type="button" class="badge" data-provider="gemini-flash">Gemini</button>
                 <button type="button" class="badge" data-provider="anthropic">Claude</button>
+                <button
+                  type="button"
+                  class="badge badge-ai-opinion"
+                  id="btn-ai-opinion"
+                  aria-pressed="false"
+                  disabled
+                  aria-disabled="true"
+                  title="AI opinion requires at least 2 model keys in .env"
+                >
+                  AI opinion
+                </button>
               </div>
 
               <div class="input-bar">
@@ -1164,14 +1175,6 @@
                       <span class="attach-menu-label">Add photos &amp; files</span>
                     </button>
                     <div class="attach-menu-sep" role="separator"></div>
-                    <button type="button" class="attach-menu-item" role="menuitem" data-action="aiTalks">
-                      <span class="attach-menu-icon" aria-hidden="true">
-                        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                          <path d="M12 3 13.8 10.2 21 12 13.8 13.8 12 21 10.2 13.8 3 12 10.2 10.2 12 3z" />
-                        </svg>
-                      </span>
-                      <span class="attach-menu-label">AI opinion</span>
-                    </button>
                     <button type="button" class="attach-menu-item" role="menuitem" data-action="image">
                       <span class="attach-menu-icon" aria-hidden="true">
                         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

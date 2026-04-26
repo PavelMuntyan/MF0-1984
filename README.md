@@ -12,6 +12,13 @@ For architecture, data model, env vars, and operations, see **[HANDOFF.md](./HAN
 
 ---
 
+## Release 1.9.22 highlights
+
+- **AI opinion UX** — Dedicated **AI opinion** control next to model badges (not in **`+`**); rules for disabled state, attach-mode transitions, default provider restore, and mutual exclusivity with single-model selection (`index.html`, `src/main.js`, `src/theme.css`).
+- **Send button** — Stays in sync with text, attachments, and **Access data** after model or attach changes; correct disabled state while a send is in flight; IME-friendly updates via **`compositionend`** (`src/main.js`).
+
+See **HANDOFF.md** for full engineering notes.
+
 ## Release 1.9.21 highlights
 
 - **API-saved turns and the memory graph** — Optional server-side keeper for turns created only via `POST /api/dialogs/:id/turns` records **`interests_sketch`** / **`memory_graph_normalize`** into **`analytics_aux_llm_usage`** with **`conversation_turn_id`** and **`dialog_id`** (`server/memoryGraphApiTurnKeeper.mjs`, `server/api.mjs`).
@@ -21,6 +28,10 @@ For architecture, data model, env vars, and operations, see **[HANDOFF.md](./HAN
 - **Housekeeping** — Removed obsolete **`optimizer_record_linkage`** from the aux allowlist; removed unused **`persistAiTalksAssistantTurn`**. See **HANDOFF.md** for full notes.
 
 ## Notable recent releases
+
+### 1.9.21
+
+- Memory graph keeper for API-saved turns, router/chat/aux improvements, per-response USD display, bubble copy feedback. See **HANDOFF.md**.
 
 ### 1.9.20
 
