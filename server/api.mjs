@@ -3259,6 +3259,15 @@ const server = http.createServer(async (req, res) => {
         const audioBuffer = decodeBase64Audio(body?.audioBase64);
         const mimeType = normalizeAudioMimeType(body?.mimeType);
         const out = await transcribeVoiceFromEnv(audioBuffer, mimeType, body);
+        try {
+          const pid = analyticsProviderFromVoiceProvider(out.providerId);
+          const completionTokens = estimateTokensFromText(out.text);
+          const promptTokens = 0;
+          const totalTokens = completionTokens;
+          recordAuxLlmUsageRow(pid, "voice_transcription", promptTokens, completionTokens, totalTokens);
+        } catch (e) {
+          console.warn("[mf-lab-api] voice_transcription analytics:", e);
+        }
         return json(res, 200, { ok: true, providerId: out.providerId, text: out.text });
       } catch (e) {
         return json(res, 400, apiErrorBody(e instanceof Error ? e.message : String(e)));
