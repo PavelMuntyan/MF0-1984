@@ -4,6 +4,32 @@ This document is a **single-source orientation** for engineers taking over the r
 
 ---
 
+## Release notes (1.9.17)
+
+### Memory tree optimization safety and scope update
+
+- **`Graph pruning` removed from product entirely** (UI + client logic + analytics allowlist):
+  - button removed from Settings (`index.html`, `settings-memory-opt-graph-pruning`)
+  - pruning builder removed from client (`buildGraphPruningOptimizationPayload` in `src/main.js`)
+  - run branch / click handler removed from optimizer flow (`runMemoryOptimization` in `src/main.js`)
+  - aux analytics request kind removed from server allowlist (`optimizer_graph_pruning` from `AUX_LLM_USAGE_KINDS` in `server/api.mjs`)
+- **`Knowledge consistency` restored** as an explicit optimizer action in Settings and in `src/main.js` optimizer flow.
+- **Current optimizer set** in Settings now:
+  - `Record linkage`
+  - `Knowledge consistency`
+  - `LLM check`
+  - `Interests reconnect`
+
+### Notes
+
+- This release intentionally documents **product/code behavior only**; it does **not** include ad-hoc manual graph data edits.
+
+### Version bump
+
+- `package.json` / `package-lock.json` → **1.9.17**.
+
+---
+
 ## Release notes (1.9.16)
 
 ### Composer — paste files from clipboard
@@ -128,7 +154,7 @@ Settings → **Project Cache** no longer shows a single combined **“files & pi
 
 - Memory tree Optimization controls added to Settings (`Memory tree optimization`, 2×2 grid):
   - `Record linkage`
-  - `Graph pruning`
+  - `Knowledge consistency`
   - `LLM check`
 - Optimizer execution behavior:
   - each run is launched from Settings but continues while Settings is open/hidden flow-safe (not canceled by closing the modal)
@@ -138,12 +164,12 @@ Settings → **Project Cache** no longer shows a single combined **“files & pi
   - all outcomes are appended to Activity log (start, no-op, applied stats, failures)
 - Implemented optimization semantics (current MVP, universal/non-domain-specific):
   - Record linkage: deterministic duplicate candidates by normalized `(category,label)` with merge commands
-  - Graph pruning: removes self-loops and duplicate edges; performs relation-scoped transitive reduction (not hardcoded to a single relation)
+  - Knowledge consistency: resolves relation conflicts per node pair by canonical (most frequent) relation; emits edge cleanup + canonical links
   - LLM check: model-based quality gate for high-similarity merge candidates; strict JSON command contract
 - Analytics integration:
   - optimizer LLM usage now accepted by aux analytics endpoint with request kinds:
     - `optimizer_record_linkage`
-    - `optimizer_graph_pruning`
+    - `optimizer_knowledge_consistency`
     - `optimizer_llm_check`
 - Prior release context retained:
   - document attachment extraction endpoint and parser module (`/api/attachments/extract`, `server/attachmentTextExtract.mjs`)
@@ -309,7 +335,7 @@ The router is a **large sequential `if` chain** on normalized path + method. Not
 - **Import:** separate from project profile; success modal in `main.js`.
 - **Graph:** `3d-force-graph`, **Three.js**; intro chat can detect commands (`src/introMemoryTreeCommands.js`).
 - **Optimization UI in Settings:** actions under Memory tree section:
-  - `Record linkage`, `Graph pruning`, `LLM check`, `Interests reconnect`
+  - `Record linkage`, `Knowledge consistency`, `LLM check`, `Interests reconnect`
   - implemented in `src/main.js` with button ids `settings-memory-opt-*` and related styles in `src/theme.css`
   - runs produce `commands` / `links` payloads and apply through existing `POST /api/memory-graph/ingest`
   - all statuses are logged to Activity; successful runs mark the button with a persistent checkmark until Settings closes

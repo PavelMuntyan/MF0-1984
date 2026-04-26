@@ -884,68 +884,50 @@ function buildRecordLinkageOptimizationPayload(rawGraph) {
   };
 }
 
-function buildGraphPruningOptimizationPayload(rawGraph) {
+function buildKnowledgeConsistencyOptimizationPayload(rawGraph) {
   const nodesById = memoryOptNodeByIdMap(rawGraph);
   const links = Array.isArray(rawGraph?.links) ? rawGraph.links : [];
   const commands = [];
-  let duplicateEdges = 0;
-  let selfLoops = 0;
-  let transitiveDrops = 0;
-  const seen = new Set();
-  const relationEdges = [];
+  let relationFixes = 0;
+  const pairBuckets = new Map();
   for (const ln of links) {
     const fromNode = nodesById.get(String(ln?.source ?? "").trim());
     const toNode = nodesById.get(String(ln?.target ?? "").trim());
     const relation = String(ln?.label ?? "").trim().slice(0, 200) || "related";
     if (!fromNode || !toNode) continue;
-    if (fromNode.id === toNode.id) {
-      if (memoryOptPushDeleteEdge(commands, fromNode, toNode, relation)) selfLoops += 1;
-      continue;
+    const pk = `${fromNode.id}\u0000${toNode.id}`;
+    if (!pairBuckets.has(pk)) {
+      pairBuckets.set(pk, {
+        fromNode,
+        toNode,
+        counts: new Map(),
+      });
     }
-    const key = `${fromNode.id}\u0000${toNode.id}\u0000${relation}`;
-    if (seen.has(key)) {
-      if (memoryOptPushDeleteEdge(commands, fromNode, toNode, relation)) duplicateEdges += 1;
-      continue;
-    }
-    seen.add(key);
-    relationEdges.push({ fromNode, toNode, relation });
+    const bucket = pairBuckets.get(pk);
+    bucket.counts.set(relation, (bucket.counts.get(relation) ?? 0) + 1);
   }
-  if (commands.length < MEMORY_OPT_MAX_COMMANDS && relationEdges.length > 1) {
-    const byRelation = new Map();
-    for (const e of relationEdges) {
-      if (!byRelation.has(e.relation)) byRelation.set(e.relation, []);
-      byRelation.get(e.relation).push(e);
-    }
-    for (const relGroup of byRelation.values()) {
-      if (relGroup.length < 2) continue;
-      const byFrom = new Map();
-      for (const e of relGroup) {
-        if (!byFrom.has(e.fromNode.id)) byFrom.set(e.fromNode.id, []);
-        byFrom.get(e.fromNode.id).push(e.toNode.id);
-      }
-      const edgeSet = new Set(relGroup.map((e) => `${e.fromNode.id}\u0000${e.toNode.id}`));
-      for (const ab of relGroup) {
-        const mids = byFrom.get(ab.toNode.id) ?? [];
-      for (const cId of mids) {
-        const directKey = `${ab.fromNode.id}\u0000${cId}`;
-        if (!edgeSet.has(directKey)) continue;
-        const cNode = nodesById.get(cId);
-        if (!cNode) continue;
-        if (memoryOptPushDeleteEdge(commands, ab.fromNode, cNode, ab.relation)) {
-          transitiveDrops += 1;
+  const linksToAdd = [];
+  for (const bucket of pairBuckets.values()) {
+    const entries = [...bucket.counts.entries()].sort((a, b) => b[1] - a[1]);
+    if (entries.length === 0) continue;
+    const canonicalRelation = String(entries[0][0] ?? "related").trim() || "related";
+    if (entries.length > 1) {
+      for (const [rel] of entries.slice(1)) {
+        if (memoryOptPushDeleteEdge(commands, bucket.fromNode, bucket.toNode, rel)) {
+          relationFixes += 1;
         }
-        if (commands.length >= MEMORY_OPT_MAX_COMMANDS) break;
       }
-        if (commands.length >= MEMORY_OPT_MAX_COMMANDS) break;
-      }
-      if (commands.length >= MEMORY_OPT_MAX_COMMANDS) break;
     }
+    linksToAdd.push({
+      from: { category: bucket.fromNode.category, label: bucket.fromNode.label },
+      to: { category: bucket.toNode.category, label: bucket.toNode.label },
+      relation: canonicalRelation,
+    });
+    if (commands.length >= MEMORY_OPT_MAX_COMMANDS) break;
   }
   return {
-    payload: { entities: [], links: [], commands },
-    summary:
-      `Graph pruning: ${duplicateEdges} duplicate edge(s), ${selfLoops} self-loop(s), ` +
-      `${transitiveDrops} transitive edge(s) removed.`,
+    payload: { entities: [], links: linksToAdd, commands },
+    summary: `Knowledge consistency: ${relationFixes} relation conflict fix(es), ${linksToAdd.length} canonical edge(s).`,
   };
 }
 
@@ -1598,12 +1580,12 @@ function initSettingsModal() {
   }
 
   const memoryOptRecordLinkageBtn = document.getElementById("settings-memory-opt-record-linkage");
-  const memoryOptPruningBtn = document.getElementById("settings-memory-opt-graph-pruning");
+  const memoryOptKnowledgeBtn = document.getElementById("settings-memory-opt-knowledge-consistency");
   const memoryOptLlmCheckBtn = document.getElementById("settings-memory-opt-llm-check");
   const memoryOptInterestsReconnectBtn = document.getElementById("settings-memory-opt-interests-reconnect");
   const memoryOptButtons = [
     memoryOptRecordLinkageBtn,
-    memoryOptPruningBtn,
+    memoryOptKnowledgeBtn,
     memoryOptLlmCheckBtn,
     memoryOptInterestsReconnectBtn,
   ].filter((x) => x instanceof HTMLButtonElement);
@@ -1645,8 +1627,8 @@ function initSettingsModal() {
       let out;
       if (kind === "record linkage") {
         out = buildRecordLinkageOptimizationPayload(rawGraph);
-      } else if (kind === "graph pruning") {
-        out = buildGraphPruningOptimizationPayload(rawGraph);
+      } else if (kind === "knowledge consistency") {
+        out = buildKnowledgeConsistencyOptimizationPayload(rawGraph);
       } else if (kind === "interests reconnect") {
         out = buildInterestsOrphanReconnectPayload(rawGraph);
       } else {
@@ -1703,9 +1685,9 @@ function initSettingsModal() {
       void runMemoryOptimization("record linkage", memoryOptRecordLinkageBtn.id);
     });
   }
-  if (memoryOptPruningBtn instanceof HTMLButtonElement) {
-    memoryOptPruningBtn.addEventListener("click", () => {
-      void runMemoryOptimization("graph pruning", memoryOptPruningBtn.id);
+  if (memoryOptKnowledgeBtn instanceof HTMLButtonElement) {
+    memoryOptKnowledgeBtn.addEventListener("click", () => {
+      void runMemoryOptimization("knowledge consistency", memoryOptKnowledgeBtn.id);
     });
   }
   if (memoryOptLlmCheckBtn instanceof HTMLButtonElement) {
