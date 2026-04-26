@@ -248,6 +248,47 @@ function pickOpenAiModel() {
   return "gpt-4o-mini";
 }
 
+/**
+ * @param {unknown} data
+ * @param {string} promptBasis
+ * @param {string} completionText
+ */
+function usageFromOpenAiChatCompletion(data, promptBasis, completionText) {
+  const u = data && typeof data === "object" ? /** @type {{ usage?: unknown }} */ (data).usage : null;
+  const o = u && typeof u === "object" ? /** @type {Record<string, unknown>} */ (u) : {};
+  let pp = Math.max(0, Number(o.prompt_tokens) || 0);
+  let pc = Math.max(0, Number(o.completion_tokens) || 0);
+  let pt = Math.max(0, Number(o.total_tokens) || 0);
+  if (pt === 0 && pp === 0 && pc === 0) {
+    const est = (s) => Math.max(1, Math.ceil(String(s ?? "").length / 4));
+    pp = est(promptBasis);
+    pc = est(completionText);
+    pt = pp + pc;
+  } else if (pt === 0) {
+    pt = pp + pc;
+  }
+  return { pp, pc, pt };
+}
+
+/**
+ * @param {(row: { providerId: string, requestKind: string, promptTokens: number, completionTokens: number, totalTokens: number }) => void} rec
+ * @param {string} requestKind
+ * @param {string} promptBasis
+ * @param {string} completionText
+ * @param {unknown} data
+ */
+function recordOpenAiAux(rec, requestKind, promptBasis, completionText, data) {
+  if (typeof rec !== "function") return;
+  const { pp, pc, pt } = usageFromOpenAiChatCompletion(data, promptBasis, completionText);
+  rec({
+    providerId: "openai",
+    requestKind,
+    promptTokens: pp,
+    completionTokens: pc,
+    totalTokens: pt,
+  });
+}
+
 /** @param {import("better-sqlite3").Database} db */
 function loadMemoryGraphExistingNodes(db) {
   const rows = db.prepare(`SELECT id, category, label FROM memory_graph_nodes`).all();
@@ -266,7 +307,7 @@ function loadMemoryGraphExistingNodes(db) {
  * @param {string} model
  * @param {string} userText
  */
-async function openAiInterestExtract(apiKey, model, userText) {
+async function openAiInterestExtract(apiKey, model, userText, recordAuxUsage) {
   const u = String(userText ?? "").trim().slice(0, 8000);
   const userBlock = `USER:\n${u}`;
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -294,6 +335,7 @@ async function openAiInterestExtract(apiKey, model, userText) {
   const content = data.choices?.[0]?.message?.content;
   const rawText = openAiChatCompletionMessageContentToString(content);
   if (!rawText.trim()) throw new Error("Empty OpenAI extract response");
+  recordOpenAiAux(recordAuxUsage, "interests_sketch", userBlock, rawText, data);
   const parsed = parseIntroGraphJsonFromModelTextSafe(rawText, "interests_sketch");
   return clampGraphPayloadToInterestsOnly(parsed);
 }
@@ -304,7 +346,7 @@ async function openAiInterestExtract(apiKey, model, userText) {
  * @param {{ entities: unknown[], links: unknown[], commands?: unknown[] }} proposed
  * @param {Array<{ id: string, category: string, label: string }>} existingNodes
  */
-async function openAiNormalizeNotIntro(apiKey, model, proposed, existingNodes) {
+async function openAiNormalizeNotIntro(apiKey, model, proposed, existingNodes, recordAuxUsage) {
   const rawProp = proposed && typeof proposed === "object" ? proposed : {};
   const base = normalizeIntroGraphExtractPayload(rawProp);
   const fromExtract = normalizeGraphCommands(rawProp.commands);
@@ -347,6 +389,7 @@ async function openAiNormalizeNotIntro(apiKey, model, proposed, existingNodes) {
   const content = data.choices?.[0]?.message?.content;
   const rawText = openAiChatCompletionMessageContentToString(content);
   if (!rawText.trim()) throw new Error("Empty OpenAI normalize response");
+  recordOpenAiAux(recordAuxUsage, "memory_graph_normalize", userJson, rawText, data);
   const normalized = parseIntroGraphJsonFromModelTextSafe(rawText, "memory_graph_normalize");
   const n =
     normalized.entities.length + normalized.links.length + (normalized.commands?.length ?? 0);
@@ -358,8 +401,10 @@ async function openAiNormalizeNotIntro(apiKey, model, proposed, existingNodes) {
  * @param {import("better-sqlite3").Database} db
  * @param {(body: { entities: unknown[]; links: unknown[]; commands: unknown[] }) => unknown} ingest
  * @param {string} userText
+ * @param {{ dialogId?: string, conversationTurnId?: string, recordAuxUsage?: (row: { providerId: string, requestKind: string, promptTokens: number, completionTokens: number, totalTokens: number }) => void }} [opts]
  */
-async function runMemoryGraphKeeperIngestForChatApiTurn(db, ingest, userText) {
+async function runMemoryGraphKeeperIngestForChatApiTurn(db, ingest, userText, opts = {}) {
+  const recordAuxUsage = typeof opts.recordAuxUsage === "function" ? opts.recordAuxUsage : null;
   const apiKey = pickOpenAiKey();
   if (!apiKey) {
     console.warn("[mf-lab-api] memory-graph API-turn keeper: set OPENAI_API_KEY or MF_LAB_MEMORY_GRAPH_KEEPER_OPENAI_KEY");
@@ -369,13 +414,13 @@ async function runMemoryGraphKeeperIngestForChatApiTurn(db, ingest, userText) {
   const u = String(userText ?? "").trim();
   if (!u) return;
 
-  const extracted = await openAiInterestExtract(apiKey, model, u);
+  const extracted = await openAiInterestExtract(apiKey, model, u, recordAuxUsage);
   if (extracted.entities.length === 0 && extracted.links.length === 0) return;
 
   const existingNodes = loadMemoryGraphExistingNodes(db);
   let pack = extracted;
   try {
-    pack = await openAiNormalizeNotIntro(apiKey, model, extracted, existingNodes);
+    pack = await openAiNormalizeNotIntro(apiKey, model, extracted, existingNodes, recordAuxUsage);
   } catch (normErr) {
     console.warn(
       "[mf-lab-api] memory-graph API-turn keeper: normalize failed, using extract-only pack:",
@@ -398,9 +443,10 @@ async function runMemoryGraphKeeperIngestForChatApiTurn(db, ingest, userText) {
  * @param {import("better-sqlite3").Database} db
  * @param {(body: { entities: unknown[]; links: unknown[]; commands: unknown[] }) => unknown} ingest
  * @param {string} userText
+ * @param {{ dialogId?: string, conversationTurnId?: string, recordAuxUsage?: (row: { providerId: string, requestKind: string, promptTokens: number, completionTokens: number, totalTokens: number }) => void }} [opts]
  */
-export function scheduleMemoryGraphKeeperIngestForChatApiTurn(db, ingest, userText) {
-  void runMemoryGraphKeeperIngestForChatApiTurn(db, ingest, userText).catch((e) => {
+export function scheduleMemoryGraphKeeperIngestForChatApiTurn(db, ingest, userText, opts = {}) {
+  void runMemoryGraphKeeperIngestForChatApiTurn(db, ingest, userText, opts).catch((e) => {
     console.error("[mf-lab-api] memory-graph API-turn keeper:", e instanceof Error ? e.message : String(e));
   });
 }

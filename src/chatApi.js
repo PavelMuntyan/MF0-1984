@@ -32,18 +32,33 @@ export const PROVIDER_DISPLAY = {
  * @param {string} providerId
  * @param {string} requestKind — must match server `AUX_LLM_USAGE_KINDS` in `server/api.mjs`
  * @param {LlmUsageTotals | null | undefined} usage
+ * @param {{ dialog_id?: string, conversation_turn_id?: string }} [analytics] — scope aux rows to a thread/turn for per-message cost UI
  */
-function reportAuxLlmUsage(providerId, requestKind, usage) {
+async function reportAuxLlmUsage(providerId, requestKind, usage, analytics = {}) {
   if (!usage || typeof usage !== "object") return;
   const pid = String(providerId ?? "").trim();
   if (!pid) return;
-  void recordAuxLlmUsage({
+  const dialogId = String(analytics.dialog_id ?? "").trim();
+  const conversationTurnId = String(analytics.conversation_turn_id ?? "").trim();
+  /** @type {Record<string, unknown>} */
+  const body = {
     provider_id: pid,
     request_kind: requestKind,
     llm_prompt_tokens: usage.promptTokens,
     llm_completion_tokens: usage.completionTokens,
     llm_total_tokens: usage.totalTokens,
-  }).catch(() => {});
+  };
+  if (dialogId) body.dialog_id = dialogId;
+  if (conversationTurnId) body.conversation_turn_id = conversationTurnId;
+  try {
+    await recordAuxLlmUsage(body);
+  } catch (e) {
+    console.warn(
+      "[mf-lab] Aux analytics failed:",
+      requestKind,
+      e instanceof Error ? e.message : String(e),
+    );
+  }
 }
 
 /** @param {unknown} u */
@@ -889,7 +904,7 @@ export async function generateThemeDialogTitle(providerId, userMessage, apiKey) 
       default:
         return titleFromUserMessage(userMessage);
     }
-    reportAuxLlmUsage(providerId, "theme_dialog_title", usageOut);
+    await reportAuxLlmUsage(providerId, "theme_dialog_title", usageOut);
     const normalized = normalizeThemeDialogTitle(text);
     return normalized === "New conversation" ? titleFromUserMessage(userMessage) : normalized;
   } catch {
@@ -1228,12 +1243,14 @@ function parseAccessKeeperJsonFromModelText(text) {
  * @param {string} apiKey
  * @param {string} transcript
  * @param {string} existingSummaryJson
+ * @param {{ dialog_id?: string, conversation_turn_id?: string }} [analytics]
  */
 export async function extractAccessKeeper2EntriesFromTranscript(
   providerId,
   apiKey,
   transcript,
   existingSummaryJson,
+  analytics = {},
 ) {
   const key = String(apiKey ?? "").trim();
   const t = String(transcript ?? "").trim().slice(0, 72000);
@@ -1268,10 +1285,11 @@ export async function extractAccessKeeper2EntriesFromTranscript(
       const content = data.choices?.[0]?.message?.content;
       const rawText = openAiChatCompletionMessageContentToString(content);
       if (!rawText.trim()) throw new Error("Empty API response");
-      reportAuxLlmUsage(
+      await reportAuxLlmUsage(
         providerId,
         "access_keeper2_extract",
         withUsageFallback(usageFromOpenAiStyleUsage(data.usage), userBlock, rawText),
+        analytics,
       );
       return parseAccessKeeperJsonFromModelText(rawText);
     }
@@ -1279,10 +1297,11 @@ export async function extractAccessKeeper2EntriesFromTranscript(
     const { text, usage } = await completeChatMessage(providerId, userBlock, key, {
       systemInstruction: `${ACCESS_KEEPER2_EXTRACT_SYSTEM}\nRespond with a single JSON object only, no markdown fences.`,
     });
-    reportAuxLlmUsage(
+    await reportAuxLlmUsage(
       providerId,
       "access_keeper2_extract",
       withUsageFallback(usage, userBlock, text),
+      analytics,
     );
     return parseAccessKeeperJsonFromModelText(text);
   } catch (e) {
@@ -1459,6 +1478,7 @@ export async function extractRulesKeeper3FromTranscript(
   apiKey,
   transcript,
   existingSummaryJson,
+  analytics = {},
 ) {
   const key = String(apiKey ?? "").trim();
   const t = String(transcript ?? "").trim().slice(0, 72000);
@@ -1493,10 +1513,11 @@ export async function extractRulesKeeper3FromTranscript(
       const content = data.choices?.[0]?.message?.content;
       const rawText = openAiChatCompletionMessageContentToString(content);
       if (!rawText.trim()) throw new Error("Empty API response");
-      reportAuxLlmUsage(
+      await reportAuxLlmUsage(
         providerId,
         "rules_keeper_extract",
         withUsageFallback(usageFromOpenAiStyleUsage(data.usage), userBlock, rawText),
+        analytics,
       );
       return parseRulesKeeper3JsonFromModelText(rawText);
     }
@@ -1504,10 +1525,11 @@ export async function extractRulesKeeper3FromTranscript(
     const { text, usage } = await completeChatMessage(providerId, userBlock, key, {
       systemInstruction: `${RULES_KEEPER3_EXTRACT_SYSTEM}\nRespond with a single JSON object only, no markdown fences.`,
     });
-    reportAuxLlmUsage(
+    await reportAuxLlmUsage(
       providerId,
       "rules_keeper_extract",
       withUsageFallback(usage, userBlock, text),
+      analytics,
     );
     return parseRulesKeeper3JsonFromModelText(text);
   } catch (e) {
@@ -1516,7 +1538,7 @@ export async function extractRulesKeeper3FromTranscript(
   }
 }
 
-export async function extractChatInterestSketchForIngest(providerId, apiKey, userText) {
+export async function extractChatInterestSketchForIngest(providerId, apiKey, userText, analytics = {}) {
   const key = String(apiKey ?? "").trim();
   const u = String(userText ?? "").trim().slice(0, 8000);
   if (!key || !u) {
@@ -1547,10 +1569,11 @@ export async function extractChatInterestSketchForIngest(providerId, apiKey, use
     const content = data.choices?.[0]?.message?.content;
     const rawText = openAiChatCompletionMessageContentToString(content);
     if (!rawText.trim()) throw new Error("Empty API response");
-    reportAuxLlmUsage(
+    await reportAuxLlmUsage(
       providerId,
       "interests_sketch",
       withUsageFallback(usageFromOpenAiStyleUsage(data.usage), userBlock, rawText),
+      analytics,
     );
     return clampGraphPayloadToInterestsOnly(parseIntroGraphJsonFromModelText(rawText));
   }
@@ -1558,7 +1581,7 @@ export async function extractChatInterestSketchForIngest(providerId, apiKey, use
   const { text, usage } = await completeChatMessage(providerId, userBlock, key, {
     systemInstruction: `${CHAT_INTEREST_SKETCH_EXTRACT_SYSTEM}\nRespond with a single JSON object only, no markdown fences.`,
   });
-  reportAuxLlmUsage(providerId, "interests_sketch", withUsageFallback(usage, userBlock, text));
+  await reportAuxLlmUsage(providerId, "interests_sketch", withUsageFallback(usage, userBlock, text), analytics);
   return clampGraphPayloadToInterestsOnly(parseIntroGraphJsonFromModelText(text));
 }
 
@@ -1685,6 +1708,7 @@ export async function normalizeIntroMemoryGraphForDb(
   proposed,
   existingNodes,
   turnContext = {},
+  analytics = {},
 ) {
   const key = String(apiKey ?? "").trim();
   const rawProp = proposed && typeof proposed === "object" ? proposed : {};
@@ -1747,10 +1771,11 @@ export async function normalizeIntroMemoryGraphForDb(
     const content = data.choices?.[0]?.message?.content;
     const rawText = openAiChatCompletionMessageContentToString(content);
     if (!rawText.trim()) throw new Error("Empty API response");
-    reportAuxLlmUsage(
+    await reportAuxLlmUsage(
       providerId,
       "memory_graph_normalize",
       withUsageFallback(usageFromOpenAiStyleUsage(data.usage), userJson, rawText),
+      analytics,
     );
     const normalized = parseIntroGraphJsonFromModelTextSafe(rawText, "Intro normalize");
     const n =
@@ -1762,7 +1787,7 @@ export async function normalizeIntroMemoryGraphForDb(
   const { text, usage } = await completeChatMessage(providerId, userJson, key, {
     systemInstruction: `${INTRO_GRAPH_NORMALIZE_SYSTEM}\nRespond with one JSON object only, no markdown fences.`,
   });
-  reportAuxLlmUsage(providerId, "memory_graph_normalize", withUsageFallback(usage, userJson, text));
+  await reportAuxLlmUsage(providerId, "memory_graph_normalize", withUsageFallback(usage, userJson, text), analytics);
   const normalized = parseIntroGraphJsonFromModelTextSafe(text, "Intro normalize");
   const n =
     normalized.entities.length + normalized.links.length + (normalized.commands?.length ?? 0);
@@ -1788,7 +1813,7 @@ export function introUserNotesFallbackPack(userText) {
   };
 }
 
-export async function extractIntroMemoryGraphForIngest(providerId, apiKey, userText) {
+export async function extractIntroMemoryGraphForIngest(providerId, apiKey, userText, analytics = {}) {
   const key = String(apiKey ?? "").trim();
   const u = String(userText ?? "").trim().slice(0, 8000);
   if (!key || !u) {
@@ -1819,10 +1844,11 @@ export async function extractIntroMemoryGraphForIngest(providerId, apiKey, userT
     const content = data.choices?.[0]?.message?.content;
     const rawText = openAiChatCompletionMessageContentToString(content);
     if (!rawText.trim()) throw new Error("Empty API response");
-    reportAuxLlmUsage(
+    await reportAuxLlmUsage(
       providerId,
       "intro_graph_extract",
       withUsageFallback(usageFromOpenAiStyleUsage(data.usage), userBlock, rawText),
+      analytics,
     );
     return parseIntroGraphJsonFromModelTextSafe(rawText, "Intro extract");
   }
@@ -1830,7 +1856,7 @@ export async function extractIntroMemoryGraphForIngest(providerId, apiKey, userT
   const { text, usage } = await completeChatMessage(providerId, userBlock, key, {
     systemInstruction: `${INTRO_GRAPH_EXTRACT_SYSTEM}\nRespond with a single JSON object only, no markdown fences.`,
   });
-  reportAuxLlmUsage(providerId, "intro_graph_extract", withUsageFallback(usage, userBlock, text));
+  await reportAuxLlmUsage(providerId, "intro_graph_extract", withUsageFallback(usage, userBlock, text), analytics);
   return parseIntroGraphJsonFromModelTextSafe(text, "Intro extract");
 }
 

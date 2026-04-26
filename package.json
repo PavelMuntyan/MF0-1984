@@ -1,6 +1,6 @@
 {
   "name": "mf-lab",
-  "version": "1.9.19",
+  "version": "1.9.21",
   "private": true,
   "type": "module",
   "scripts": {

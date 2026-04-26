@@ -12,7 +12,21 @@ For architecture, data model, env vars, and operations, see **[HANDOFF.md](./HAN
 
 ---
 
-## Release 1.9.18 highlights
+## Release 1.9.21 highlights
+
+- **API-saved turns and the memory graph** — Optional server-side keeper for turns created only via `POST /api/dialogs/:id/turns` records **`interests_sketch`** / **`memory_graph_normalize`** into **`analytics_aux_llm_usage`** with **`conversation_turn_id`** and **`dialog_id`** (`server/memoryGraphApiTurnKeeper.mjs`, `server/api.mjs`).
+- **Router and chat context** — Memory tree router and main-chat wiring improvements for supplement quality, fallback, and aux attribution (`src/memoryTreeRouter.js`, `src/main.js`).
+- **Per-response cost UI** — Response cost breakdown shows estimated USD with **five** fractional digits (`src/main.js`).
+- **Bubble copy feedback** — "Copied" hint above the cursor with fade-out on successful copy (`src/main.js`, `src/theme.css`).
+- **Housekeeping** — Removed obsolete **`optimizer_record_linkage`** from the aux allowlist; removed unused **`persistAiTalksAssistantTurn`**. See **HANDOFF.md** for full notes.
+
+## Notable recent releases
+
+### 1.9.20
+
+- Memory tree retrieval fixes in chat (two-phase router, deterministic supplement fallback, context fitting). See **HANDOFF.md**.
+
+### 1.9.18
 
 - **Memory tree optimization safety update**
   - `Graph pruning` removed from product (UI, client path, analytics allowlist) after real-world regressions in graph integrity.
@@ -30,8 +44,6 @@ For architecture, data model, env vars, and operations, see **[HANDOFF.md](./HAN
   - Provider id is normalized into analytics buckets (`openai`, `gemini-flash`), and token usage is fallback-estimated from source text when provider usage is unavailable.
 - **Analytics rule consistency**
   - The release aligns implementation with the project rule: every model-facing pathway must contribute to analytics (`conversation_turns` token fields or `analytics_aux_llm_usage`).
-
-## Notable recent releases
 
 ### 1.9.17
 

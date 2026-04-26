@@ -306,7 +306,7 @@ export async function saveConversationTurn(dialogId, payload) {
 
 /**
  * Record token usage for background LLM calls (Memory tree router, interest sketch, graph extract/normalize).
- * @param {{ provider_id: string, request_kind: string, llm_prompt_tokens?: number, llm_completion_tokens?: number, llm_total_tokens?: number }} payload
+ * @param {{ provider_id: string, request_kind: string, llm_prompt_tokens?: number, llm_completion_tokens?: number, llm_total_tokens?: number, dialog_id?: string, conversation_turn_id?: string }} payload
  */
 export async function recordAuxLlmUsage(payload) {
   const res = await fetch(apiUrl("api/analytics/aux-llm-usage"), {
@@ -322,6 +322,21 @@ export async function recordAuxLlmUsage(payload) {
   if (data?.ok !== true) {
     throw new Error(apiErrMessage(data, "Aux LLM usage rejected"));
   }
+}
+
+/**
+ * Per-turn cost breakdown (main turn + nearby aux LLM calls).
+ * @param {string} turnId
+ */
+export async function fetchTurnCostBreakdown(turnId) {
+  const tid = String(turnId ?? "").trim();
+  if (!tid) throw new Error("turnId required");
+  const res = await fetch(apiUrl(`api/analytics/turn-costs/${encodeURIComponent(tid)}`));
+  const data = await readJsonSafe(res);
+  if (!res.ok || data?.ok !== true) {
+    throw new Error(apiErrMessage(data, `Turn cost breakdown ${res.status}`));
+  }
+  return data;
 }
 
 /**

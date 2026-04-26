@@ -75,6 +75,7 @@ import {
   fetchThemesPayload,
   fetchTurns,
   fetchProjectCacheStats,
+  fetchTurnCostBreakdown,
   clearProjectMultimediaCache,
   fetchVoiceReplyStatus,
   ensureVoiceReplyMp3,
@@ -2120,21 +2121,61 @@ function aiTalksAiMessageCount(transcript) {
 }
 
 /**
- * @param {string} speakerId
- * @param {{ promptTokens: number, completionTokens: number, totalTokens: number } | null | undefined} usage
- * @param {string} promptBasis
- * @param {string} body
+ * @param {{ provider_id: string, promptTokens: number, completionTokens: number, totalTokens: number } | null | undefined} analytics
+ * @param {string} conversationTurnId
+ * @param {string | null} dialogId
  */
-function recordAiTalksAuxUsage(speakerId, usage, promptBasis, body) {
-  const u = ensureUsageTotals(usage, promptBasis, body);
-  if (!u || !(Number(u.totalTokens) > 0)) return;
+function recordMemoryTreeRouterAuxIfPending(analytics, conversationTurnId, dialogId) {
+  const tid = String(conversationTurnId ?? "").trim();
+  if (!analytics || !tid) return;
+  const pid = String(analytics.provider_id ?? "").trim();
+  if (!pid) return;
+  const pt = Math.max(0, Number(analytics.totalTokens) || 0);
+  const pp = Math.max(0, Number(analytics.promptTokens) || 0);
+  const pc = Math.max(0, Number(analytics.completionTokens) || 0);
+  if (pt === 0 && pp === 0 && pc === 0) return;
+  const dlg = String(dialogId ?? "").trim();
   void recordAuxLlmUsage({
-    provider_id: speakerId,
-    request_kind: "ai_talks_round",
-    llm_prompt_tokens: u.promptTokens,
-    llm_completion_tokens: u.completionTokens,
-    llm_total_tokens: u.totalTokens,
-  }).catch(() => {});
+    provider_id: pid,
+    request_kind: "memory_tree_router",
+    llm_prompt_tokens: Math.max(0, Number(analytics.promptTokens) || 0),
+    llm_completion_tokens: Math.max(0, Number(analytics.completionTokens) || 0),
+    llm_total_tokens: Math.max(0, Number(analytics.totalTokens) || 0),
+    conversation_turn_id: tid,
+    ...(dlg ? { dialog_id: dlg } : {}),
+  }).catch((e) => {
+    appendActivityLog(
+      `Analytics (memory_tree_router): ${e instanceof Error ? e.message : String(e)}`,
+    );
+  });
+}
+
+/**
+ * @param {Array<{ speakerId: string, usage: { promptTokens: number, completionTokens: number, totalTokens: number } | null | undefined, promptBasis: string, body: string }>} batch
+ * @param {string} conversationTurnId
+ * @param {string | null} dialogId
+ */
+function flushAiTalksRoundAuxBatch(batch, conversationTurnId, dialogId) {
+  const tid = String(conversationTurnId ?? "").trim();
+  if (!tid || !Array.isArray(batch) || batch.length === 0) return;
+  const dlg = String(dialogId ?? "").trim();
+  for (const row of batch) {
+    const u = ensureUsageTotals(row.usage, row.promptBasis, row.body);
+    if (!u || !(Number(u.totalTokens) > 0)) continue;
+    void recordAuxLlmUsage({
+      provider_id: row.speakerId,
+      request_kind: "ai_talks_round",
+      llm_prompt_tokens: u.promptTokens,
+      llm_completion_tokens: u.completionTokens,
+      llm_total_tokens: u.totalTokens,
+      conversation_turn_id: tid,
+      ...(dlg ? { dialog_id: dlg } : {}),
+    }).catch((e) => {
+      appendActivityLog(
+        `Analytics (ai_talks_round): ${e instanceof Error ? e.message : String(e)}`,
+      );
+    });
+  }
 }
 
 /**
@@ -2157,44 +2198,6 @@ function buildAiOpinionMarkdown(sections) {
     })
     .join("\n\n")
     .trim();
-}
-
-/**
- * @param {string} dialogId
- * @param {string} topicUserText
- * @param {string | null} cloneRootTurnId
- * @param {string} speakerId
- * @param {string} assistantMd
- * @param {string} userMessageAt
- * @param {{ promptTokens: number, completionTokens: number, totalTokens: number } | null | undefined} usage
- */
-async function persistAiTalksAssistantTurn(
-  dialogId,
-  topicUserText,
-  cloneRootTurnId,
-  speakerId,
-  assistantMd,
-  userMessageAt,
-  usage,
-) {
-  const u = ensureUsageTotals(usage, JSON.stringify({ aiTalks: true }), assistantMd);
-  /** @type {Record<string, unknown>} */
-  const payload = {
-    assistant_text: assistantMd,
-    requested_provider_id: speakerId,
-    responding_provider_id: speakerId,
-    request_type: "ai_talks",
-    user_message_at: userMessageAt,
-    assistant_message_at: new Date().toISOString(),
-    assistant_error: 0,
-    ...llmUsageTurnDbFields(u),
-  };
-  if (cloneRootTurnId) {
-    payload.clone_user_from_turn_id = cloneRootTurnId;
-  } else {
-    payload.user_text = topicUserText;
-  }
-  return saveConversationTurn(dialogId, payload);
 }
 
 /**
@@ -3768,7 +3771,7 @@ function initAttachMenu() {
     if (aiTalksSession?.awaitingUser) {
       clearAiTalksSession();
       syncAttachButtonExternal?.();
-      appendActivityLog("AI talks: ожидание отменено.");
+      appendActivityLog("AI talks: wait cancelled.");
       return;
     }
     if (!aiTalksRuntime.running) {
@@ -3776,7 +3779,7 @@ function initAttachMenu() {
       return;
     }
     aiTalksRuntime.stopRequested = true;
-    appendActivityLog("AI talks: остановим после текущего ответа модели.");
+    appendActivityLog("AI talks: will stop after the current model reply.");
   });
 
   document.addEventListener(
@@ -4698,6 +4701,8 @@ async function retryAssistantReply(clickedAssistantWrap) {
   let fullText = "";
   /** @type {{ promptTokens: number, completionTokens: number, totalTokens: number } | null} */
   let turnLlmUsage = null;
+  /** @type {Array<{ provider_id: string, promptTokens: number, completionTokens: number, totalTokens: number }>} */
+  const memoryTreeRouterAnalyticsBatch = [];
   try {
     appendActivityLog(`Chat → retry (reply #${newOrdinal}): ${attachModeLogLabel(modeForSend)}, model ${modelLabel}`);
     scrollMessagesToEnd();
@@ -4716,7 +4721,7 @@ async function retryAssistantReply(clickedAssistantWrap) {
     } else {
       /** @type {{ images: Array<{ mimeType: string, base64: string }> } | undefined} */
       const chatAttachments = attApi.images.length > 0 ? { images: attApi.images } : undefined;
-      const chatOpts = await buildChatOptsForModelRequest({
+      const { memoryTreeRouterAnalytics, ...chatOpts } = await buildChatOptsForModelRequest({
         persistDialogId,
         promptForApi,
         providerId,
@@ -4729,6 +4734,7 @@ async function retryAssistantReply(clickedAssistantWrap) {
         rulesChatOpen,
         helpChatOpen: false,
       });
+      if (memoryTreeRouterAnalytics) memoryTreeRouterAnalyticsBatch.push(memoryTreeRouterAnalytics);
       let buf = "";
       try {
         const streamRes = await completeChatMessageStreaming(
@@ -4808,8 +4814,12 @@ async function retryAssistantReply(clickedAssistantWrap) {
         syncAssistantFavoriteStarButton(pending);
         syncAssistantRetryButton(pending);
         syncAssistantSpeakerButton(pending);
+        syncAssistantCostInfoButton(pending);
         syncAllAssistantRetryButtons();
         syncAllAssistantSpeakerButtons();
+      }
+      for (const a of memoryTreeRouterAnalyticsBatch) {
+        recordMemoryTreeRouterAuxIfPending(a, tid, persistDialogId);
       }
       await renderThemesSidebar();
     } catch (saveErr) {
@@ -4820,10 +4830,14 @@ async function retryAssistantReply(clickedAssistantWrap) {
   }
 }
 
+/**
+ * @returns {Promise<boolean>}
+ */
 async function copyTextToClipboard(text) {
   const t = String(text ?? "");
   try {
     await navigator.clipboard.writeText(t);
+    return true;
   } catch {
     try {
       const ta = document.createElement("textarea");
@@ -4833,12 +4847,37 @@ async function copyTextToClipboard(text) {
       ta.style.left = "-9999px";
       document.body.appendChild(ta);
       ta.select();
-      document.execCommand("copy");
+      const ok = document.execCommand("copy");
       ta.remove();
+      return Boolean(ok);
     } catch {
-      /* ignore */
+      return false;
     }
   }
+}
+
+/**
+ * Brief “Copied” label above the pointer after a successful bubble copy.
+ * @param {number} clientX
+ * @param {number} clientY
+ */
+function showBubbleCopiedToast(clientX, clientY) {
+  const el = document.createElement("div");
+  el.className = "msg-bubble-copied-toast";
+  el.textContent = "Copied";
+  el.setAttribute("role", "status");
+  el.style.left = `${clientX}px`;
+  el.style.top = `${clientY}px`;
+  document.body.appendChild(el);
+  let settled = false;
+  const done = () => {
+    if (settled) return;
+    settled = true;
+    el.removeEventListener("animationend", done);
+    el.remove();
+  };
+  el.addEventListener("animationend", done);
+  window.setTimeout(done, 1300);
 }
 
 /**
@@ -4862,18 +4901,26 @@ function makeCopyButton(getText, labelOrOpts) {
     e.preventDefault();
     e.stopPropagation();
     const text = typeof getText === "function" ? getText() : getText;
+    const r = btn.getBoundingClientRect();
+    const cx = Number.isFinite(e.clientX) ? e.clientX : r.left + r.width / 2;
+    const cy = Number.isFinite(e.clientY) ? e.clientY : r.top + r.height / 2;
+    let copied = false;
     if (tryImg) {
       const src = extractMarkdownImageSrc(text);
       if (src && (await copyRasterImageToClipboard(src))) {
-        return;
+        copied = true;
+      } else {
+        if (src) {
+          appendActivityLog(
+            "Clipboard: could not copy image (network or browser limits); copied reply text instead",
+          );
+        }
+        copied = await copyTextToClipboard(text);
       }
-      if (src) {
-        appendActivityLog(
-          "Clipboard: could not copy image (network or browser limits); copied reply text instead",
-        );
-      }
+    } else {
+      copied = await copyTextToClipboard(text);
     }
-    await copyTextToClipboard(text);
+    if (copied) showBubbleCopiedToast(cx, cy);
   });
   return btn;
 }
@@ -5459,6 +5506,132 @@ function renderAssistantError(el, message) {
   el.appendChild(body);
 }
 
+/** @type {HTMLElement | null} */
+let turnCostPopupBackdrop = null;
+
+/**
+ * @param {number} usd
+ */
+function formatTurnUsd(usd) {
+  const x = Math.max(0, Number(usd) || 0);
+  if (x === 0) return "$0.00000";
+  return `$${x.toFixed(5)}`;
+}
+
+/**
+ * @param {number} n
+ */
+function fmtInt(n) {
+  return Math.max(0, Number(n) || 0).toLocaleString();
+}
+
+function closeTurnCostPopup() {
+  if (!turnCostPopupBackdrop) return;
+  const node = turnCostPopupBackdrop;
+  turnCostPopupBackdrop = null;
+  node.remove();
+  document.documentElement.classList.remove("turn-cost-popup-open");
+}
+
+/**
+ * @param {HTMLElement} bubbleEl
+ */
+function openTurnCostPopupForBubble(bubbleEl) {
+  const turnId = String(bubbleEl?.dataset?.turnId ?? "").trim();
+  if (!turnId) return;
+  closeTurnCostPopup();
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "turn-cost-popup-backdrop";
+  backdrop.setAttribute("role", "dialog");
+  backdrop.setAttribute("aria-modal", "true");
+  backdrop.setAttribute("aria-labelledby", "turn-cost-popup-title");
+  const panel = document.createElement("div");
+  panel.className = "turn-cost-popup-panel";
+  const title = document.createElement("h3");
+  title.id = "turn-cost-popup-title";
+  title.className = "turn-cost-popup-title";
+  title.textContent = "Response cost breakdown";
+  const body = document.createElement("div");
+  body.className = "turn-cost-popup-body";
+  body.textContent = "Loading…";
+  panel.append(title, body);
+  backdrop.appendChild(panel);
+
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) closeTurnCostPopup();
+  });
+  const onEsc = (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      document.removeEventListener("keydown", onEsc, true);
+      closeTurnCostPopup();
+    }
+  };
+  document.addEventListener("keydown", onEsc, true);
+  document.body.appendChild(backdrop);
+  document.documentElement.classList.add("turn-cost-popup-open");
+  turnCostPopupBackdrop = backdrop;
+
+  void fetchTurnCostBreakdown(turnId)
+    .then((data) => {
+      if (turnCostPopupBackdrop !== backdrop) return;
+      const rows = Array.isArray(data?.rows) ? data.rows : [];
+      const totals = data?.totals ?? {};
+      if (rows.length === 0) {
+        body.textContent = "No cost rows found for this response.";
+        return;
+      }
+      const table = document.createElement("table");
+      table.className = "turn-cost-table";
+      table.innerHTML =
+        "<thead><tr><th>Process</th><th>Model</th><th class=\"turn-cost-col-in\">In</th><th class=\"turn-cost-col-out\">Out</th><th><span class=\"turn-cost-total-label-desktop\">Total</span><span class=\"turn-cost-total-label-mobile\">Tokens</span></th><th>Cost</th></tr></thead>";
+      const tb = document.createElement("tbody");
+      for (const r of rows) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = [
+          `<td>${String(r.process ?? "")}</td>`,
+          `<td>${String(r.model ?? r.provider_id ?? "")}</td>`,
+          `<td class="turn-cost-col-in">${fmtInt(r.llm_prompt_tokens)}</td>`,
+          `<td class="turn-cost-col-out">${fmtInt(r.llm_completion_tokens)}</td>`,
+          `<td>${fmtInt(r.llm_total_tokens)}</td>`,
+          `<td>${formatTurnUsd(r.cost_usd)}</td>`,
+        ].join("");
+        tb.appendChild(tr);
+      }
+      const tf = document.createElement("tfoot");
+      const trf = document.createElement("tr");
+      trf.innerHTML = [
+        "<td><strong>Total</strong></td>",
+        "<td>—</td>",
+        `<td class="turn-cost-col-in"><strong>${fmtInt(totals.llm_prompt_tokens)}</strong></td>`,
+        `<td class="turn-cost-col-out"><strong>${fmtInt(totals.llm_completion_tokens)}</strong></td>`,
+        `<td><strong>${fmtInt(totals.llm_total_tokens)}</strong></td>`,
+        `<td><strong>${formatTurnUsd(totals.cost_usd)}</strong></td>`,
+      ].join("");
+      tf.appendChild(trf);
+      table.append(tb, tf);
+      body.replaceChildren(table);
+    })
+    .catch((e) => {
+      if (turnCostPopupBackdrop !== backdrop) return;
+      body.textContent = `Failed to load: ${e instanceof Error ? e.message : String(e)}`;
+    });
+}
+
+/**
+ * @param {HTMLElement} bubbleEl
+ */
+function syncAssistantCostInfoButton(bubbleEl) {
+  if (!bubbleEl) return;
+  const meta = bubbleEl.querySelector(".msg-assistant-model");
+  const btn = meta?.querySelector(".msg-assistant-cost-info");
+  if (!(btn instanceof HTMLButtonElement)) return;
+  const tid = String(bubbleEl.dataset.turnId ?? "").trim();
+  btn.disabled = !tid;
+  btn.title = tid ? "Show per-process token and cost table" : "Saved turn id required";
+}
+
 /**
  * After stream or full reply: copy; collapse chevron when more than 4 lines
  * @param {string} [modelHintOverride] — e.g. image generation model id
@@ -5528,10 +5701,24 @@ function finalizeAssistantBubble(el, fullText, providerId, modelHintOverride, re
           webSearch: el.dataset.assistantWebSearch === "1",
           deepResearch: el.dataset.assistantDeepResearch === "1",
         });
-  meta.textContent = hint
+  const textSpan = document.createElement("span");
+  textSpan.textContent = hint
     ? `Replied: ${label} · ${hint}${replySuffix}`
     : `Replied: ${label}${replySuffix}`;
+  const infoBtn = document.createElement("button");
+  infoBtn.type = "button";
+  infoBtn.className = "msg-assistant-cost-info";
+  infoBtn.setAttribute("aria-label", "Open response cost breakdown");
+  infoBtn.title = "Show per-process token and cost table";
+  infoBtn.textContent = "i";
+  infoBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openTurnCostPopupForBubble(el);
+  });
+  meta.append(textSpan, infoBtn);
   el.appendChild(meta);
+  syncAssistantCostInfoButton(el);
 
   function assistantAnswerNeedsToggle(te) {
     const cs = getComputedStyle(te);
@@ -6006,6 +6193,7 @@ function replayDialogTurnsGrouped(turns, replayOpts) {
  *   rulesChatOpen: boolean,
  *   helpChatOpen?: boolean,
  * }} p
+ * @returns {Promise<Record<string, unknown> & { memoryTreeRouterAnalytics: { provider_id: string, promptTokens: number, completionTokens: number, totalTokens: number } | null }>}
  */
 async function buildChatOptsForModelRequest(p) {
   const {
@@ -6030,8 +6218,11 @@ async function buildChatOptsForModelRequest(p) {
         ...helpChatLlmSession.map((m) => ({ role: m.role, content: m.content })),
         { role: "user", content: promptForApi },
       ],
+      memoryTreeRouterAnalytics: null,
     };
   }
+  /** @type {{ provider_id: string, promptTokens: number, completionTokens: number, totalTokens: number } | null} */
+  let memoryTreeRouterAnalytics = null;
   const chatOpts = {
     webSearch: accessDataDumpMode ? false : modeForSend === "web",
     deepResearch: accessDataDumpMode ? false : modeForSend === "research",
@@ -6107,22 +6298,27 @@ async function buildChatOptsForModelRequest(p) {
           !rulesChatOpen
         ) {
           try {
-            memoryTreeSupplement = await fetchMemoryTreeSupplementForPrompt({
+            const mtRes = await fetchMemoryTreeSupplementForPrompt({
               userQuery: promptForApi,
               graph: graphPayload,
               allKeys: getModelApiKeys(),
               analysisPriority: getChatAnalysisPriority(),
               activeProviderId: providerId,
               activeApiKey: key,
+              dialogId: persistDialogId,
             });
+            memoryTreeSupplement = String(mtRes?.supplement ?? "");
+            memoryTreeRouterAnalytics = mtRes?.memoryTreeRouterAnalytics ?? null;
           } catch (rErr) {
             appendActivityLog(
               `Memory tree router: ${rErr instanceof Error ? rErr.message : String(rErr)}`,
             );
             memoryTreeSupplement = buildMemoryTreeDeterministicSupplement(graphPayload, promptForApi);
+            memoryTreeRouterAnalytics = null;
           }
           if (!String(memoryTreeSupplement ?? "").trim() && graphNodes.length > 0) {
             memoryTreeSupplement = buildMemoryTreeDeterministicSupplement(graphPayload, promptForApi);
+            /* Router may have billed LLM tokens but returned empty text; keep aux row for that pass. */
           }
         }
         const built = buildModelContext({
@@ -6176,7 +6372,7 @@ async function buildChatOptsForModelRequest(p) {
       chatOpts.systemInstruction = `${curR}\n\n${RULES_SECTION_SYSTEM_APPEND}`;
     }
   }
-  return chatOpts;
+  return { ...chatOpts, memoryTreeRouterAnalytics };
 }
 
 function initChatComposer() {
@@ -6546,6 +6742,10 @@ function initChatComposer() {
     let turnUserTextForUiAndDb = persistUserText;
     /** Snapshot for `user_attachments_json` (visible to `finally` / DB save). */
     let attachmentPersistRowsForSave = [];
+    /** @type {Array<{ provider_id: string, promptTokens: number, completionTokens: number, totalTokens: number }>} */
+    const memoryTreeRouterAnalyticsBatch = [];
+    /** @type {Array<{ speakerId: string, usage: { promptTokens: number, completionTokens: number, totalTokens: number } | null | undefined, promptBasis: string, body: string }>} */
+    const aiTalksRoundAuxBatch = [];
 
     chatComposerSending = true;
     syncAllAssistantRetryButtons();
@@ -6723,7 +6923,7 @@ function initChatComposer() {
             const speakerKey = String(keysNow[pid] ?? "").trim();
             if (!speakerKey) continue;
             const speakerLabel = PROVIDER_DISPLAY[pid] ?? pid;
-            setAssistantPendingThinkingLabel(pending, `Думает: ${speakerLabel}…`);
+            setAssistantPendingThinkingLabel(pending, `Thinking: ${speakerLabel}…`);
             const hasPrior = sections.length > 0;
             const panelPrompt = [
               `User question:\n${String(promptForApi ?? "").trim()}`,
@@ -6735,19 +6935,21 @@ function initChatComposer() {
               "Previous panel answers:",
               hasPrior ? buildAiOpinionMarkdown(sections) : "(none yet)",
             ].join("\n");
-            const chatOptsForSpeaker = await buildChatOptsForModelRequest({
-              persistDialogId,
-              promptForApi: panelPrompt,
-              providerId: pid,
-              key: speakerKey,
-              modeForSend,
-              accessDataDumpMode,
-              chatAttachments: undefined,
-              introChatOpen: introContextActive,
-              accessChatOpen,
-              rulesChatOpen,
-              helpChatOpen,
-            });
+            const { memoryTreeRouterAnalytics: mtForSpeaker, ...chatOptsForSpeaker } =
+              await buildChatOptsForModelRequest({
+                persistDialogId,
+                promptForApi: panelPrompt,
+                providerId: pid,
+                key: speakerKey,
+                modeForSend,
+                accessDataDumpMode,
+                chatAttachments: undefined,
+                introChatOpen: introContextActive,
+                accessChatOpen,
+                rulesChatOpen,
+                helpChatOpen,
+              });
+            if (mtForSpeaker) memoryTreeRouterAnalyticsBatch.push(mtForSpeaker);
             const baseSystem = String(chatOptsForSpeaker.systemInstruction ?? "").trim();
             chatOptsForSpeaker.systemInstruction = baseSystem
               ? `${baseSystem}\n\nAI opinion mode: provide one concise, useful opinion for the user's question. Plain text.`
@@ -6793,7 +6995,7 @@ function initChatComposer() {
             usageAgg.promptTokens += Number(usage?.promptTokens) || 0;
             usageAgg.completionTokens += Number(usage?.completionTokens) || 0;
             usageAgg.totalTokens += Number(usage?.totalTokens) || 0;
-            recordAiTalksAuxUsage(pid, usage, panelPrompt, body);
+            aiTalksRoundAuxBatch.push({ speakerId: pid, usage, promptBasis: panelPrompt, body });
             if (pending && te) {
               const draft = buildAiOpinionMarkdown(sections);
               pending.dataset.assistantMarkdown = draft;
@@ -6813,11 +7015,13 @@ function initChatComposer() {
             .join(", ");
           const meta = pending?.querySelector(".msg-assistant-model");
           if (meta && repliedLine) {
-            meta.textContent = `Replied: ${repliedLine}`;
+            const txt = meta.querySelector("span");
+            if (txt) txt.textContent = `Replied: ${repliedLine}`;
+            else meta.textContent = `Replied: ${repliedLine}`;
           }
           appendActivityLog(`Chat ← reply: AI opinion, models: ${answeredProviders.length}`);
         } else {
-          const chatOpts = await buildChatOptsForModelRequest({
+          const { memoryTreeRouterAnalytics: mtForTurn, ...chatOpts } = await buildChatOptsForModelRequest({
             persistDialogId,
             promptForApi,
             providerId,
@@ -6830,6 +7034,7 @@ function initChatComposer() {
             rulesChatOpen,
             helpChatOpen,
           });
+          if (mtForTurn) memoryTreeRouterAnalyticsBatch.push(mtForTurn);
           let buf = "";
           try {
             const streamRes = await completeChatMessageStreaming(
@@ -6958,6 +7163,7 @@ function initChatComposer() {
             syncAssistantFavoriteStarButton(pending);
             syncAssistantRetryButton(pending);
             syncAssistantSpeakerButton(pending);
+            syncAssistantCostInfoButton(pending);
             tryAutoStartAssistantVoiceReply(pending);
             syncAllAssistantRetryButtons();
             syncAllAssistantSpeakerButtons();
@@ -6967,6 +7173,12 @@ function initChatComposer() {
           appendActivityLog(
             `Chat DB save: ${saveErr instanceof Error ? saveErr.message : String(saveErr)}`,
           );
+        }
+        if (tid) {
+          flushAiTalksRoundAuxBatch(aiTalksRoundAuxBatch, tid, persistDialogId);
+          for (const a of memoryTreeRouterAnalyticsBatch) {
+            recordMemoryTreeRouterAuxIfPending(a, tid, persistDialogId);
+          }
         }
         if (
           !accessDataDumpMode &&
@@ -6987,11 +7199,10 @@ function initChatComposer() {
             /** @type {{ entities: unknown[], links: unknown[], commands?: unknown[] }} */
             let extracted = { entities: [], links: [], commands: [] };
             try {
-              extracted = await extractIntroMemoryGraphForIngest(
-                keeperProviderId,
-                keeperApiKey,
-                persistUserText,
-              );
+              extracted = await extractIntroMemoryGraphForIngest(keeperProviderId, keeperApiKey, persistUserText, {
+                dialog_id: persistDialogId,
+                conversation_turn_id: tid,
+              });
             } catch (exErr) {
               appendActivityLog(
                 `Keeper (Intro): extract request failed — ${exErr instanceof Error ? exErr.message : String(exErr)}. Continuing with empty extract (normalize + fallback can still run).`,
@@ -7013,6 +7224,10 @@ function initChatComposer() {
                   {
                     introMode: true,
                     userText: persistUserText,
+                  },
+                  {
+                    dialog_id: persistDialogId,
+                    conversation_turn_id: tid,
                   },
                 );
                 appendActivityLog(`Keeper (Intro): normalize — ${keeperPayloadSummary(pack)}`);
@@ -7098,6 +7313,7 @@ function initChatComposer() {
                 key,
                 transcript,
                 existingSummary,
+                { dialog_id: persistDialogId, conversation_turn_id: tid },
               );
               let patchAcc = Array.isArray(extractedAcc.entries) ? extractedAcc.entries : [];
               if (patchAcc.length === 0) {
@@ -7167,6 +7383,7 @@ function initChatComposer() {
                 key,
                 transcriptR,
                 existingSummaryR,
+                { dialog_id: persistDialogId, conversation_turn_id: tid },
               );
               const countPatch = (p) =>
                 p.core_rules.length +
@@ -7227,6 +7444,10 @@ function initChatComposer() {
                   keeperProviderId,
                   keeperApiKey,
                   persistUserText,
+                  {
+                    dialog_id: persistDialogId,
+                    conversation_turn_id: tid,
+                  },
                 );
                 appendActivityLog(`Keeper (chat): extract — ${keeperPayloadSummary(extracted)}`);
                 let pack = extracted;
@@ -7241,6 +7462,11 @@ function initChatComposer() {
                       keeperApiKey,
                       extracted,
                       existing.nodes ?? [],
+                      {},
+                      {
+                        dialog_id: persistDialogId,
+                        conversation_turn_id: tid,
+                      },
                     );
                     appendActivityLog(`Keeper (chat): normalize — ${keeperPayloadSummary(pack)}`);
                   } catch (normErr) {

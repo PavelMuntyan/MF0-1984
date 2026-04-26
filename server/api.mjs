@@ -74,6 +74,33 @@ function getApiMaxBodyBytes() {
 
 const ANALYTICS_PROVIDER_IDS = ["openai", "perplexity", "gemini-flash", "anthropic"];
 
+/**
+ * Map any client/provider slot id into one of ANALYTICS_PROVIDER_IDS so aux rows are never dropped.
+ * USD rates for unknown slugs are approximate (same bucket as the chosen provider family).
+ * @param {string} pidRaw
+ * @returns {string}
+ */
+function normalizeAuxAnalyticsProviderId(pidRaw) {
+  const raw = String(pidRaw ?? "").trim();
+  if (!raw) return "";
+  const p = raw.toLowerCase();
+  if (ANALYTICS_PROVIDER_IDS.includes(p)) return p;
+  if (p.startsWith("gemini")) return "gemini-flash";
+  if (p.startsWith("claude")) return "anthropic";
+  if (p.startsWith("sonar") || p.includes("perplexity") || p.includes("pplx")) return "perplexity";
+  if (
+    p.startsWith("gpt") ||
+    /^o[0-9]/.test(p) ||
+    p.startsWith("davinci") ||
+    p.startsWith("text-embedding") ||
+    p.includes("dall-e") ||
+    p.includes("sora")
+  ) {
+    return "openai";
+  }
+  return "openai";
+}
+
 /** Allowed `request_kind` values for POST /api/analytics/aux-llm-usage */
 const AUX_LLM_USAGE_KINDS = new Set([
   "memory_tree_router",
@@ -83,7 +110,6 @@ const AUX_LLM_USAGE_KINDS = new Set([
   "ai_talks_round",
   "voice_transcription",
   "voice_reply_tts",
-  "optimizer_record_linkage",
   "optimizer_llm_check",
   "theme_dialog_title",
   "help_chat_turn",
@@ -362,6 +388,10 @@ function ensureDatabase() {
   applyAnalyticsUsageArchiveMigration(database);
   applyLlmTokenUsageMigration(database);
   applyAnalyticsAuxLlmUsageMigration(database);
+  applyAnalyticsAuxConversationTurnIdColumn(database);
+  applyAnalyticsAuxDialogIdColumn(database);
+  backfillVoiceReplyTtsConversationTurnIds(database);
+  backfillAuxDialogIdFromConversationTurn(database);
   return database;
 }
 
@@ -372,6 +402,94 @@ function applyAnalyticsAuxLlmUsageMigration(database) {
   if (row) return;
   if (fs.existsSync(migration011)) {
     database.exec(fs.readFileSync(migration011, "utf8"));
+  }
+}
+
+/** So turn-cost popup can attach voice_reply_tts even after the user sent a follow-up message. */
+function applyAnalyticsAuxConversationTurnIdColumn(database) {
+  const row = database
+    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='analytics_aux_llm_usage'`)
+    .get();
+  if (!row) return;
+  const cols = database.prepare(`PRAGMA table_info(analytics_aux_llm_usage)`).all();
+  const names = new Set(cols.map((c) => c.name));
+  if (!names.has("conversation_turn_id")) {
+    database.exec(`ALTER TABLE analytics_aux_llm_usage ADD COLUMN conversation_turn_id TEXT`);
+    database.exec(
+      `CREATE INDEX IF NOT EXISTS idx_analytics_aux_llm_usage_turn ON analytics_aux_llm_usage(conversation_turn_id)`,
+    );
+  }
+}
+
+/**
+ * Older voice_reply_tts rows lack conversation_turn_id; match by token estimate + time so the popup can find them.
+ */
+function applyAnalyticsAuxDialogIdColumn(database) {
+  const row = database
+    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='analytics_aux_llm_usage'`)
+    .get();
+  if (!row) return;
+  const cols = database.prepare(`PRAGMA table_info(analytics_aux_llm_usage)`).all();
+  const names = new Set(cols.map((c) => c.name));
+  if (!names.has("dialog_id")) {
+    database.exec(`ALTER TABLE analytics_aux_llm_usage ADD COLUMN dialog_id TEXT`);
+    database.exec(`CREATE INDEX IF NOT EXISTS idx_analytics_aux_llm_usage_dialog ON analytics_aux_llm_usage(dialog_id)`);
+  }
+}
+
+/** Fill dialog_id on aux rows that already have conversation_turn_id (e.g. voice TTS). */
+function backfillAuxDialogIdFromConversationTurn(database) {
+  try {
+    database.exec(`
+      UPDATE analytics_aux_llm_usage
+      SET dialog_id = (
+        SELECT dialog_id FROM conversation_turns WHERE conversation_turns.id = analytics_aux_llm_usage.conversation_turn_id
+      )
+      WHERE conversation_turn_id IS NOT NULL AND TRIM(conversation_turn_id) != ''
+        AND (dialog_id IS NULL OR TRIM(dialog_id) = '')
+    `);
+  } catch (e) {
+    console.warn("[mf-lab-api] backfill aux dialog_id from turn:", e);
+  }
+}
+
+function backfillVoiceReplyTtsConversationTurnIds(database) {
+  try {
+    const orphans = database
+      .prepare(
+        `SELECT id, created_at, llm_prompt_tokens FROM analytics_aux_llm_usage
+         WHERE request_kind = 'voice_reply_tts'
+           AND (conversation_turn_id IS NULL OR conversation_turn_id = '')`,
+      )
+      .all();
+    if (!orphans.length) return;
+    const turnRows = database
+      .prepare(
+        `SELECT id, assistant_text, assistant_message_at FROM conversation_turns
+         WHERE assistant_text IS NOT NULL AND TRIM(assistant_text) != ''`,
+      )
+      .all();
+    const upd = database.prepare(`UPDATE analytics_aux_llm_usage SET conversation_turn_id = ? WHERE id = ?`);
+    for (const r of orphans) {
+      const pt = Math.max(0, Number(r.llm_prompt_tokens) || 0);
+      const cms = Date.parse(String(r.created_at ?? ""));
+      if (!Number.isFinite(cms)) continue;
+      let bestId = "";
+      let bestAms = -Infinity;
+      for (const t of turnRows) {
+        const est = estimateTokensFromText(String(t.assistant_text ?? ""));
+        if (est !== pt) continue;
+        const ams = Date.parse(String(t.assistant_message_at ?? ""));
+        if (!Number.isFinite(ams) || ams > cms) continue;
+        if (ams > bestAms) {
+          bestAms = ams;
+          bestId = String(t.id ?? "").trim();
+        }
+      }
+      if (bestId) upd.run(bestId, String(r.id ?? ""));
+    }
+  } catch (e) {
+    console.warn("[mf-lab-api] backfill voice_reply_tts conversation_turn_id:", e);
   }
 }
 
@@ -711,8 +829,16 @@ function analyticsProviderFromVoiceProvider(voiceProviderId) {
   return "";
 }
 
-function recordAuxLlmUsageRow(providerId, requestKind, promptTokens, completionTokens, totalTokens) {
-  const pid = String(providerId ?? "").trim();
+function recordAuxLlmUsageRow(
+  providerId,
+  requestKind,
+  promptTokens,
+  completionTokens,
+  totalTokens,
+  conversationTurnId = "",
+  dialogId = "",
+) {
+  const pid = normalizeAuxAnalyticsProviderId(String(providerId ?? "")) || "openai";
   const kind = String(requestKind ?? "").trim();
   if (!ANALYTICS_PROVIDER_IDS.includes(pid)) return false;
   if (!AUX_LLM_USAGE_KINDS.has(kind)) return false;
@@ -721,10 +847,14 @@ function recordAuxLlmUsageRow(providerId, requestKind, promptTokens, completionT
   const pt = Math.max(0, Number(totalTokens) || pp + pc);
   if (pp === 0 && pc === 0 && pt === 0 && kind !== "optimizer_llm_check") return false;
   applyAnalyticsAuxLlmUsageMigration(db);
+  applyAnalyticsAuxConversationTurnIdColumn(db);
+  applyAnalyticsAuxDialogIdColumn(db);
+  const ctid = String(conversationTurnId ?? "").trim();
+  const did = String(dialogId ?? "").trim();
   db.prepare(
-    `INSERT INTO analytics_aux_llm_usage (id, provider_id, request_kind, llm_prompt_tokens, llm_completion_tokens, llm_total_tokens)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(crypto.randomUUID(), pid, kind, pp, pc, pt);
+    `INSERT INTO analytics_aux_llm_usage (id, provider_id, request_kind, llm_prompt_tokens, llm_completion_tokens, llm_total_tokens, conversation_turn_id, dialog_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(crypto.randomUUID(), pid, kind, pp, pc, pt, ctid || null, did || null);
   return true;
 }
 
@@ -2370,11 +2500,57 @@ const ANALYTICS_USD_PER_MILLION = {
  * @param {number} completionTokens
  */
 function estimateProviderUsd(providerId, promptTokens, completionTokens) {
-  const rate = ANALYTICS_USD_PER_MILLION[providerId];
+  const bucket = normalizeAuxAnalyticsProviderId(String(providerId ?? "")) || "openai";
+  const rate = ANALYTICS_USD_PER_MILLION[bucket];
   if (!rate) return { inputUsd: 0, outputUsd: 0, totalUsd: 0 };
   const inputUsd = ((Number(promptTokens) || 0) / 1_000_000) * rate.input;
   const outputUsd = ((Number(completionTokens) || 0) / 1_000_000) * rate.output;
   return { inputUsd, outputUsd, totalUsd: inputUsd + outputUsd };
+}
+
+/**
+ * @param {string} requestType
+ */
+function analyticsProcessLabelForTurnRequestType(requestType) {
+  const t = String(requestType ?? "").trim().toLowerCase();
+  if (t === "image") return "image_generation";
+  if (t === "research") return "chat_research_reply";
+  if (t === "web") return "chat_web_reply";
+  if (t === "access_data") return "access_data_reply";
+  return "chat_reply";
+}
+
+/**
+ * @param {string} requestKind
+ */
+function analyticsProcessLabelForAuxKind(requestKind) {
+  const k = String(requestKind ?? "").trim().toLowerCase();
+  if (!k) return "aux_llm";
+  const labels = {
+    memory_tree_router: "Memory tree router",
+    interests_sketch: "Keeper: interest sketch (chat)",
+    memory_graph_normalize: "Keeper: graph normalize",
+    intro_graph_extract: "Keeper: Intro extract",
+    ai_talks_round: "AI opinion round",
+    voice_transcription: "Voice transcription",
+    voice_reply_tts: "Voice reply TTS",
+    optimizer_llm_check: "Optimizer: LLM check",
+    theme_dialog_title: "Theme / dialog title",
+    help_chat_turn: "Help chat turn",
+    rules_keeper_extract: "Keeper: Rules extract",
+    access_keeper2_extract: "Keeper: Access extract",
+  };
+  return labels[k] ?? k;
+}
+
+/**
+ * @param {string} iso
+ * @param {number} deltaMs
+ */
+function shiftIso(iso, deltaMs) {
+  const ms = Date.parse(String(iso ?? ""));
+  if (!Number.isFinite(ms)) return "";
+  return new Date(ms + Number(deltaMs || 0)).toISOString();
 }
 
 /**
@@ -3312,13 +3488,21 @@ const server = http.createServer(async (req, res) => {
         if (req.method === "POST") {
           const body = await readBody(req);
           const out = await ensureVoiceReplyMp3ForTurn(turnId, body);
-          if (out.created && out.providerId) {
+          if (out.created) {
             try {
-              const pid = analyticsProviderFromVoiceProvider(out.providerId);
+              let pid = analyticsProviderFromVoiceProvider(out.providerId);
+              if (!pid || !ANALYTICS_PROVIDER_IDS.includes(pid)) pid = "gemini-flash";
               const promptTokens = estimateTokensFromText(getAssistantTextForTurnId(turnId));
               const completionTokens = 0;
               const totalTokens = promptTokens;
-              recordAuxLlmUsageRow(pid, "voice_reply_tts", promptTokens, completionTokens, totalTokens);
+              let vDid = "";
+              try {
+                const tr = db.prepare(`SELECT dialog_id FROM conversation_turns WHERE id = ?`).get(turnId);
+                vDid = String(tr?.dialog_id ?? "").trim();
+              } catch {
+                /* ignore */
+              }
+              recordAuxLlmUsageRow(pid, "voice_reply_tts", promptTokens, completionTokens, totalTokens, turnId, vDid);
             } catch (e) {
               console.warn("[mf-lab-api] voice_reply_tts analytics:", e);
             }
@@ -3591,10 +3775,122 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, ...getAnalyticsPayload() });
     }
 
+    const turnCostMatch = p.match(/^\/api\/analytics\/turn-costs\/([^/]+)$/);
+    if (req.method === "GET" && turnCostMatch) {
+      const turnId = decodeURIComponent(turnCostMatch[1]).trim();
+      if (!turnId) return json(res, 400, apiErrorBody("turnId is required"));
+      applyAnalyticsAuxLlmUsageMigration(db);
+      const turn = db
+        .prepare(
+          `SELECT
+             id,
+             dialog_id,
+             request_type,
+             requested_provider_id,
+             responding_provider_id,
+             llm_prompt_tokens,
+             llm_completion_tokens,
+             llm_total_tokens,
+             user_message_at,
+             assistant_message_at
+           FROM conversation_turns
+           WHERE id = ?`,
+        )
+        .get(turnId);
+      if (!turn) return json(res, 404, apiErrorBody("Turn not found"));
+
+      const userAt = String(turn.user_message_at ?? "").trim();
+      const assistantAt = String(turn.assistant_message_at ?? "").trim();
+      const pid = String(turn.responding_provider_id ?? turn.requested_provider_id ?? "").trim().toLowerCase();
+      const promptTok = Math.max(0, Number(turn.llm_prompt_tokens) || 0);
+      const completionTok = Math.max(0, Number(turn.llm_completion_tokens) || 0);
+      const totalTok =
+        Math.max(0, Number(turn.llm_total_tokens) || 0) || Math.max(0, promptTok + completionTok);
+      const turnUsd = estimateProviderUsd(pid, promptTok, completionTok);
+
+      applyAnalyticsAuxConversationTurnIdColumn(db);
+      applyAnalyticsAuxDialogIdColumn(db);
+
+      /** @type {Array<Record<string, unknown>>} */
+      const rows = [];
+      if (promptTok > 0 || completionTok > 0 || totalTok > 0) {
+        rows.push({
+          process: analyticsProcessLabelForTurnRequestType(String(turn.request_type ?? "")),
+          provider_id: pid,
+          model: pid,
+          llm_prompt_tokens: promptTok,
+          llm_completion_tokens: completionTok,
+          llm_total_tokens: totalTok,
+          cost_usd: turnUsd.totalUsd,
+          source: "turn",
+          occurred_at: assistantAt || userAt || "",
+        });
+      }
+
+      const auxRows = db
+        .prepare(
+          `SELECT
+             created_at,
+             provider_id,
+             request_kind,
+             llm_prompt_tokens,
+             llm_completion_tokens,
+             llm_total_tokens
+           FROM analytics_aux_llm_usage
+           WHERE conversation_turn_id = ?
+           ORDER BY DATETIME(created_at) ASC`,
+        )
+        .all(turnId);
+      for (const r of auxRows) {
+        const apid = String(r.provider_id ?? "").trim().toLowerCase();
+        const pp = Math.max(0, Number(r.llm_prompt_tokens) || 0);
+        const pc = Math.max(0, Number(r.llm_completion_tokens) || 0);
+        const pt = Math.max(0, Number(r.llm_total_tokens) || 0) || Math.max(0, pp + pc);
+        const usd = estimateProviderUsd(apid, pp, pc);
+        rows.push({
+          process: analyticsProcessLabelForAuxKind(String(r.request_kind ?? "")),
+          provider_id: apid,
+          model: apid,
+          llm_prompt_tokens: pp,
+          llm_completion_tokens: pc,
+          llm_total_tokens: pt,
+          cost_usd: usd.totalUsd,
+          source: "aux",
+          occurred_at: String(r.created_at ?? ""),
+        });
+      }
+
+      const totals = rows.reduce(
+        (a, r) => ({
+          llm_prompt_tokens: a.llm_prompt_tokens + (Number(r.llm_prompt_tokens) || 0),
+          llm_completion_tokens: a.llm_completion_tokens + (Number(r.llm_completion_tokens) || 0),
+          llm_total_tokens: a.llm_total_tokens + (Number(r.llm_total_tokens) || 0),
+          cost_usd: a.cost_usd + (Number(r.cost_usd) || 0),
+        }),
+        { llm_prompt_tokens: 0, llm_completion_tokens: 0, llm_total_tokens: 0, cost_usd: 0 },
+      );
+
+      return json(res, 200, {
+        ok: true,
+        noAttributedUsage: rows.length === 0,
+        turn: {
+          id: String(turn.id ?? ""),
+          dialog_id: String(turn.dialog_id ?? ""),
+          user_message_at: userAt,
+          assistant_message_at: assistantAt,
+          provider_id: pid,
+          request_type: String(turn.request_type ?? ""),
+        },
+        rows,
+        totals,
+      });
+    }
+
     if (req.method === "POST" && p === "/api/analytics/aux-llm-usage") {
       try {
         const body = await readBody(req);
-        const pid = String(body.provider_id ?? body.providerId ?? "").trim();
+        const pidRaw = String(body.provider_id ?? body.providerId ?? "").trim();
+        const pid = normalizeAuxAnalyticsProviderId(pidRaw);
         const kind = String(body.request_kind ?? body.requestKind ?? "").trim();
         if (!ANALYTICS_PROVIDER_IDS.includes(pid)) {
           return json(res, 400, apiErrorBody("Unknown or missing provider_id"));
@@ -3614,10 +3910,14 @@ const server = http.createServer(async (req, res) => {
           return json(res, 400, apiErrorBody("At least one non-zero token field is required"));
         }
         applyAnalyticsAuxLlmUsageMigration(db);
+        applyAnalyticsAuxConversationTurnIdColumn(db);
+        applyAnalyticsAuxDialogIdColumn(db);
+        const ctIn = String(body.conversation_turn_id ?? body.conversationTurnId ?? "").trim();
+        const dlgIn = String(body.dialog_id ?? body.dialogId ?? "").trim();
         db.prepare(
-          `INSERT INTO analytics_aux_llm_usage (id, provider_id, request_kind, llm_prompt_tokens, llm_completion_tokens, llm_total_tokens)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-        ).run(crypto.randomUUID(), pid, kind, pp, pc, pt);
+          `INSERT INTO analytics_aux_llm_usage (id, provider_id, request_kind, llm_prompt_tokens, llm_completion_tokens, llm_total_tokens, conversation_turn_id, dialog_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(crypto.randomUUID(), pid, kind, pp, pc, pt, ctIn || null, dlgIn || null);
         return json(res, 200, { ok: true });
       } catch (e) {
         return json(res, 400, apiErrorBody(e instanceof Error ? e.message : String(e)));
@@ -3962,7 +4262,22 @@ const server = http.createServer(async (req, res) => {
           shouldRunMemoryGraphKeeperForApiTurnBody(body) &&
           String(pipelineUserText ?? "").trim().length > 0
         ) {
-          scheduleMemoryGraphKeeperIngestForChatApiTurn(db, (ingestBody) => ingestMemoryGraphFromBody(ingestBody), pipelineUserText);
+          scheduleMemoryGraphKeeperIngestForChatApiTurn(db, (ingestBody) => ingestMemoryGraphFromBody(ingestBody), pipelineUserText, {
+            dialogId,
+            conversationTurnId: turnId,
+            recordAuxUsage: (row) => {
+              if (!row || typeof row !== "object") return;
+              recordAuxLlmUsageRow(
+                String(row.providerId ?? "openai"),
+                String(row.requestKind ?? ""),
+                Number(row.promptTokens) || 0,
+                Number(row.completionTokens) || 0,
+                Number(row.totalTokens) || 0,
+                turnId,
+                dialogId,
+              );
+            },
+          });
         }
       } catch (e) {
         console.error("context pipeline after turn:", e);

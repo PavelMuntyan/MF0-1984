@@ -9,7 +9,6 @@ import {
   usageFromGeminiResponse,
   usageFromOpenAiStyleUsage,
 } from "./chatApi.js";
-import { recordAuxLlmUsage } from "./chatPersistence.js";
 
 /** First line of the supplement user message — must match fitContextToBudget detection. */
 export const MF0_MEMORY_TREE_SUPPLEMENT_PREFIX =
@@ -343,6 +342,45 @@ function pickRouterKey(allKeys, analysisPriority, activeProviderId, activeApiKey
 }
 
 /**
+ * @param {string} geminiModelId — Google API model id (e.g. gemini-2.0-flash or UI slot gemini-1.5-pro-preview).
+ * @param {string} key
+ * @param {string} systemPrompt
+ * @param {string} userBlock
+ * @param {number} maxOutTokens
+ */
+async function geminiRouterGenerateContent(geminiModelId, key, systemPrompt, userBlock, maxOutTokens) {
+  const ub = String(userBlock).slice(0, 32000);
+  const mid = encodeURIComponent(String(geminiModelId ?? "").trim());
+  const url = `/llm/gemini/v1beta/models/${mid}:generateContent?key=${encodeURIComponent(key)}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: `${systemPrompt}\n\n${ub}` }],
+        },
+      ],
+      generationConfig: {
+        temperature: 0.12,
+        maxOutputTokens: maxOutTokens,
+      },
+    }),
+  });
+  if (!res.ok) throw new Error(await readErrorBody(res));
+  const data = await res.json();
+  const cand = data.candidates?.[0]?.content?.parts;
+  if (!Array.isArray(cand)) throw new Error("Empty Gemini router response");
+  const text = cand
+    .filter((p) => p && p.thought !== true && p.text)
+    .map((p) => String(p.text))
+    .join("\n")
+    .trim();
+  return { text, usage: usageFromGeminiResponse(data) };
+}
+
+/**
  * @param {string} providerId
  * @param {string} key
  * @param {string} systemPrompt
@@ -405,33 +443,7 @@ async function runRouterLlm(providerId, key, systemPrompt, userBlock, maxOutToke
       return { text, usage: usageFromAnthropicResponse(data) };
     }
     case "gemini-flash": {
-      const url = `/llm/gemini/v1beta/models/${ROUTER_MODEL["gemini-flash"]}:generateContent?key=${encodeURIComponent(key)}`;
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [
-            {
-              role: "user",
-              parts: [{ text: `${systemPrompt}\n\n${ub}` }],
-            },
-          ],
-          generationConfig: {
-            temperature: 0.12,
-            maxOutputTokens: maxOutTokens,
-          },
-        }),
-      });
-      if (!res.ok) throw new Error(await readErrorBody(res));
-      const data = await res.json();
-      const cand = data.candidates?.[0]?.content?.parts;
-      if (!Array.isArray(cand)) throw new Error("Empty Gemini router response");
-      const text = cand
-        .filter((p) => p && p.thought !== true && p.text)
-        .map((p) => String(p.text))
-        .join("\n")
-        .trim();
-      return { text, usage: usageFromGeminiResponse(data) };
+      return geminiRouterGenerateContent(ROUTER_MODEL["gemini-flash"], key, systemPrompt, ub, maxOutTokens);
     }
     case "perplexity": {
       const res = await fetch("/llm/perplexity/chat/completions", {
@@ -457,8 +469,13 @@ async function runRouterLlm(providerId, key, systemPrompt, userBlock, maxOutToke
       const text = typeof content === "string" ? content : String(content ?? "");
       return { text, usage: usageFromOpenAiStyleUsage(data.usage) };
     }
-    default:
+    default: {
+      const g = String(providerId ?? "").trim();
+      if (g.toLowerCase().startsWith("gemini")) {
+        return geminiRouterGenerateContent(g, key, systemPrompt, ub, maxOutTokens);
+      }
       throw new Error(`Memory tree router: unsupported provider ${providerId}`);
+    }
   }
 }
 
@@ -845,6 +862,38 @@ export function buildMemoryTreeDeterministicSupplement(graph, userQuery) {
 }
 
 /**
+ * @typedef {{ provider_id: string, promptTokens: number, completionTokens: number, totalTokens: number }} MemoryTreeRouterAnalytics
+ */
+
+/**
+ * Title-scan chunks + optional rerank call; one aggregate for aux `memory_tree_router`.
+ * @param {string} providerId
+ * @param {{ usage?: { promptTokens: number, completionTokens: number, totalTokens: number } }} titleScan
+ * @param {{ promptTokens: number, completionTokens: number, totalTokens: number } | null | undefined} rerankUsage
+ * @param {string} rerankPromptForFallback
+ * @param {string} rerankCompletionText
+ * @returns {MemoryTreeRouterAnalytics | null}
+ */
+function buildMemoryTreeRouterAnalytics(
+  providerId,
+  titleScan,
+  rerankUsage,
+  rerankPromptForFallback,
+  rerankCompletionText,
+) {
+  const ts = titleScan?.usage ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+  const rerankPart =
+    rerankUsage != null
+      ? withUsageFallback(rerankUsage, rerankPromptForFallback, rerankCompletionText)
+      : { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+  const promptTokens = rerankPart.promptTokens + Number(ts.promptTokens || 0);
+  const completionTokens = rerankPart.completionTokens + Number(ts.completionTokens || 0);
+  const totalTokens = rerankPart.totalTokens + Number(ts.totalTokens || 0);
+  if (promptTokens === 0 && completionTokens === 0 && totalTokens === 0) return null;
+  return { provider_id: providerId, promptTokens, completionTokens, totalTokens };
+}
+
+/**
  * @param {{
  *   userQuery: string,
  *   graph: { nodes?: unknown[], links?: unknown[] },
@@ -852,15 +901,18 @@ export function buildMemoryTreeDeterministicSupplement(graph, userQuery) {
  *   analysisPriority?: string[],
  *   activeProviderId: string,
  *   activeApiKey: string,
+ *   dialogId?: string,
  * }} args
- * @returns {Promise<string>} Plain supplement body (no outer markers), or "" if nothing to add.
+ * @returns {Promise<{ supplement: string, memoryTreeRouterAnalytics: MemoryTreeRouterAnalytics | null }>}
  */
 export async function fetchMemoryTreeSupplementForPrompt(args) {
   const userQuery = String(args.userQuery ?? "").trim();
   const graph = args.graph && typeof args.graph === "object" ? args.graph : { nodes: [], links: [] };
   const rawNodes = Array.isArray(graph.nodes) ? graph.nodes : [];
   const links = Array.isArray(graph.links) ? graph.links : [];
-  if (!userQuery || rawNodes.length === 0) return "";
+  if (!userQuery || rawNodes.length === 0) {
+    return { supplement: "", memoryTreeRouterAnalytics: null };
+  }
 
   const { providerId, key } = pickRouterKey(
     args.allKeys ?? {},
@@ -889,14 +941,19 @@ export async function fetchMemoryTreeSupplementForPrompt(args) {
       blobHay: blob.slice(0, LEX_RETRIEVE_HAY),
     });
   }
-  if (rows.length === 0) return "";
+  if (rows.length === 0) {
+    return { supplement: "", memoryTreeRouterAnalytics: null };
+  }
   if (!providerId || !key) {
     const det0 = buildDeterministicSupplement(byId, rows, links, userQuery);
     if (rows.length <= GRAPH_APPEND_TITLE_INDEX_MAX_NODES) {
       const idx0 = buildAllNodeTitleIndex(rows, 14_000);
-      return [det0, idx0].filter(Boolean).join("\n\n").trim();
+      return {
+        supplement: [det0, idx0].filter(Boolean).join("\n\n").trim(),
+        memoryTreeRouterAnalytics: null,
+      };
     }
-    return det0;
+    return { supplement: det0, memoryTreeRouterAnalytics: null };
   }
 
   const subqueries = [userQuery];
@@ -993,7 +1050,8 @@ export async function fetchMemoryTreeSupplementForPrompt(args) {
     usage = out.usage;
   } catch {
     const det = buildDeterministicSupplement(byId, rows, links, userQuery);
-    if (det.trim()) return det;
+    const analyticsOnRerankFail = buildMemoryTreeRouterAnalytics(providerId, titleScan, null, "", "");
+    if (det.trim()) return { supplement: det, memoryTreeRouterAnalytics: analyticsOnRerankFail };
     throw new Error("Memory tree router failed and deterministic fallback was empty.");
   }
   const parsed = parseRouteIdsJson(String(rawText ?? ""));
@@ -1035,8 +1093,15 @@ export async function fetchMemoryTreeSupplementForPrompt(args) {
   validIds = validIds.filter((id) => byId.has(id));
   if (validIds.length === 0) {
     const det = buildDeterministicSupplement(byId, rows, links, userQuery);
-    if (det.trim()) return det;
-    return "";
+    const analyticsAfterRerank = buildMemoryTreeRouterAnalytics(
+      providerId,
+      titleScan,
+      usage,
+      `${MEMORY_TREE_RERANK_SYSTEM}\n\n${userBlock}`,
+      String(rawText ?? ""),
+    );
+    if (det.trim()) return { supplement: det, memoryTreeRouterAnalytics: analyticsAfterRerank };
+    return { supplement: "", memoryTreeRouterAnalytics: analyticsAfterRerank };
   }
   const oneHopValid = [...new Set(expandOneGraphHop(validIds, byId, links))];
   validIds = fullyExpandHubNeighbors(oneHopValid, byId, links);
@@ -1052,22 +1117,17 @@ export async function fetchMemoryTreeSupplementForPrompt(args) {
     supplement = det;
   }
 
-  const usageSafe = withUsageFallback(
+  const memoryTreeRouterAnalytics = buildMemoryTreeRouterAnalytics(
+    providerId,
+    titleScan,
     usage,
     `${MEMORY_TREE_RERANK_SYSTEM}\n\n${userBlock}`,
-    rawText,
+    String(rawText ?? ""),
   );
-  void recordAuxLlmUsage({
-    provider_id: providerId,
-    request_kind: "memory_tree_router",
-    llm_prompt_tokens: usageSafe.promptTokens + Number(titleScan.usage?.promptTokens || 0),
-    llm_completion_tokens: usageSafe.completionTokens + Number(titleScan.usage?.completionTokens || 0),
-    llm_total_tokens: usageSafe.totalTokens + Number(titleScan.usage?.totalTokens || 0),
-  }).catch(() => {});
 
   if (rows.length <= GRAPH_APPEND_TITLE_INDEX_MAX_NODES) {
     const idx = buildAllNodeTitleIndex(rows, 14_000);
     supplement = [supplement, idx].filter(Boolean).join("\n\n").trim();
   }
-  return supplement;
+  return { supplement, memoryTreeRouterAnalytics };
 }

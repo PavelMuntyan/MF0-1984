@@ -4,6 +4,37 @@ This document is a **single-source orientation** for engineers taking over the r
 
 ---
 
+## Release notes (1.9.21)
+
+### Memory graph keeper and aux analytics for API-saved turns
+
+- When a chat turn is created only via **`POST /api/dialogs/:id/turns`** (benchmarks, scripts), an optional server-side **memory graph keeper** can run the same **interest sketch** + **normalize** pipeline as the browser, gated by request body / env (see `server/memoryGraphApiTurnKeeper.mjs` and callers in `server/api.mjs`).
+- Keeper LLM calls on that path write **`interests_sketch`** and **`memory_graph_normalize`** rows into **`analytics_aux_llm_usage`** with the new **`conversation_turn_id`** and **`dialog_id`**, via `recordAuxLlmUsageRow` / `recordAuxUsage` callback.
+
+### Memory tree router, chat pipeline, and client analytics
+
+- Router and main-chat wiring improvements for supplement quality, deterministic fallback, and **aux attribution** after `saveConversationTurn` (`src/memoryTreeRouter.js`, `src/main.js`).
+- Keeper extractors and aux reporting accept optional **`dialog_id` / `conversation_turn_id`** where applicable (`src/chatApi.js`, `src/chatPersistence.js`).
+
+### Per-response cost UI
+
+- **Response cost breakdown** (assistant bubble): estimated USD uses **five** fractional digits (e.g. `$0.00012`) in `formatTurnUsd` (`src/main.js`).
+
+### Copy feedback on message bubbles
+
+- **Copy** on user and assistant bubbles shows a short **“Copied”** label above the pointer with a quick fade (`makeCopyButton`, `copyTextToClipboard` success boolean, `src/theme.css`).
+
+### Analytics allowlist and dead code
+
+- Removed obsolete **`optimizer_record_linkage`** from **`AUX_LLM_USAGE_KINDS`** in `server/api.mjs` (record linkage is deterministic graph commands only). Labels map updated; older release note in this file corrected accordingly.
+- Removed unused **`persistAiTalksAssistantTurn`** from `src/main.js` (AI opinion flow uses `saveConversationTurn` + `flushAiTalksRoundAuxBatch`).
+
+### Version bump
+
+- `package.json` / `package-lock.json` → **1.9.21**.
+
+---
+
 ## Release notes (1.9.20)
 
 ### Memory tree retrieval bug fixes in chat
@@ -241,10 +272,7 @@ Settings → **Project Cache** no longer shows a single combined **“files & pi
   - Knowledge consistency: resolves relation conflicts per node pair by canonical (most frequent) relation; emits edge cleanup + canonical links
   - LLM check: model-based quality gate for high-similarity merge candidates; strict JSON command contract
 - Analytics integration:
-  - optimizer LLM usage now accepted by aux analytics endpoint with request kinds:
-    - `optimizer_record_linkage`
-    - `optimizer_knowledge_consistency`
-    - `optimizer_llm_check`
+  - optimizer **LLM** usage is recorded only for **LLM check** (`optimizer_llm_check` via aux analytics). Record linkage and knowledge consistency are deterministic graph commands and do not emit aux rows.
 - Prior release context retained:
   - document attachment extraction endpoint and parser module (`/api/attachments/extract`, `server/attachmentTextExtract.mjs`)
   - supported parsed docs: `.docx`, `.pdf`, `.xlsx`, `.pptx`, `.odt`, `.ods`, `.rtf`
