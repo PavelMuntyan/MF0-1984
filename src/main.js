@@ -76,12 +76,15 @@ import {
   fetchTurns,
   fetchProjectCacheStats,
   clearProjectMultimediaCache,
+  fetchVoiceReplyStatus,
+  ensureVoiceReplyMp3,
   ingestMemoryGraphPayload,
   requestTypeFromAttachMode,
   recordAuxLlmUsage,
   saveConversationTurn,
   setAssistantTurnFavorite,
   titleFromUserMessage,
+  transcribeVoiceMessage,
 } from "./chatPersistence.js";
 import { buildModelContext } from "./contextEngine/buildModelContext.js";
 import { fitContextToBudget } from "./contextEngine/fitContextToBudget.js";
@@ -3917,6 +3920,265 @@ function createCopyIcon(iconClass = "msg-bubble-copy-icon") {
   return svg;
 }
 
+function createSpeakerIcon() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "msg-bubble-speaker-icon");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "16");
+  svg.setAttribute("height", "16");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  const p1 = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  p1.setAttribute("d", "M11 5 6 9H2v6h4l5 4z");
+  const p2 = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  p2.setAttribute("d", "M15.5 8.5a5 5 0 0 1 0 7");
+  const p3 = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  p3.setAttribute("d", "M18.5 5.5a9 9 0 0 1 0 13");
+  svg.append(p1, p2, p3);
+  return svg;
+}
+
+function createPlayIcon() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "msg-bubble-speaker-icon");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "16");
+  svg.setAttribute("height", "16");
+  svg.setAttribute("fill", "currentColor");
+  svg.setAttribute("stroke", "none");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", "M8 5v14l11-7z");
+  svg.appendChild(path);
+  return svg;
+}
+
+function createPauseIcon() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "msg-bubble-speaker-icon");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "16");
+  svg.setAttribute("height", "16");
+  svg.setAttribute("fill", "currentColor");
+  svg.setAttribute("stroke", "none");
+  svg.setAttribute("aria-hidden", "true");
+  const left = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+  left.setAttribute("x", "6");
+  left.setAttribute("y", "5");
+  left.setAttribute("width", "4");
+  left.setAttribute("height", "14");
+  left.setAttribute("rx", "1");
+  const right = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+  right.setAttribute("x", "14");
+  right.setAttribute("y", "5");
+  right.setAttribute("width", "4");
+  right.setAttribute("height", "14");
+  right.setAttribute("rx", "1");
+  svg.append(left, right);
+  return svg;
+}
+
+/** @type {{ audio: HTMLAudioElement | null, button: HTMLButtonElement | null, turnId: string }} */
+const assistantVoicePlayback = { audio: null, button: null, turnId: "" };
+
+/**
+ * @param {HTMLButtonElement} btn
+ * @param {"idle" | "loading" | "ready" | "playing"} state
+ */
+function setAssistantSpeakerButtonState(btn, state) {
+  btn.classList.toggle("msg-bubble-speaker--loading", state === "loading");
+  btn.classList.toggle("msg-bubble-speaker--ready", state === "ready");
+  btn.classList.toggle("msg-bubble-speaker--playing", state === "playing");
+  btn.replaceChildren();
+  if (state === "loading") {
+    const spin = document.createElement("span");
+    spin.className = "msg-bubble-inline-spinner";
+    spin.setAttribute("aria-hidden", "true");
+    btn.appendChild(spin);
+    btn.setAttribute("aria-label", "Preparing voice reply");
+    btn.title = "Preparing voice reply";
+    return;
+  }
+  if (state === "playing") {
+    btn.appendChild(createPauseIcon());
+    btn.setAttribute("aria-label", "Pause voice reply");
+    btn.title = "Pause voice reply";
+  } else if (state === "ready") {
+    btn.appendChild(createPlayIcon());
+    btn.setAttribute("aria-label", "Play voice reply");
+    btn.title = "Play voice reply";
+  } else {
+    btn.appendChild(createSpeakerIcon());
+    btn.setAttribute("aria-label", "Voice reply");
+    btn.title = "Voice reply";
+  }
+}
+
+/**
+ * @param {HTMLElement | null} assistantWrap
+ */
+function syncAssistantSpeakerButton(assistantWrap) {
+  const btn = assistantWrap?.querySelector?.(".msg-bubble-speaker");
+  if (!(btn instanceof HTMLButtonElement) || !(assistantWrap instanceof HTMLElement)) return;
+  const hasTurnId = Boolean(String(assistantWrap.dataset.turnId ?? "").trim());
+  const busy = btn.classList.contains("msg-bubble-speaker--loading");
+  btn.disabled = !hasTurnId || busy;
+}
+
+/**
+ * @param {HTMLElement} assistantWrap
+ */
+function makeAssistantSpeakerButton(assistantWrap) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "msg-bubble-action-btn msg-bubble-speaker";
+  setAssistantSpeakerButtonState(btn, "idle");
+  syncAssistantSpeakerButton(assistantWrap);
+
+  async function runVoiceFlow() {
+    const turnId = String(assistantWrap.dataset.turnId ?? "").trim();
+    if (!turnId) {
+      return;
+    }
+    if (assistantVoicePlayback.audio && assistantVoicePlayback.button === btn) {
+      try {
+        if (assistantVoicePlayback.audio.paused) {
+          await assistantVoicePlayback.audio.play();
+          setAssistantSpeakerButtonState(btn, "playing");
+        } else {
+          assistantVoicePlayback.audio.pause();
+          setAssistantSpeakerButtonState(btn, "ready");
+        }
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    if (assistantVoicePlayback.audio && assistantVoicePlayback.button) {
+      try {
+        assistantVoicePlayback.audio.pause();
+      } catch {
+        /* ignore */
+      }
+      setAssistantSpeakerButtonState(assistantVoicePlayback.button, "ready");
+      assistantVoicePlayback.audio = null;
+      assistantVoicePlayback.button = null;
+      assistantVoicePlayback.turnId = "";
+    }
+    setAssistantSpeakerButtonState(btn, "loading");
+    btn.disabled = true;
+    const keys = getModelApiKeys();
+    try {
+      const cachedUrl = String(assistantWrap.dataset.voiceReplyUrl ?? "").trim();
+      const out =
+        cachedUrl
+          ? { url: cachedUrl, providerId: String(assistantWrap.dataset.voiceReplyProviderId ?? "").trim() }
+          : await ensureVoiceReplyMp3(turnId, {
+              geminiApiKey: String(keys["gemini-flash"] ?? "").trim(),
+              openAiApiKey: String(keys.openai ?? "").trim(),
+            });
+      assistantWrap.dataset.voiceReplyUrl = String(out.url ?? "").trim();
+      assistantWrap.dataset.voiceReplyProviderId = String(out.providerId ?? "").trim();
+      assistantWrap.dataset.voiceReplyReady = "1";
+      const audio = new Audio(String(out.url ?? "").trim());
+      audio.addEventListener("ended", () => {
+        if (assistantVoicePlayback.audio === audio) {
+          setAssistantSpeakerButtonState(btn, "ready");
+          assistantVoicePlayback.audio = null;
+          assistantVoicePlayback.button = null;
+          assistantVoicePlayback.turnId = "";
+        }
+      });
+      audio.addEventListener("error", () => {
+        if (assistantVoicePlayback.audio === audio) {
+          setAssistantSpeakerButtonState(btn, "ready");
+          assistantVoicePlayback.audio = null;
+          assistantVoicePlayback.button = null;
+          assistantVoicePlayback.turnId = "";
+        }
+      });
+      assistantVoicePlayback.audio = audio;
+      assistantVoicePlayback.button = btn;
+      assistantVoicePlayback.turnId = turnId;
+      await audio.play();
+      setAssistantSpeakerButtonState(btn, "playing");
+      appendActivityLog(`Voice reply: ${PROVIDER_DISPLAY[out.providerId] ?? out.providerId ?? "model"}.`);
+    } catch (err) {
+      setAssistantSpeakerButtonState(btn, assistantWrap.dataset.voiceReplyReady === "1" ? "ready" : "idle");
+      appendActivityLog(`Voice reply failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      syncAssistantSpeakerButton(assistantWrap);
+    }
+  }
+
+  async function onClick(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    const turnId = String(assistantWrap.dataset.turnId ?? "").trim();
+    if (!turnId) {
+      appendActivityLog("Voice reply: save this reply first.");
+      return;
+    }
+    await runVoiceFlow();
+  }
+
+  // Use a property for auto-start after assistant turn gets persisted.
+  btn.__mfStartVoiceReply = () => {
+    void runVoiceFlow();
+  };
+
+  btn.addEventListener("click", (e) => {
+    void onClick(e);
+  });
+
+  // Existing MP3 should immediately show Play icon.
+  const existingTurnId = String(assistantWrap.dataset.turnId ?? "").trim();
+  if (existingTurnId) {
+    void (async () => {
+      try {
+        const st = await fetchVoiceReplyStatus(existingTurnId);
+        if (st.exists) {
+          assistantWrap.dataset.voiceReplyReady = "1";
+          assistantWrap.dataset.voiceReplyUrl = String(st.url ?? "").trim();
+          setAssistantSpeakerButtonState(btn, "ready");
+          syncAssistantSpeakerButton(assistantWrap);
+        }
+      } catch {
+        /* keep idle */
+      }
+    })();
+  }
+
+  // Voice-origin replies show spinner immediately and auto-start once turn is saved.
+  if (assistantWrap.dataset.autoVoiceReply === "1" && assistantWrap.dataset.autoVoiceReplyStarted !== "1") {
+    setAssistantSpeakerButtonState(btn, "loading");
+    btn.disabled = true;
+  }
+  return btn;
+}
+
+/**
+ * @param {HTMLElement | null} assistantWrap
+ */
+function tryAutoStartAssistantVoiceReply(assistantWrap) {
+  if (!(assistantWrap instanceof HTMLElement)) return;
+  if (assistantWrap.dataset.autoVoiceReply !== "1") return;
+  if (assistantWrap.dataset.autoVoiceReplyStarted === "1") return;
+  const turnId = String(assistantWrap.dataset.turnId ?? "").trim();
+  if (!turnId) return;
+  const btn = assistantWrap.querySelector(".msg-bubble-speaker");
+  if (!(btn instanceof HTMLButtonElement)) return;
+  assistantWrap.dataset.autoVoiceReplyStarted = "1";
+  const fn = btn.__mfStartVoiceReply;
+  if (typeof fn === "function") {
+    fn();
+  }
+}
+
 function createBubbleStarIcon() {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("class", "msg-bubble-favorite-icon");
@@ -3995,6 +4257,13 @@ function syncAllAssistantRetryButtons() {
   document.querySelectorAll(".msg-assistant .msg-bubble-retry").forEach((b) => {
     const wrap = b.closest(".msg-assistant");
     if (wrap instanceof HTMLElement) syncAssistantRetryButton(wrap);
+  });
+}
+
+function syncAllAssistantSpeakerButtons() {
+  document.querySelectorAll(".msg-assistant .msg-bubble-speaker").forEach((b) => {
+    const wrap = b.closest(".msg-assistant");
+    if (wrap instanceof HTMLElement) syncAssistantSpeakerButton(wrap);
   });
 }
 
@@ -4266,6 +4535,7 @@ function makeAssistantRetryButton(assistantWrap) {
   btn.title = "Try another reply";
   btn.appendChild(createBubbleRetryIcon());
   syncAssistantRetryButton(assistantWrap);
+  syncAssistantSpeakerButton(assistantWrap);
   btn.addEventListener("click", (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -4418,6 +4688,7 @@ async function retryAssistantReply(clickedAssistantWrap) {
 
   chatComposerSending = true;
   syncAllAssistantRetryButtons();
+  syncAllAssistantSpeakerButtons();
   if (sendBtn) sendBtn.disabled = true;
   scrollMessagesToEnd();
 
@@ -4505,6 +4776,7 @@ async function retryAssistantReply(clickedAssistantWrap) {
     if (sendBtn) sendBtn.disabled = false;
     syncComposerSendButtonState();
     syncAllAssistantRetryButtons();
+    syncAllAssistantSpeakerButtons();
     scrollMessagesToEnd();
     const assistantMessageAt = new Date().toISOString();
     const hadAssistantError = Boolean(pending?.classList.contains("msg-assistant--error"));
@@ -4532,7 +4804,9 @@ async function retryAssistantReply(clickedAssistantWrap) {
         pending.dataset.turnId = tid;
         syncAssistantFavoriteStarButton(pending);
         syncAssistantRetryButton(pending);
+        syncAssistantSpeakerButton(pending);
         syncAllAssistantRetryButtons();
+        syncAllAssistantSpeakerButtons();
       }
       await renderThemesSidebar();
     } catch (saveErr) {
@@ -5223,6 +5497,7 @@ function finalizeAssistantBubble(el, fullText, providerId, modelHintOverride, re
     actions = document.createElement("div");
     actions.className = "msg-bubble-actions";
     actions.appendChild(makeAssistantFavoriteStarButton(el));
+    actions.appendChild(makeAssistantSpeakerButton(el));
     if (!el.classList.contains("msg-assistant--error")) {
       actions.appendChild(makeAssistantRetryButton(el));
     }
@@ -5236,6 +5511,8 @@ function finalizeAssistantBubble(el, fullText, providerId, modelHintOverride, re
     body.appendChild(actions);
     syncAssistantFavoriteStarButton(el);
     syncAssistantRetryButton(el);
+    syncAssistantSpeakerButton(el);
+    tryAutoStartAssistantVoiceReply(el);
   }
 
   const meta = document.createElement("div");
@@ -5898,7 +6175,21 @@ async function buildChatOptsForModelRequest(p) {
 function initChatComposer() {
   const ta = document.getElementById("chat-input");
   const sendBtn = document.getElementById("btn-chat-send");
+  const voiceBtn = document.getElementById("btn-composer-voice");
   if (!ta || !sendBtn) return;
+
+  const canRecordVoice =
+    typeof navigator !== "undefined" &&
+    navigator.mediaDevices &&
+    typeof navigator.mediaDevices.getUserMedia === "function" &&
+    typeof MediaRecorder !== "undefined";
+  const voiceProvidersReady = (() => {
+    const keys = getModelApiKeys();
+    return Boolean(String(keys.openai ?? "").trim() || String(keys["gemini-flash"] ?? "").trim());
+  })();
+  if (voiceBtn instanceof HTMLButtonElement) {
+    voiceBtn.disabled = !canRecordVoice || !voiceProvidersReady;
+  }
 
   syncChatInputHeight(ta);
   ta.addEventListener("input", () => {
@@ -5931,8 +6222,169 @@ function initChatComposer() {
     }
   });
 
+  /** @type {{ stream: MediaStream, recorder: MediaRecorder, chunks: BlobPart[], stoppedByUser: boolean, silenceTimer: number | null, ampRaf: number | null, audioCtx: AudioContext | null } | null} */
+  let voiceRec = null;
+  let nextSubmitFromVoiceInput = false;
+
+  function setVoiceListeningUi(on) {
+    if (!(voiceBtn instanceof HTMLButtonElement)) return;
+    voiceBtn.classList.toggle("composer-voice-btn--listening", on);
+    voiceBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    voiceBtn.setAttribute("aria-label", on ? "Stop recording" : "Voice message");
+    voiceBtn.title = on ? "Stop recording" : "Voice message";
+  }
+
+  function stopVoiceTracks(stream) {
+    try {
+      for (const tr of stream.getTracks()) tr.stop();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function clearVoiceRecState() {
+    if (!voiceRec) return;
+    if (voiceRec.silenceTimer != null) window.clearTimeout(voiceRec.silenceTimer);
+    if (voiceRec.ampRaf != null) cancelAnimationFrame(voiceRec.ampRaf);
+    if (voiceRec.audioCtx) {
+      try {
+        void voiceRec.audioCtx.close();
+      } catch {
+        /* ignore */
+      }
+    }
+    stopVoiceTracks(voiceRec.stream);
+    voiceRec = null;
+    setVoiceListeningUi(false);
+  }
+
+  async function blobToBase64(blob) {
+    const buf = await blob.arrayBuffer();
+    let bin = "";
+    const bytes = new Uint8Array(buf);
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return btoa(bin);
+  }
+
+  async function startVoiceCapture() {
+    if (!canRecordVoice || voiceRec) return;
+    if (!voiceProvidersReady) {
+      appendActivityLog("Voice input unavailable: add ChatGPT or Gemini API key in .env.");
+      return;
+    }
+    const mainChatEl = document.getElementById("main-chat");
+    const helpChatOpen = Boolean(mainChatEl?.classList.contains("chat--help"));
+    if (helpChatOpen) {
+      appendActivityLog("Help accepts plain messages only — voice input is disabled.");
+      return;
+    }
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+    const rec = new MediaRecorder(stream);
+    voiceRec = {
+      stream,
+      recorder: rec,
+      chunks: [],
+      stoppedByUser: false,
+      silenceTimer: null,
+      ampRaf: null,
+      audioCtx: null,
+    };
+    setVoiceListeningUi(true);
+    appendActivityLog("Voice input: recording…");
+
+    rec.addEventListener("dataavailable", (e) => {
+      if (e.data && e.data.size > 0 && voiceRec) voiceRec.chunks.push(e.data);
+    });
+
+    rec.addEventListener("stop", async () => {
+      const stoppedByUser = Boolean(voiceRec?.stoppedByUser);
+      const mimeType = rec.mimeType || "audio/webm";
+      const parts = voiceRec?.chunks ?? [];
+      clearVoiceRecState();
+      const blob = new Blob(parts, { type: mimeType });
+      if (blob.size <= 0) {
+        appendActivityLog("Voice input: empty recording.");
+        return;
+      }
+      try {
+        appendActivityLog("Voice input: transcribing…");
+        const keys = getModelApiKeys();
+        const out = await transcribeVoiceMessage({
+          audioBase64: await blobToBase64(blob),
+          mimeType,
+          geminiApiKey: String(keys["gemini-flash"] ?? "").trim(),
+          openAiApiKey: String(keys.openai ?? "").trim(),
+        });
+        const text = String(out.text ?? "").trim();
+        if (!text) throw new Error("Voice transcription returned empty text.");
+        ta.value = ta.value.trim() ? `${ta.value.trim()}\n${text}` : text;
+        syncChatInputHeight(ta);
+        syncComposerSendButtonState();
+        appendActivityLog(`Voice input: transcribed (${PROVIDER_DISPLAY[out.providerId] ?? out.providerId ?? "model"}).`);
+        if (stoppedByUser || text.length > 0) {
+          nextSubmitFromVoiceInput = true;
+          await submitChat();
+        }
+      } catch (e) {
+        appendActivityLog(`Voice input failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    });
+
+    // Auto-stop on ~2s silence.
+    const audioCtx = new AudioContext();
+    const src = audioCtx.createMediaStreamSource(stream);
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 1024;
+    src.connect(analyser);
+    const samples = new Uint8Array(analyser.fftSize);
+    const SILENCE_MS = 2000;
+    const THRESHOLD = 7;
+    voiceRec.audioCtx = audioCtx;
+    const tick = () => {
+      if (!voiceRec || voiceRec.recorder !== rec || rec.state !== "recording") return;
+      analyser.getByteTimeDomainData(samples);
+      let amp = 0;
+      for (let i = 0; i < samples.length; i += 1) {
+        const v = Math.abs(samples[i] - 128);
+        if (v > amp) amp = v;
+      }
+      if (amp < THRESHOLD) {
+        if (voiceRec.silenceTimer == null) {
+          voiceRec.silenceTimer = window.setTimeout(() => {
+            if (voiceRec && voiceRec.recorder === rec && rec.state === "recording") {
+              appendActivityLog("Voice input: silence detected.");
+              rec.stop();
+            }
+          }, SILENCE_MS);
+        }
+      } else if (voiceRec.silenceTimer != null) {
+        window.clearTimeout(voiceRec.silenceTimer);
+        voiceRec.silenceTimer = null;
+      }
+      voiceRec.ampRaf = requestAnimationFrame(tick);
+    };
+
+    rec.start(250);
+    voiceRec.ampRaf = requestAnimationFrame(tick);
+  }
+
+  function stopVoiceCaptureByUser() {
+    if (!voiceRec) return;
+    voiceRec.stoppedByUser = true;
+    if (voiceRec.recorder.state === "recording") {
+      voiceRec.recorder.stop();
+    }
+  }
+
   async function submitChat() {
     if (chatComposerSending) return;
+    const submitFromVoiceInput = nextSubmitFromVoiceInput;
+    nextSubmitFromVoiceInput = false;
     const trimmed = ta.value.trim();
     const modeForSend = composerAttachMode;
     const filesSnapshot = composerAttachmentRows.map((r) => r.file);
@@ -6090,6 +6542,7 @@ function initChatComposer() {
 
     chatComposerSending = true;
     syncAllAssistantRetryButtons();
+    syncAllAssistantSpeakerButtons();
     try {
       if (!persistDialogId && !helpChatOpen) {
         try {
@@ -6208,6 +6661,9 @@ function initChatComposer() {
       scrollMessagesToEnd();
 
       pending = appendAssistantPending();
+      if (pending && submitFromVoiceInput) {
+        pending.dataset.autoVoiceReply = "1";
+      }
       if (pending) {
         pending.dataset.assistantWebSearch = modeForSend === "web" ? "1" : "";
         pending.dataset.assistantDeepResearch = modeForSend === "research" ? "1" : "";
@@ -6400,6 +6856,7 @@ function initChatComposer() {
             providerId,
             accessDataDumpMode ? "Access data" : undefined,
           );
+          tryAutoStartAssistantVoiceReply(pending);
           appendActivityLog(
             `Chat ← reply: text, model ${modelLabel}, reply chars: ${String(fullText).length}`,
           );
@@ -6431,6 +6888,7 @@ function initChatComposer() {
       ta.disabled = false;
       syncComposerSendButtonState();
       syncAllAssistantRetryButtons();
+      syncAllAssistantSpeakerButtons();
       scrollMessagesToEnd();
       if (helpChatOpen && didAppendUserToUi) {
         const hadAssistantErr = Boolean(pending?.classList.contains("msg-assistant--error"));
@@ -6492,7 +6950,10 @@ function initChatComposer() {
             }
             syncAssistantFavoriteStarButton(pending);
             syncAssistantRetryButton(pending);
+            syncAssistantSpeakerButton(pending);
+            tryAutoStartAssistantVoiceReply(pending);
             syncAllAssistantRetryButtons();
+            syncAllAssistantSpeakerButtons();
           }
           await renderThemesSidebar();
         } catch (saveErr) {
@@ -6820,6 +7281,22 @@ function initChatComposer() {
   }
 
   sendBtn.addEventListener("click", () => submitChat());
+
+  if (voiceBtn instanceof HTMLButtonElement) {
+    voiceBtn.addEventListener("click", async () => {
+      if (chatComposerSending || ta.disabled) return;
+      if (voiceRec) {
+        stopVoiceCaptureByUser();
+        return;
+      }
+      try {
+        await startVoiceCapture();
+      } catch (e) {
+        clearVoiceRecState();
+        appendActivityLog(`Voice input unavailable: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    });
+  }
 
   ta.addEventListener("keydown", (e) => {
     if (e.key !== "Enter" || e.shiftKey) return;
