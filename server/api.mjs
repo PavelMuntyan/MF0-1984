@@ -695,6 +695,39 @@ function voiceReplyApiUrl(turnId) {
   return `/api/voice/replies/${encodeURIComponent(turnId)}/file`;
 }
 
+function estimateTokensFromText(text) {
+  const s = String(text ?? "").trim();
+  if (!s) return 0;
+  return Math.max(1, Math.ceil(s.length / 4));
+}
+
+function analyticsProviderFromVoiceProvider(voiceProviderId) {
+  const p = String(voiceProviderId ?? "").trim().toLowerCase();
+  if (!p) return "";
+  if (p === "openai") return "openai";
+  if (p.startsWith("gemini")) return "gemini-flash";
+  if (p.startsWith("anthropic")) return "anthropic";
+  if (p.startsWith("perplexity")) return "perplexity";
+  return "";
+}
+
+function recordAuxLlmUsageRow(providerId, requestKind, promptTokens, completionTokens, totalTokens) {
+  const pid = String(providerId ?? "").trim();
+  const kind = String(requestKind ?? "").trim();
+  if (!ANALYTICS_PROVIDER_IDS.includes(pid)) return false;
+  if (!AUX_LLM_USAGE_KINDS.has(kind)) return false;
+  const pp = Math.max(0, Number(promptTokens) || 0);
+  const pc = Math.max(0, Number(completionTokens) || 0);
+  const pt = Math.max(0, Number(totalTokens) || pp + pc);
+  if (pp === 0 && pc === 0 && pt === 0 && kind !== "optimizer_llm_check") return false;
+  applyAnalyticsAuxLlmUsageMigration(db);
+  db.prepare(
+    `INSERT INTO analytics_aux_llm_usage (id, provider_id, request_kind, llm_prompt_tokens, llm_completion_tokens, llm_total_tokens)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(crypto.randomUUID(), pid, kind, pp, pc, pt);
+  return true;
+}
+
 function ensureVoiceRepliesDir() {
   fs.mkdirSync(VOICE_REPLIES_DIR, { recursive: true });
 }
@@ -3270,6 +3303,17 @@ const server = http.createServer(async (req, res) => {
         if (req.method === "POST") {
           const body = await readBody(req);
           const out = await ensureVoiceReplyMp3ForTurn(turnId, body);
+          if (out.created && out.providerId) {
+            try {
+              const pid = analyticsProviderFromVoiceProvider(out.providerId);
+              const promptTokens = estimateTokensFromText(getAssistantTextForTurnId(turnId));
+              const completionTokens = 0;
+              const totalTokens = promptTokens;
+              recordAuxLlmUsageRow(pid, "voice_reply_tts", promptTokens, completionTokens, totalTokens);
+            } catch (e) {
+              console.warn("[mf-lab-api] voice_reply_tts analytics:", e);
+            }
+          }
           return json(res, 200, {
             ok: true,
             turnId,
@@ -3557,7 +3601,7 @@ const server = http.createServer(async (req, res) => {
         const pp = optTok(body.llm_prompt_tokens);
         const pc = optTok(body.llm_completion_tokens);
         const pt = optTok(body.llm_total_tokens);
-        if (pp === 0 && pc === 0 && pt === 0) {
+        if (pp === 0 && pc === 0 && pt === 0 && kind !== "optimizer_llm_check") {
           return json(res, 400, apiErrorBody("At least one non-zero token field is required"));
         }
         applyAnalyticsAuxLlmUsageMigration(db);

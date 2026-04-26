@@ -12,12 +12,41 @@ For architecture, data model, env vars, and operations, see **[HANDOFF.md](./HAN
 
 ---
 
-## Release 1.9.1 highlights
+## Release 1.9.18 highlights
 
-- AI opinion now uses the same context-building path as regular chat, so panel responses no longer bypass user knowledge and Memory tree-backed context.
-- Added explicit AI opinion debug traces in the activity log to confirm context usage per speaker (context message count and memory-layer status).
-- AI opinion remains integrated with lightweight Keeper interest extraction so panel chats continue feeding Memory tree interests.
-- Included a new **LoCoMo benchmark plan** (`LOCOMO_BENCH_PLAN.md`) to evaluate long-context quality, cost, and retention regressions across modes.
+- **Memory tree optimization safety update**
+  - `Graph pruning` removed from product (UI, client path, analytics allowlist) after real-world regressions in graph integrity.
+  - `Knowledge consistency` restored as an explicit optimization action.
+  - Current optimization actions in Settings:
+    - `Record linkage`
+    - `Knowledge consistency`
+    - `LLM check`
+    - `Interests reconnect`
+- **LLM check analytics now reliable**
+  - `LLM check` usage now uses the same token fallback strategy as chat (`ensureUsageTotals`) when provider-side usage is missing.
+  - Analytics panel refreshes automatically after optimization apply when the panel is open, so model/token tables reflect updates immediately.
+- **TTS now participates in token accounting**
+  - Voice reply synthesis (`POST /api/voice/replies/:turnId`) now writes aux analytics rows with `request_kind = voice_reply_tts`.
+  - Provider id is normalized into analytics buckets (`openai`, `gemini-flash`), and token usage is fallback-estimated from source text when provider usage is unavailable.
+- **Analytics rule consistency**
+  - The release aligns implementation with the project rule: every model-facing pathway must contribute to analytics (`conversation_turns` token fields or `analytics_aux_llm_usage`).
+
+## Notable recent releases
+
+### 1.9.17
+
+- Memory tree optimization scope hardening:
+  - `Graph pruning` removed, `Knowledge consistency` restored
+  - optimizer set narrowed to safer actions and documented in `HANDOFF.md`
+
+### 1.9.16
+
+- Composer attachments now support clipboard file paste (`Ctrl/Cmd+V`) with dedupe and caret-safe text insertion.
+
+### 1.9.15
+
+- Project Cache split stats: DB embedded media estimate vs DB other vs `data/` caches vs sound files.
+- Multimedia cache clear now strips embedded media from SQLite turns and runs `VACUUM` so DB file size visibly shrinks.
 
 ---
 

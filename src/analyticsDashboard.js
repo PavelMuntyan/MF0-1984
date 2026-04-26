@@ -20,6 +20,8 @@ let analyticsOpen = false;
 
 /** @type {(() => void) | null} */
 let prepareChatSurface = null;
+/** @type {() => Promise<void>} */
+let refreshAnalyticsViewIfOpenImpl = async () => {};
 
 /**
  * @param {HTMLElement} root
@@ -339,6 +341,11 @@ export function closeAnalyticsView() {
   }
 }
 
+/** Re-fetch analytics only when the Analytics panel is currently open. */
+export async function refreshAnalyticsViewIfOpen() {
+  return refreshAnalyticsViewIfOpenImpl();
+}
+
 /**
  * @param {{ fetchAnalytics: () => Promise<unknown>, appendActivityLog: (s: string) => void, prepareChatSurface: () => void }} deps
  */
@@ -422,6 +429,11 @@ export function initAnalyticsDashboard(deps) {
       appendActivityLog(`Analytics: ${msg}`);
     }
   }
+
+  refreshAnalyticsViewIfOpenImpl = async () => {
+    if (!analyticsOpen) return;
+    await refresh();
+  };
 
   btn.addEventListener("click", async () => {
     if (analyticsOpen) {

@@ -4,6 +4,57 @@ This document is a **single-source orientation** for engineers taking over the r
 
 ---
 
+## Release notes (1.9.18)
+
+### Memory tree optimization and analytics hardening
+
+- **`Graph pruning` removed completely** after field validation showed it can damage real user graph structure:
+  - UI action removed from Settings (`index.html`, `settings-memory-opt-graph-pruning`)
+  - client pruning builder removed (`buildGraphPruningOptimizationPayload` in `src/main.js`)
+  - optimizer dispatcher/click path removed from `runMemoryOptimization` flow
+  - analytics allowlist removed (`optimizer_graph_pruning` deleted from `AUX_LLM_USAGE_KINDS` in `server/api.mjs`)
+- **`Knowledge consistency` restored** in Settings and optimizer execution flow (`src/main.js`) as the relation-cleanup action.
+- **Current Memory tree optimization set (effective in 1.9.18):**
+  - `Record linkage`
+  - `Knowledge consistency`
+  - `LLM check`
+  - `Interests reconnect`
+
+### LLM check analytics reliability
+
+- **Problem:** `LLM check` calls were often recorded with zero tokens when provider usage was absent, so Analytics model spend/tokens looked unchanged.
+- **Fixes:**
+  - `buildLlmCheckOptimizationPayload` now normalizes usage via `ensureUsageTotals(...)` (same fallback strategy as chat turns) in `src/main.js`
+  - optimizer analytics write path now always sends normalized prompt/completion/total token values for `optimizer_llm_check`
+  - opened Analytics panel is refreshed right after optimization apply:
+    - new `refreshAnalyticsViewIfOpen()` in `src/analyticsDashboard.js`
+    - called from optimization success path in `src/main.js`
+- **Server-side acceptance:** `/api/analytics/aux-llm-usage` keeps the explicit exception allowing zero-only payloads for `optimizer_llm_check` (defensive compatibility).
+
+### Voice reply TTS now counted in analytics
+
+- **Rule alignment:** every model invocation must land in analytics.
+- Added server-side analytics logging for `POST /api/voice/replies/:turnId` when a new MP3 is synthesized:
+  - `request_kind = "voice_reply_tts"`
+  - provider mapping from TTS runtime id to analytics provider id:
+    - `openai` -> `openai`
+    - `gemini-3.1-flash-tts` -> `gemini-flash`
+  - token accounting uses deterministic fallback from source assistant text (`chars/4` floor) when provider-side usage is unavailable.
+- New helpers in `server/api.mjs`:
+  - `estimateTokensFromText`
+  - `analyticsProviderFromVoiceProvider`
+  - `recordAuxLlmUsageRow`
+
+### Documentation scope note
+
+- This release intentionally documents code and product behavior changes only; manual local graph data edits are out of scope for release notes.
+
+### Version bump
+
+- `package.json` / `package-lock.json` -> **1.9.18**.
+
+---
+
 ## Release notes (1.9.17)
 
 ### Memory tree optimization safety and scope update

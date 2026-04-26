@@ -53,7 +53,7 @@ import {
   openUnlockModal,
   refreshIrPanelLockFromApi,
 } from "./irPanelPinLock.js";
-import { closeAnalyticsView, initAnalyticsDashboard } from "./analyticsDashboard.js";
+import { closeAnalyticsView, initAnalyticsDashboard, refreshAnalyticsViewIfOpen } from "./analyticsDashboard.js";
 import {
   apiHealth,
   bootstrapThemeAndDialog,
@@ -1150,10 +1150,11 @@ async function buildLlmCheckOptimizationPayload(rawGraph, providerId, apiKey) {
   });
   const parsed = parseLlmOptimizationJson(text);
   const commands = sanitizeLlmOptimizationCommands(parsed?.commands, candidateKeySet);
+  const usageSafe = ensureUsageTotals(usage, userPayload, text);
   return {
     payload: { entities: [], links: [], commands },
     summary: `LLM check: ${pairs.length} candidate pair(s), ${commands.length} merge command(s) approved.`,
-    usage: usage ?? null,
+    usage: usageSafe,
   };
 }
 
@@ -1639,15 +1640,22 @@ function initSettingsModal() {
           throw new Error("LLM check requires at least one model API key in .env");
         }
         out = await buildLlmCheckOptimizationPayload(rawGraph, pid, key);
-        if (out.usage && Number(out.usage.totalTokens) > 0) {
-          await recordAuxLlmUsage({
-            provider_id: pid,
-            request_kind: "optimizer_llm_check",
-            llm_prompt_tokens: out.usage.promptTokens,
-            llm_completion_tokens: out.usage.completionTokens,
-            llm_total_tokens: out.usage.totalTokens,
-          });
-        }
+        const usageForAnalytics = ensureUsageTotals(
+          out.usage ?? null,
+          JSON.stringify({ kind: "optimizer_llm_check", payload: out.payload ?? {} }),
+          String(out.summary ?? "LLM check"),
+        );
+        await recordAuxLlmUsage({
+          provider_id: pid,
+          request_kind: "optimizer_llm_check",
+          llm_prompt_tokens: usageForAnalytics.promptTokens,
+          llm_completion_tokens: usageForAnalytics.completionTokens,
+          llm_total_tokens: usageForAnalytics.totalTokens,
+        }).catch((e) => {
+          appendActivityLog(
+            `Memory tree optimization (llm check): analytics record failed — ${e instanceof Error ? e.message : String(e)}`,
+          );
+        });
       }
       const commandsCount = Array.isArray(out.payload?.commands) ? out.payload.commands.length : 0;
       const linksCount = Array.isArray(out.payload?.links) ? out.payload.links.length : 0;
@@ -1668,6 +1676,7 @@ function initSettingsModal() {
       appendActivityLog(
         `${out.summary} Applied (upserted: ${Number(ingest?.upsertedEntities) || 0}, inserted links: ${Number(ingest?.insertedLinks) || 0}${cmdApplied ? `; commands ${cmdApplied}` : ""}).`,
       );
+      await refreshAnalyticsViewIfOpen().catch(() => {});
       showMemoryOptimizationSuccess(buttonId);
     } catch (e) {
       appendActivityLog(
