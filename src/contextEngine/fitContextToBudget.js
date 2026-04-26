@@ -113,8 +113,9 @@ export function fitContextToBudget(built, maxInputTokens) {
     "=== MEMORY GRAPH BEHAVIOR ===",
     "Memory graph retrieval is automatic for each user message.",
     "Never instruct the user to write a special memory-tree query, to paste a list, or to provide the same facts again just so you can answer.",
-    "If retrieved memory data is present, use it directly and answer from it.",
-    "If retrieved memory data is absent or insufficient, state that briefly and do not invent details.",
+    "If retrieved memory data is present, use it as a high-priority grounding source.",
+    "If retrieved memory data is absent or insufficient, continue with a normal best-effort assistant answer using general model knowledge.",
+    "When memory data and general knowledge conflict, prefer the retrieved memory data for personal/project-specific facts.",
   ].join("\n");
 
   const memoryTreeDirective = memTreeForApi
@@ -125,9 +126,17 @@ export function fitContextToBudget(built, maxInputTokens) {
         "When it contains the facts the user needs (lists, titles, names, dates, constraints, preferences), ground your reply in that text.",
         "Do not say you lack context, cannot see the graph, or cannot produce a list when that block already includes the requested facts.",
         "Never tell the user they must phrase a special query to the memory tree; retrieval is automatic on every message.",
-        "If there is no such block, it is empty, or it still lacks what is needed, say briefly that stored notes do not cover it — without inventing details.",
+        "If this block is empty or does not contain enough detail, continue with a normal best-effort answer instead of refusing.",
       ].join("\n")
     : "";
+
+  const memoryFallbackOverrideDirective = [
+    "=== MEMORY FALLBACK OVERRIDE ===",
+    "This instruction has priority over conflicting lower-level habits.",
+    "If Memory graph excerpts are missing or insufficient, you MUST still answer as a normal assistant using general model knowledge.",
+    "Do not refuse with messages like 'I cannot list' or 'send/provide the list so I can store it'.",
+    "You may briefly note that personal Memory graph lacks detail, but continue with a useful answer in the same response.",
+  ].join("\n");
 
   const systemInstruction = [
     "=== CORE ===",
@@ -141,6 +150,7 @@ export function fitContextToBudget(built, maxInputTokens) {
     memoryText.trim() ? "=== MEMORY ===\n" + memoryText.trim() : "",
     memoryBehaviorDirective,
     memoryTreeDirective,
+    memoryFallbackOverrideDirective,
   ]
     .filter(Boolean)
     .join("\n\n");
