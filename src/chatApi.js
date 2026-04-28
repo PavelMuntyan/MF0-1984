@@ -3,17 +3,18 @@
  */
 
 import {
-  streamAnthropicMessages,
-  streamGeminiGenerateContent,
-  streamOpenAICompatJson,
-} from "./streaming.js";
-import { recordAuxLlmUsage, titleFromUserMessage } from "./chatPersistence.js";
-import {
-  collectGeminiGroundingEntries,
-  collectOpenAiLikeAnnotationUrls,
-  mergePlainBracketRefsWithCitationList,
-  pickPerplexityCitationPayload,
-} from "./footnoteCitations.js";
+  callLlm,
+  callLlmStream,
+  geminiGenerationConfig,
+  geminiFlattenMessages,
+  openAiContentToString,
+  readErrorBody,
+  usageFromAnthropic,
+  usageFromGemini,
+  usageFromOpenAiStyle,
+  usageWithFallback,
+} from "./llmGateway.js";
+import { titleFromUserMessage } from "./chatPersistence.js";
 import { getUserAiModel } from "./userChatModels.js";
 
 export const PROVIDER_DISPLAY = {
@@ -28,67 +29,10 @@ export const PROVIDER_DISPLAY = {
  * @typedef {{ promptTokens: number, completionTokens: number, totalTokens: number }} LlmUsageTotals
  */
 
-/**
- * @param {string} providerId
- * @param {string} requestKind — must match server `AUX_LLM_USAGE_KINDS` in `server/api.mjs`
- * @param {LlmUsageTotals | null | undefined} usage
- * @param {{ dialog_id?: string, conversation_turn_id?: string }} [analytics] — scope aux rows to a thread/turn for per-message cost UI
- */
-async function reportAuxLlmUsage(providerId, requestKind, usage, analytics = {}) {
-  if (!usage || typeof usage !== "object") return;
-  const pid = String(providerId ?? "").trim();
-  if (!pid) return;
-  const dialogId = String(analytics.dialog_id ?? "").trim();
-  const conversationTurnId = String(analytics.conversation_turn_id ?? "").trim();
-  /** @type {Record<string, unknown>} */
-  const body = {
-    provider_id: pid,
-    request_kind: requestKind,
-    llm_prompt_tokens: usage.promptTokens,
-    llm_completion_tokens: usage.completionTokens,
-    llm_total_tokens: usage.totalTokens,
-  };
-  if (dialogId) body.dialog_id = dialogId;
-  if (conversationTurnId) body.conversation_turn_id = conversationTurnId;
-  try {
-    await recordAuxLlmUsage(body);
-  } catch (e) {
-    console.warn(
-      "[mf-lab] Aux analytics failed:",
-      requestKind,
-      e instanceof Error ? e.message : String(e),
-    );
-  }
-}
-
-/** @param {unknown} u */
-export function usageFromOpenAiStyleUsage(u) {
-  if (!u || typeof u !== "object") return null;
-  const o = /** @type {Record<string, unknown>} */ (u);
-  const p = Number(o.prompt_tokens);
-  const c = Number(o.completion_tokens);
-  const t = Number(o.total_tokens);
-  if (!Number.isFinite(p) && !Number.isFinite(c) && !Number.isFinite(t)) return null;
-  const promptTokens = Number.isFinite(p) ? Math.max(0, Math.floor(p)) : 0;
-  const completionTokens = Number.isFinite(c) ? Math.max(0, Math.floor(c)) : 0;
-  const totalTokens = Number.isFinite(t)
-    ? Math.max(0, Math.floor(t))
-    : promptTokens + completionTokens;
-  return { promptTokens, completionTokens, totalTokens };
-}
-
-/** @param {unknown} data — top-level Anthropic Messages API JSON */
-export function usageFromAnthropicResponse(data) {
-  const u = data && typeof data === "object" ? /** @type {Record<string, unknown>} */ (data).usage : null;
-  if (!u || typeof u !== "object") return null;
-  const o = /** @type {Record<string, unknown>} */ (u);
-  const inp = Number(o.input_tokens);
-  const outp = Number(o.output_tokens);
-  if (!Number.isFinite(inp) && !Number.isFinite(outp)) return null;
-  const promptTokens = Number.isFinite(inp) ? Math.max(0, Math.floor(inp)) : 0;
-  const completionTokens = Number.isFinite(outp) ? Math.max(0, Math.floor(outp)) : 0;
-  return { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
-}
+/** Backward-compat re-exports (callers such as memoryTreeRouter.js import these names). */
+export { usageFromOpenAiStyle as usageFromOpenAiStyleUsage } from "./llmGateway.js";
+export { usageFromAnthropic as usageFromAnthropicResponse } from "./llmGateway.js";
+export { usageFromGemini as usageFromGeminiResponse } from "./llmGateway.js";
 
 /** OpenAI Images API (`/v1/images/*`): `usage` when present (e.g. gpt-image models). */
 function usageFromOpenAiImageResponse(data) {
@@ -105,58 +49,6 @@ function usageFromOpenAiImageResponse(data) {
     ? Math.max(0, Math.floor(tot))
     : promptTokens + completionTokens;
   return { promptTokens, completionTokens, totalTokens };
-}
-
-/** @param {unknown} data — top-level Gemini generateContent JSON */
-export function usageFromGeminiResponse(data) {
-  const um = data && typeof data === "object" ? /** @type {Record<string, unknown>} */ (data).usageMetadata : null;
-  if (!um || typeof um !== "object") return null;
-  const o = /** @type {Record<string, unknown>} */ (um);
-  const p = Number(o.promptTokenCount);
-  const c = Number(o.candidatesTokenCount);
-  const t = Number(o.totalTokenCount);
-  if (!Number.isFinite(p) && !Number.isFinite(c) && !Number.isFinite(t)) return null;
-  const promptTokens = Number.isFinite(p) ? Math.max(0, Math.floor(p)) : 0;
-  const completionTokens = Number.isFinite(c) ? Math.max(0, Math.floor(c)) : 0;
-  const totalTokens = Number.isFinite(t)
-    ? Math.max(0, Math.floor(t))
-    : promptTokens + completionTokens;
-  return { promptTokens, completionTokens, totalTokens };
-}
-
-/**
- * Best-effort token estimate when provider usage is absent.
- * Keeps analytics continuity for providers/endpoints that omit usage metadata.
- * @param {string} text
- */
-function estimateTokensFromText(text) {
-  const s = String(text ?? "").trim();
-  if (!s) return 0;
-  return Math.max(1, Math.ceil(s.length / 4));
-}
-
-/**
- * @param {LlmUsageTotals | null | undefined} usage
- * @param {string} promptText
- * @param {string} completionText
- * @returns {LlmUsageTotals}
- */
-function withUsageFallback(usage, promptText, completionText) {
-  if (
-    usage &&
-    typeof usage === "object" &&
-    Number.isFinite(usage.totalTokens) &&
-    Number(usage.totalTokens) > 0
-  ) {
-    return usage;
-  }
-  const promptTokens = estimateTokensFromText(promptText);
-  const completionTokens = estimateTokensFromText(completionText);
-  return {
-    promptTokens,
-    completionTokens,
-    totalTokens: promptTokens + completionTokens,
-  };
 }
 
 function openAiDialogue() {
@@ -233,9 +125,26 @@ function pickPerplexity(ws, dr) {
 const INTRO_GRAPH_EXTRACT_OPENAI_MAX_TOKENS = 12000;
 const INTRO_GRAPH_NORMALIZE_OPENAI_MAX_TOKENS = 12000;
 
-/** OpenAI Chat Completions: gpt-5* rejects `max_tokens` — use `max_completion_tokens` (see API error text). */
-function oaMaxCompletionTokens(n) {
-  return { max_completion_tokens: Math.max(1, Math.floor(Number(n) || 1)) };
+/** Returns the dialogue-tier model ID for a provider. */
+function dialogueModel(providerId) {
+  switch (providerId) {
+    case "openai": return openAiDialogue();
+    case "anthropic": return anthropicDialogue();
+    case "gemini-flash": return geminiDialogue();
+    case "perplexity": return perplexityDialogue();
+    default: return "";
+  }
+}
+
+/** Returns the best model for the current chat mode (search / research / dialogue). */
+function pickModel(providerId, webSearch, deepResearch) {
+  switch (providerId) {
+    case "openai": return pickOpenAi(webSearch, deepResearch);
+    case "anthropic": return pickAnthropic(webSearch, deepResearch);
+    case "gemini-flash": return pickGemini(webSearch, deepResearch);
+    case "perplexity": return pickPerplexity(webSearch, deepResearch);
+    default: throw new Error("Unknown provider");
+  }
 }
 
 /** One-line trivial acknowledgements (EN + common RU replies as Unicode escapes; ASCII-only source). */
@@ -248,50 +157,6 @@ const TRIVIAL_ACK_LINE_RE =
  * @param {string} modelId
  * @returns {Record<string, unknown>}
  */
-function getGeminiGenerationConfigForModel(modelId) {
-  const id = String(modelId ?? "").toLowerCase();
-  /* Image / Imagen generateContent surfaces reject thinkingLevel and often thinkingBudget. */
-  if (/\bimagen\b|image-preview|-image|flash-image/.test(id)) {
-    return {};
-  }
-  if (id.includes("gemini-3")) {
-    return {
-      thinkingConfig: {
-        thinkingLevel: "low",
-      },
-    };
-  }
-  return {
-    thinkingConfig: {
-      thinkingBudget: 0,
-    },
-  };
-}
-
-/**
- * @param {string} text
- * @param {{ googleSearch?: boolean, modelId?: string }} [opts]
- */
-function geminiJsonBody(text, opts = {}) {
-  return geminiRequestBodyFromParts([{ text }], opts);
-}
-
-/**
- * @param {Array<{ text?: string, inlineData?: { mimeType: string, data: string } }>} parts
- * @param {{ googleSearch?: boolean, modelId?: string }} [opts]
- */
-function geminiRequestBodyFromParts(parts, opts = {}) {
-  const modelId = String(opts.modelId ?? geminiDialogue());
-  const body = {
-    contents: [{ parts }],
-    generationConfig: getGeminiGenerationConfigForModel(modelId),
-  };
-  if (opts.googleSearch) {
-    body.tools = [{ google_search: {} }];
-  }
-  return body;
-}
-
 /**
  * @param {Array<{ role: string, content: unknown }>} messages
  */
@@ -312,29 +177,6 @@ function stringifyOpenAiLikeContent(c) {
     .filter((x) => x && x.type === "text" && typeof x.text === "string")
     .map((x) => x.text)
     .join("\n");
-}
-
-/**
- * Chat Completions `choices[0].message.content`: string or (some models) array of parts with `text`.
- * Using `String(array)` breaks JSON parsing for Memory tree / Keeper extracts.
- * @param {unknown} content
- * @returns {string}
- */
-function openAiChatCompletionMessageContentToString(content) {
-  if (content == null) return "";
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    const parts = [];
-    for (const x of content) {
-      if (!x || typeof x !== "object") continue;
-      if (typeof x.text === "string" && x.text.length > 0) parts.push(x.text);
-    }
-    return parts.join("\n");
-  }
-  if (typeof content === "object" && typeof content.text === "string") {
-    return content.text;
-  }
-  return "";
 }
 
 /**
@@ -402,162 +244,6 @@ function applyChatAttachmentsToAnthropicMessages(messages, att) {
   return out;
 }
 
-/** Anthropic requirement for browser calls (including via /llm/anthropic proxy). */
-const ANTHROPIC_BROWSER_ACCESS_HEADER = {
-  "anthropic-dangerous-direct-browser-access": "true",
-};
-
-/**
- * @param {string} modelId
- * @param {string} trimmed
- * @param {string} key
- * @param {boolean} [googleSearch]
- * @param {{ images?: Array<{ mimeType: string, base64: string }> } | null} [chatAtt]
- * @param {AbortSignal | null} [abortSignal]
- */
-async function geminiGenerateContent(
-  modelId,
-  trimmed,
-  key,
-  googleSearch = false,
-  chatAtt = null,
-  abortSignal = null,
-) {
-  const imgs = Array.isArray(chatAtt?.images) ? chatAtt.images : [];
-  /** @type {Array<{ text?: string, inlineData?: { mimeType: string, data: string } }>} */
-  const parts = [{ text: trimmed }];
-  for (const im of imgs) {
-    parts.push({
-      inlineData: {
-        mimeType: im.mimeType || "image/png",
-        data: im.base64,
-      },
-    });
-  }
-  const url = `/llm/gemini/v1beta/models/${modelId}:generateContent?key=${encodeURIComponent(key)}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(geminiRequestBodyFromParts(parts, { googleSearch, modelId })),
-    signal: abortSignal || undefined,
-  });
-  if (!res.ok) throw new Error(await readErrorBody(res));
-  const data = await res.json();
-  const cand = data.candidates?.[0]?.content?.parts;
-  const out = Array.isArray(cand)
-    ? cand
-        .filter((p) => p && p.thought !== true)
-        .map((p) => p.text)
-        .filter(Boolean)
-        .join("\n")
-        .trim()
-    : "";
-  if (!out) {
-    const block = data.promptFeedback?.blockReason;
-    throw new Error(block ? `Request blocked: ${block}` : "Empty API response");
-  }
-  const { urls: groundingUrls, labels: groundingLabels } = collectGeminiGroundingEntries(
-    data.candidates?.[0],
-  );
-  return {
-    text: mergePlainBracketRefsWithCitationList(out, groundingUrls, {
-      citationLabels: groundingLabels,
-    }),
-    usage: usageFromGeminiResponse(data),
-  };
-}
-
-/**
- * Chat Completions / Perplexity: after `system`, `user` and `assistant` must alternate.
- * Merges consecutive same-named roles (except `system`) into one message.
- * @param {Array<{ role: string, content: string }>} messages
- * @returns {Array<{ role: string, content: string }>}
- */
-function mergeAdjacentSameRoleForChatApi(messages) {
-  /** @type {Array<{ role: string, content: string }>} */
-  const out = [];
-  for (const m of messages) {
-    const role = String(m?.role ?? "user");
-    const content = String(m?.content ?? "");
-    if (role === "system") {
-      out.push({ role: "system", content });
-      continue;
-    }
-    if (role !== "user" && role !== "assistant") {
-      out.push({ role, content });
-      continue;
-    }
-    const prev = out[out.length - 1];
-    if (prev && prev.role === role) {
-      prev.content = `${String(prev.content).trim()}\n\n---\n\n${content.trim()}`;
-    } else {
-      out.push({ role, content });
-    }
-  }
-  return out;
-}
-
-/**
- * @param {string} trimmed — fallback single user message when llmMessages is absent
- * @param {{ systemInstruction?: string, llmMessages?: Array<{ role: string, content: string }> }} options
- */
-function openAiCompatMessages(trimmed, options) {
-  /** @type {Array<{ role: string, content: string }>} */
-  const messages = [];
-  if (options.systemInstruction) {
-    messages.push({ role: "system", content: options.systemInstruction });
-  }
-  if (Array.isArray(options.llmMessages) && options.llmMessages.length > 0) {
-    messages.push(...options.llmMessages);
-  } else {
-    messages.push({ role: "user", content: trimmed });
-  }
-  return mergeAdjacentSameRoleForChatApi(messages);
-}
-
-/**
- * @param {string} trimmed
- * @param {{ systemInstruction?: string, llmMessages?: Array<{ role: string, content: string }> }} options
- */
-function anthropicApiMessages(trimmed, options) {
-  const raw =
-    Array.isArray(options.llmMessages) && options.llmMessages.length > 0
-      ? options.llmMessages
-      : [{ role: "user", content: trimmed }];
-  const filtered = raw.filter((m) => m.role === "user" || m.role === "assistant");
-  return mergeAdjacentSameRoleForChatApi(filtered);
-}
-
-/**
- * @param {string} systemInstruction
- * @param {Array<{ role: string, content: string }>} msgs
- */
-function geminiFlattenChat(systemInstruction, msgs) {
-  const parts = [];
-  if (systemInstruction) parts.push(`[SYSTEM]\n${systemInstruction}`);
-  const merged = Array.isArray(msgs) ? mergeAdjacentSameRoleForChatApi(msgs) : [];
-  for (const m of merged) {
-    parts.push(`[${String(m.role).toUpperCase()}]\n${m.content}`);
-  }
-  return parts.join("\n\n").trim();
-}
-
-async function readErrorBody(res) {
-  const t = await res.text();
-  try {
-    const j = JSON.parse(t);
-    return (
-      j.error?.message ??
-      j.message ??
-      (typeof j.error === "string" ? j.error : null) ??
-      j.error?.type ??
-      t.slice(0, 280)
-    );
-  } catch {
-    return t.slice(0, 280) || res.statusText;
-  }
-}
-
 /**
  * User-facing OpenAI image error text for the chat UI.
  * @param {string} raw
@@ -623,150 +309,55 @@ function humanizeOpenAiImageError(raw, status) {
  */
 export async function completeChatMessage(providerId, text, apiKey, options = {}) {
   const key = String(apiKey ?? "").trim();
-  if (!key) {
-    throw new Error("No API key for the selected model (.env)");
-  }
+  if (!key) throw new Error("No API key for the selected model (.env)");
   const trimmed = text.trim();
   const hasLlm = Array.isArray(options.llmMessages) && options.llmMessages.length > 0;
   const hasAttImg = (options.chatAttachments?.images?.length ?? 0) > 0;
-  if (!hasLlm && !trimmed && !hasAttImg) {
-    throw new Error("Empty message");
-  }
+  if (!hasLlm && !trimmed && !hasAttImg) throw new Error("Empty message");
+
   const lockdown = Boolean(options.accessDataDumpMode);
   const webSearch = Boolean(options.webSearch) && !lockdown;
   const deepResearch = Boolean(options.deepResearch) && !lockdown;
   const useWebGrounding = webSearch || deepResearch;
   const abortSignal = options.abortSignal || null;
-  const oaMsgs = applyChatAttachmentsToOpenAiMessages(
-    openAiCompatMessages(trimmed, options),
-    options.chatAttachments,
-  );
+  const system = options.systemInstruction || undefined;
+  const rawMsgs = hasLlm ? options.llmMessages : [{ role: "user", content: trimmed }];
   const promptUsageBasis = [
-    String(options.systemInstruction ?? "").trim(),
+    String(system ?? "").trim(),
     JSON.stringify(options.llmMessages ?? []),
-    JSON.stringify(oaMsgs),
     trimmed,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  ].filter(Boolean).join("\n");
 
-  switch (providerId) {
-    case "openai": {
-      const res = await fetch("/llm/openai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${key}`,
-        },
-        body: JSON.stringify({
-          model: pickOpenAi(webSearch, deepResearch),
-          messages: oaMsgs,
-        }),
-        signal: abortSignal || undefined,
-      });
-      if (!res.ok) throw new Error(await readErrorBody(res));
-      const data = await res.json();
-      const content = data.choices?.[0]?.message?.content;
-      const rawText = openAiChatCompletionMessageContentToString(content);
-      if (!rawText.trim()) throw new Error("Empty API response");
-      const annUrls = collectOpenAiLikeAnnotationUrls(data.choices?.[0]?.message);
-      return {
-        text: mergePlainBracketRefsWithCitationList(rawText, annUrls),
-        usage: withUsageFallback(usageFromOpenAiStyleUsage(data.usage), promptUsageBasis, rawText),
-      };
-    }
-    case "anthropic": {
-      const anthropicBody = {
-        model: pickAnthropic(webSearch, deepResearch),
-        max_tokens: 4096,
-        messages: applyChatAttachmentsToAnthropicMessages(
-          anthropicApiMessages(trimmed, options),
-          options.chatAttachments,
-        ),
-      };
-      if (options.systemInstruction) {
-        anthropicBody.system = options.systemInstruction;
-      }
-      if (useWebGrounding) {
-        anthropicBody.tools = [
-          { type: "web_search_20250305", name: "web_search", max_uses: 5 },
-        ];
-      }
-      const res = await fetch("/llm/anthropic/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": key,
-          "anthropic-version": "2023-06-01",
-          ...ANTHROPIC_BROWSER_ACCESS_HEADER,
-        },
-        body: JSON.stringify(anthropicBody),
-        signal: abortSignal || undefined,
-      });
-      if (!res.ok) throw new Error(await readErrorBody(res));
-      const data = await res.json();
-      const blocks = data.content;
-      if (!Array.isArray(blocks)) throw new Error("Unexpected response format");
-      const textParts = blocks
-        .filter((b) => b.type === "text" && b.text)
-        .map((b) => b.text);
-      const out = textParts.join("\n").trim();
-      if (!out) throw new Error("Empty API response");
-      return { text: out, usage: withUsageFallback(usageFromAnthropicResponse(data), promptUsageBasis, out) };
-    }
-    case "gemini-flash": {
-      const gMsgs =
-        Array.isArray(options.llmMessages) && options.llmMessages.length > 0
-          ? options.llmMessages
-          : [{ role: "user", content: trimmed }];
-      const combined = geminiFlattenChat(String(options.systemInstruction ?? ""), gMsgs);
-      return geminiGenerateContent(
-        pickGemini(webSearch, deepResearch),
-        combined,
-        key,
-        useWebGrounding,
-        options.chatAttachments,
-        abortSignal,
-      );
-    }
-    case "perplexity": {
-      const perplexityBody = {
-        model: pickPerplexity(webSearch, deepResearch),
-        messages: oaMsgs,
-      };
-      if (useWebGrounding) {
-        perplexityBody.disable_search = false;
-        perplexityBody.web_search_options = {
-          search_context_size: "high",
-          search_type: "pro",
-        };
-      } else if (lockdown) {
-        perplexityBody.disable_search = true;
-      }
-      const res = await fetch("/llm/perplexity/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${key}`,
-        },
-        body: JSON.stringify(perplexityBody),
-        signal: abortSignal || undefined,
-      });
-      if (!res.ok) throw new Error(await readErrorBody(res));
-      const data = await res.json();
-      const content = data.choices?.[0]?.message?.content;
-      const rawText = openAiChatCompletionMessageContentToString(content);
-      if (!rawText.trim()) throw new Error("Empty API response");
-      const citeRaw = pickPerplexityCitationPayload(data);
-      const withCites = mergePlainBracketRefsWithCitationList(rawText, citeRaw);
-      return {
-        text: withCites,
-        usage: withUsageFallback(usageFromOpenAiStyleUsage(data.usage), promptUsageBasis, withCites),
-      };
-    }
-    default:
-      throw new Error("Unknown provider");
+  let messages, geminiParts;
+  if (providerId === "gemini-flash") {
+    const combined = geminiFlattenMessages(String(system ?? ""), rawMsgs);
+    const imgs = Array.isArray(options.chatAttachments?.images) ? options.chatAttachments.images : [];
+    geminiParts = /** @type {Array<{text?: string, inlineData?: {mimeType: string, data: string}}>} */ (
+      [{ text: combined }, ...imgs.map((im) => ({ inlineData: { mimeType: im.mimeType || "image/png", data: im.base64 } }))]
+    );
+  } else if (providerId === "anthropic") {
+    messages = applyChatAttachmentsToAnthropicMessages(rawMsgs, options.chatAttachments);
+  } else {
+    messages = applyChatAttachmentsToOpenAiMessages(rawMsgs, options.chatAttachments);
   }
+
+  return callLlm({
+    provider: providerId,
+    key,
+    model: pickModel(providerId, webSearch, deepResearch),
+    messages: messages ?? rawMsgs,
+    system: providerId === "gemini-flash" ? undefined : system,
+    tools: (providerId === "anthropic" && useWebGrounding)
+      ? [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }]
+      : undefined,
+    googleSearch: (providerId === "gemini-flash" || providerId === "perplexity") ? useWebGrounding : false,
+    disableSearch: providerId === "perplexity" && lockdown,
+    geminiParts: providerId === "gemini-flash" ? geminiParts : undefined,
+    withCitations: true,
+    requestKind: null,
+    abortSignal,
+    promptBasis: promptUsageBasis,
+  });
 }
 
 /** System prompt for a short theme/dialog title (5–6 words). */
@@ -800,111 +391,21 @@ export function normalizeThemeDialogTitle(raw) {
 export async function generateThemeDialogTitle(providerId, userMessage, apiKey) {
   const key = String(apiKey ?? "").trim();
   const snippet = String(userMessage ?? "").trim().slice(0, 3500);
-  if (!key || !snippet) {
-    return titleFromUserMessage(userMessage);
-  }
-
+  if (!key || !snippet) return titleFromUserMessage(userMessage);
+  const model = dialogueModel(providerId);
+  if (!model) return titleFromUserMessage(userMessage);
   try {
-    let text = "";
-    /** @type {LlmUsageTotals | null} */
-    let usageOut = null;
-    switch (providerId) {
-      case "openai": {
-        const res = await fetch("/llm/openai/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${key}`,
-          },
-          body: JSON.stringify({
-            model: openAiDialogue(),
-            temperature: 0.2,
-            ...oaMaxCompletionTokens(48),
-            messages: [
-              { role: "system", content: THEME_TITLE_SYSTEM },
-              { role: "user", content: snippet },
-            ],
-          }),
-        });
-        if (!res.ok) throw new Error(await readErrorBody(res));
-        const data = await res.json();
-        const content = data.choices?.[0]?.message?.content;
-        text = openAiChatCompletionMessageContentToString(content);
-        if (!text.trim()) throw new Error("Empty API response");
-        usageOut = withUsageFallback(usageFromOpenAiStyleUsage(data.usage), snippet, text);
-        break;
-      }
-      case "anthropic": {
-        const res = await fetch("/llm/anthropic/v1/messages", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-api-key": key,
-            "anthropic-version": "2023-06-01",
-            ...ANTHROPIC_BROWSER_ACCESS_HEADER,
-          },
-          body: JSON.stringify({
-            model: anthropicDialogue(),
-            max_tokens: 48,
-            system: THEME_TITLE_SYSTEM,
-            messages: [{ role: "user", content: snippet }],
-          }),
-        });
-        if (!res.ok) throw new Error(await readErrorBody(res));
-        const data = await res.json();
-        const blocks = data.content;
-        if (!Array.isArray(blocks)) throw new Error("Unexpected response format");
-        text = blocks
-          .filter((b) => b.type === "text" && b.text)
-          .map((b) => b.text)
-          .join("\n")
-          .trim();
-        if (!text) throw new Error("Empty API response");
-        usageOut = withUsageFallback(usageFromAnthropicResponse(data), snippet, text);
-        break;
-      }
-      case "gemini-flash": {
-        const combined =
-          `${THEME_TITLE_SYSTEM}\n\nUser message:\n${snippet}`;
-        const { text: g, usage: gemUsage } = await geminiGenerateContent(
-          geminiDialogue(),
-          combined,
-          key,
-          false,
-        );
-        text = g;
-        usageOut = withUsageFallback(gemUsage, combined, text);
-        break;
-      }
-      case "perplexity": {
-        const res = await fetch("/llm/perplexity/chat/completions", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${key}`,
-          },
-          body: JSON.stringify({
-            model: perplexityDialogue(),
-            temperature: 0.2,
-            max_tokens: 48,
-            messages: [
-              { role: "system", content: THEME_TITLE_SYSTEM },
-              { role: "user", content: snippet },
-            ],
-          }),
-        });
-        if (!res.ok) throw new Error(await readErrorBody(res));
-        const data = await res.json();
-        const content = data.choices?.[0]?.message?.content;
-        text = openAiChatCompletionMessageContentToString(content);
-        if (!text.trim()) throw new Error("Empty API response");
-        usageOut = withUsageFallback(usageFromOpenAiStyleUsage(data.usage), snippet, text);
-        break;
-      }
-      default:
-        return titleFromUserMessage(userMessage);
-    }
-    await reportAuxLlmUsage(providerId, "theme_dialog_title", usageOut);
+    const { text } = await callLlm({
+      provider: providerId,
+      key,
+      model,
+      messages: [{ role: "user", content: snippet }],
+      system: THEME_TITLE_SYSTEM,
+      temperature: 0.2,
+      maxTokens: 48,
+      requestKind: "theme_dialog_title",
+      promptBasis: snippet,
+    });
     const normalized = normalizeThemeDialogTitle(text);
     return normalized === "New conversation" ? titleFromUserMessage(userMessage) : normalized;
   } catch {
@@ -1254,55 +755,24 @@ export async function extractAccessKeeper2EntriesFromTranscript(
 ) {
   const key = String(apiKey ?? "").trim();
   const t = String(transcript ?? "").trim().slice(0, 72000);
-  if (!key || !t) {
-    return { entries: [] };
-  }
+  if (!key || !t) return { entries: [] };
   const ex = String(existingSummaryJson ?? "").trim().slice(0, 12000);
-  const userBlock =
-    `EXISTING_STORE_SUMMARY_JSON:\n${ex || "[]"}\n\n` + `CONVERSATION:\n${t}`;
-
+  const userBlock = `EXISTING_STORE_SUMMARY_JSON:\n${ex || "[]"}\n\nCONVERSATION:\n${t}`;
+  const system = `${ACCESS_KEEPER2_EXTRACT_SYSTEM}\nRespond with a single JSON object only, no markdown fences.`;
   try {
-    if (providerId === "openai") {
-      const res = await fetch("/llm/openai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${key}`,
-        },
-        body: JSON.stringify({
-          model: openAiDialogue(),
-          temperature: 0.1,
-          ...oaMaxCompletionTokens(12000),
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: ACCESS_KEEPER2_EXTRACT_SYSTEM },
-            { role: "user", content: userBlock },
-          ],
-        }),
-      });
-      if (!res.ok) throw new Error(await readErrorBody(res));
-      const data = await res.json();
-      const content = data.choices?.[0]?.message?.content;
-      const rawText = openAiChatCompletionMessageContentToString(content);
-      if (!rawText.trim()) throw new Error("Empty API response");
-      await reportAuxLlmUsage(
-        providerId,
-        "access_keeper2_extract",
-        withUsageFallback(usageFromOpenAiStyleUsage(data.usage), userBlock, rawText),
-        analytics,
-      );
-      return parseAccessKeeperJsonFromModelText(rawText);
-    }
-
-    const { text, usage } = await completeChatMessage(providerId, userBlock, key, {
-      systemInstruction: `${ACCESS_KEEPER2_EXTRACT_SYSTEM}\nRespond with a single JSON object only, no markdown fences.`,
-    });
-    await reportAuxLlmUsage(
-      providerId,
-      "access_keeper2_extract",
-      withUsageFallback(usage, userBlock, text),
+    const { text } = await callLlm({
+      provider: providerId,
+      key,
+      model: dialogueModel(providerId),
+      messages: [{ role: "user", content: userBlock }],
+      system,
+      temperature: 0.1,
+      maxTokens: 12000,
+      responseFormat: providerId === "openai" ? { type: "json_object" } : undefined,
+      requestKind: "access_keeper2_extract",
       analytics,
-    );
+      promptBasis: userBlock,
+    });
     return parseAccessKeeperJsonFromModelText(text);
   } catch (e) {
     console.warn("[Access Keeper 2] extract request failed:", e instanceof Error ? e.message : String(e));
@@ -1482,55 +952,24 @@ export async function extractRulesKeeper3FromTranscript(
 ) {
   const key = String(apiKey ?? "").trim();
   const t = String(transcript ?? "").trim().slice(0, 72000);
-  if (!key || !t) {
-    return { core_rules: [], private_rules: [], forbidden_actions: [], workflow_rules: [] };
-  }
+  if (!key || !t) return { core_rules: [], private_rules: [], forbidden_actions: [], workflow_rules: [] };
   const ex = String(existingSummaryJson ?? "").trim().slice(0, 12000);
-  const userBlock =
-    `EXISTING_STORE_SUMMARY_JSON:\n${ex || "{}"}\n\n` + `EXTRACTOR_INPUT:\n${t}`;
-
+  const userBlock = `EXISTING_STORE_SUMMARY_JSON:\n${ex || "{}"}\n\nEXTRACTOR_INPUT:\n${t}`;
+  const system = `${RULES_KEEPER3_EXTRACT_SYSTEM}\nRespond with a single JSON object only, no markdown fences.`;
   try {
-    if (providerId === "openai") {
-      const res = await fetch("/llm/openai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${key}`,
-        },
-        body: JSON.stringify({
-          model: openAiDialogue(),
-          temperature: 0.1,
-          ...oaMaxCompletionTokens(8000),
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: RULES_KEEPER3_EXTRACT_SYSTEM },
-            { role: "user", content: userBlock },
-          ],
-        }),
-      });
-      if (!res.ok) throw new Error(await readErrorBody(res));
-      const data = await res.json();
-      const content = data.choices?.[0]?.message?.content;
-      const rawText = openAiChatCompletionMessageContentToString(content);
-      if (!rawText.trim()) throw new Error("Empty API response");
-      await reportAuxLlmUsage(
-        providerId,
-        "rules_keeper_extract",
-        withUsageFallback(usageFromOpenAiStyleUsage(data.usage), userBlock, rawText),
-        analytics,
-      );
-      return parseRulesKeeper3JsonFromModelText(rawText);
-    }
-
-    const { text, usage } = await completeChatMessage(providerId, userBlock, key, {
-      systemInstruction: `${RULES_KEEPER3_EXTRACT_SYSTEM}\nRespond with a single JSON object only, no markdown fences.`,
-    });
-    await reportAuxLlmUsage(
-      providerId,
-      "rules_keeper_extract",
-      withUsageFallback(usage, userBlock, text),
+    const { text } = await callLlm({
+      provider: providerId,
+      key,
+      model: dialogueModel(providerId),
+      messages: [{ role: "user", content: userBlock }],
+      system,
+      temperature: 0.1,
+      maxTokens: 8000,
+      responseFormat: providerId === "openai" ? { type: "json_object" } : undefined,
+      requestKind: "rules_keeper_extract",
       analytics,
-    );
+      promptBasis: userBlock,
+    });
     return parseRulesKeeper3JsonFromModelText(text);
   } catch (e) {
     console.warn("[Rules extract] request failed:", e instanceof Error ? e.message : String(e));
@@ -1541,47 +980,22 @@ export async function extractRulesKeeper3FromTranscript(
 export async function extractChatInterestSketchForIngest(providerId, apiKey, userText, analytics = {}) {
   const key = String(apiKey ?? "").trim();
   const u = String(userText ?? "").trim().slice(0, 8000);
-  if (!key || !u) {
-    return { entities: [], links: [], commands: [] };
-  }
+  if (!key || !u) return { entities: [], links: [], commands: [] };
   const userBlock = `USER:\n${u}`;
-
-  if (providerId === "openai") {
-    const res = await fetch("/llm/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${key}`,
-      },
-      body: JSON.stringify({
-        model: openAiDialogue(),
-        temperature: 0.12,
-        ...oaMaxCompletionTokens(900),
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: CHAT_INTEREST_SKETCH_EXTRACT_SYSTEM },
-          { role: "user", content: userBlock },
-        ],
-      }),
-    });
-    if (!res.ok) throw new Error(await readErrorBody(res));
-    const data = await res.json();
-    const content = data.choices?.[0]?.message?.content;
-    const rawText = openAiChatCompletionMessageContentToString(content);
-    if (!rawText.trim()) throw new Error("Empty API response");
-    await reportAuxLlmUsage(
-      providerId,
-      "interests_sketch",
-      withUsageFallback(usageFromOpenAiStyleUsage(data.usage), userBlock, rawText),
-      analytics,
-    );
-    return clampGraphPayloadToInterestsOnly(parseIntroGraphJsonFromModelText(rawText));
-  }
-
-  const { text, usage } = await completeChatMessage(providerId, userBlock, key, {
-    systemInstruction: `${CHAT_INTEREST_SKETCH_EXTRACT_SYSTEM}\nRespond with a single JSON object only, no markdown fences.`,
+  const system = `${CHAT_INTEREST_SKETCH_EXTRACT_SYSTEM}\nRespond with a single JSON object only, no markdown fences.`;
+  const { text } = await callLlm({
+    provider: providerId,
+    key,
+    model: dialogueModel(providerId),
+    messages: [{ role: "user", content: userBlock }],
+    system,
+    temperature: 0.12,
+    maxTokens: 900,
+    responseFormat: providerId === "openai" ? { type: "json_object" } : undefined,
+    requestKind: "interests_sketch",
+    analytics,
+    promptBasis: userBlock,
   });
-  await reportAuxLlmUsage(providerId, "interests_sketch", withUsageFallback(usage, userBlock, text), analytics);
   return clampGraphPayloadToInterestsOnly(parseIntroGraphJsonFromModelText(text));
 }
 
@@ -1748,49 +1162,22 @@ export async function normalizeIntroMemoryGraphForDb(
       })
     : JSON.stringify({ existingNodes: existing, proposed: proposedForLlm, introMode: false });
 
-  if (providerId === "openai") {
-    const res = await fetch("/llm/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${key}`,
-      },
-        body: JSON.stringify({
-          model: openAiDialogue(),
-          temperature: 0,
-          ...oaMaxCompletionTokens(INTRO_GRAPH_NORMALIZE_OPENAI_MAX_TOKENS),
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: INTRO_GRAPH_NORMALIZE_SYSTEM },
-            { role: "user", content: userJson },
-          ],
-        }),
-    });
-    if (!res.ok) throw new Error(await readErrorBody(res));
-    const data = await res.json();
-    const content = data.choices?.[0]?.message?.content;
-    const rawText = openAiChatCompletionMessageContentToString(content);
-    if (!rawText.trim()) throw new Error("Empty API response");
-    await reportAuxLlmUsage(
-      providerId,
-      "memory_graph_normalize",
-      withUsageFallback(usageFromOpenAiStyleUsage(data.usage), userJson, rawText),
-      analytics,
-    );
-    const normalized = parseIntroGraphJsonFromModelTextSafe(rawText, "Intro normalize");
-    const n =
-      normalized.entities.length + normalized.links.length + (normalized.commands?.length ?? 0);
-    if (n > 0) return normalized;
-    return { ...base, commands: fromExtract };
-  }
-
-  const { text, usage } = await completeChatMessage(providerId, userJson, key, {
-    systemInstruction: `${INTRO_GRAPH_NORMALIZE_SYSTEM}\nRespond with one JSON object only, no markdown fences.`,
+  const system = `${INTRO_GRAPH_NORMALIZE_SYSTEM}\nRespond with one JSON object only, no markdown fences.`;
+  const { text } = await callLlm({
+    provider: providerId,
+    key,
+    model: dialogueModel(providerId),
+    messages: [{ role: "user", content: userJson }],
+    system,
+    temperature: 0,
+    maxTokens: INTRO_GRAPH_NORMALIZE_OPENAI_MAX_TOKENS,
+    responseFormat: providerId === "openai" ? { type: "json_object" } : undefined,
+    requestKind: "memory_graph_normalize",
+    analytics,
+    promptBasis: userJson,
   });
-  await reportAuxLlmUsage(providerId, "memory_graph_normalize", withUsageFallback(usage, userJson, text), analytics);
   const normalized = parseIntroGraphJsonFromModelTextSafe(text, "Intro normalize");
-  const n =
-    normalized.entities.length + normalized.links.length + (normalized.commands?.length ?? 0);
+  const n = normalized.entities.length + normalized.links.length + (normalized.commands?.length ?? 0);
   if (n > 0) return normalized;
   return { ...base, commands: fromExtract };
 }
@@ -1816,47 +1203,22 @@ export function introUserNotesFallbackPack(userText) {
 export async function extractIntroMemoryGraphForIngest(providerId, apiKey, userText, analytics = {}) {
   const key = String(apiKey ?? "").trim();
   const u = String(userText ?? "").trim().slice(0, 8000);
-  if (!key || !u) {
-    return { entities: [], links: [], commands: [] };
-  }
+  if (!key || !u) return { entities: [], links: [], commands: [] };
   const userBlock = `USER:\n${u}`;
-
-  if (providerId === "openai") {
-    const res = await fetch("/llm/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${key}`,
-      },
-        body: JSON.stringify({
-          model: openAiDialogue(),
-          temperature: 0.1,
-          ...oaMaxCompletionTokens(INTRO_GRAPH_EXTRACT_OPENAI_MAX_TOKENS),
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: INTRO_GRAPH_EXTRACT_SYSTEM },
-            { role: "user", content: userBlock },
-          ],
-        }),
-    });
-    if (!res.ok) throw new Error(await readErrorBody(res));
-    const data = await res.json();
-    const content = data.choices?.[0]?.message?.content;
-    const rawText = openAiChatCompletionMessageContentToString(content);
-    if (!rawText.trim()) throw new Error("Empty API response");
-    await reportAuxLlmUsage(
-      providerId,
-      "intro_graph_extract",
-      withUsageFallback(usageFromOpenAiStyleUsage(data.usage), userBlock, rawText),
-      analytics,
-    );
-    return parseIntroGraphJsonFromModelTextSafe(rawText, "Intro extract");
-  }
-
-  const { text, usage } = await completeChatMessage(providerId, userBlock, key, {
-    systemInstruction: `${INTRO_GRAPH_EXTRACT_SYSTEM}\nRespond with a single JSON object only, no markdown fences.`,
+  const system = `${INTRO_GRAPH_EXTRACT_SYSTEM}\nRespond with a single JSON object only, no markdown fences.`;
+  const { text } = await callLlm({
+    provider: providerId,
+    key,
+    model: dialogueModel(providerId),
+    messages: [{ role: "user", content: userBlock }],
+    system,
+    temperature: 0.1,
+    maxTokens: INTRO_GRAPH_EXTRACT_OPENAI_MAX_TOKENS,
+    responseFormat: providerId === "openai" ? { type: "json_object" } : undefined,
+    requestKind: "intro_graph_extract",
+    analytics,
+    promptBasis: userBlock,
   });
-  await reportAuxLlmUsage(providerId, "intro_graph_extract", withUsageFallback(usage, userBlock, text), analytics);
   return parseIntroGraphJsonFromModelTextSafe(text, "Intro extract");
 }
 
@@ -1867,175 +1229,56 @@ export async function extractIntroMemoryGraphForIngest(providerId, apiKey, userT
  */
 export async function completeChatMessageStreaming(providerId, text, apiKey, onDelta, options = {}) {
   const key = String(apiKey ?? "").trim();
-  if (!key) {
-    throw new Error("No API key for the selected model (.env)");
-  }
+  if (!key) throw new Error("No API key for the selected model (.env)");
   const trimmed = text.trim();
   const hasLlm = Array.isArray(options.llmMessages) && options.llmMessages.length > 0;
   const hasAttImg = (options.chatAttachments?.images?.length ?? 0) > 0;
-  if (!hasLlm && !trimmed && !hasAttImg) {
-    throw new Error("Empty message");
-  }
+  if (!hasLlm && !trimmed && !hasAttImg) throw new Error("Empty message");
+
   const lockdown = Boolean(options.accessDataDumpMode);
   const webSearch = Boolean(options.webSearch) && !lockdown;
   const deepResearch = Boolean(options.deepResearch) && !lockdown;
   const useWebGrounding = webSearch || deepResearch;
   const abortSignal = options.abortSignal || null;
-  const oaMsgs = applyChatAttachmentsToOpenAiMessages(
-    openAiCompatMessages(trimmed, options),
-    options.chatAttachments,
-  );
+  const system = options.systemInstruction || undefined;
+  const rawMsgs = hasLlm ? options.llmMessages : [{ role: "user", content: trimmed }];
   const promptUsageBasis = [
-    String(options.systemInstruction ?? "").trim(),
+    String(system ?? "").trim(),
     JSON.stringify(options.llmMessages ?? []),
-    JSON.stringify(oaMsgs),
     trimmed,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  ].filter(Boolean).join("\n");
 
-  let full;
-  /** @type {LlmUsageTotals | null} */
-  let usageOut = null;
-
-  switch (providerId) {
-    case "openai": {
-      const res = await fetch("/llm/openai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "text/event-stream",
-          Authorization: `Bearer ${key}`,
-        },
-        body: JSON.stringify({
-          model: pickOpenAi(webSearch, deepResearch),
-          messages: oaMsgs,
-          stream: true,
-          stream_options: {
-            include_usage: true,
-          },
-        }),
-        signal: abortSignal || undefined,
-      });
-      const oaStream = await streamOpenAICompatJson(res, onDelta);
-      full = mergePlainBracketRefsWithCitationList(oaStream.text, oaStream.citations);
-      usageOut = oaStream.usage ?? null;
-      break;
-    }
-    case "perplexity": {
-      const pBody = {
-        model: pickPerplexity(webSearch, deepResearch),
-        messages: oaMsgs,
-        stream: true,
-      };
-      if (useWebGrounding) {
-        pBody.disable_search = false;
-        pBody.web_search_options = {
-          search_context_size: "high",
-          search_type: "pro",
-        };
-      } else if (lockdown) {
-        pBody.disable_search = true;
-      }
-      const res = await fetch("/llm/perplexity/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "text/event-stream",
-          Authorization: `Bearer ${key}`,
-        },
-        body: JSON.stringify(pBody),
-        signal: abortSignal || undefined,
-      });
-      const pStream = await streamOpenAICompatJson(res, onDelta);
-      full = mergePlainBracketRefsWithCitationList(pStream.text, pStream.citations);
-      usageOut = pStream.usage ?? null;
-      break;
-    }
-    case "anthropic": {
-      const aStreamBody = {
-        model: pickAnthropic(webSearch, deepResearch),
-        max_tokens: 4096,
-        messages: applyChatAttachmentsToAnthropicMessages(
-          anthropicApiMessages(trimmed, options),
-          options.chatAttachments,
-        ),
-        stream: true,
-      };
-      if (options.systemInstruction) {
-        aStreamBody.system = options.systemInstruction;
-      }
-      if (useWebGrounding) {
-        aStreamBody.tools = [
-          { type: "web_search_20250305", name: "web_search", max_uses: 5 },
-        ];
-      }
-      const res = await fetch("/llm/anthropic/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "text/event-stream",
-          "x-api-key": key,
-          "anthropic-version": "2023-06-01",
-          ...ANTHROPIC_BROWSER_ACCESS_HEADER,
-        },
-        body: JSON.stringify(aStreamBody),
-        signal: abortSignal || undefined,
-      });
-      const anthStream = await streamAnthropicMessages(res, onDelta);
-      full = anthStream.text;
-      usageOut = anthStream.usage ?? null;
-      break;
-    }
-    case "gemini-flash": {
-      const gMsgs =
-        Array.isArray(options.llmMessages) && options.llmMessages.length > 0
-          ? options.llmMessages
-          : [{ role: "user", content: trimmed }];
-      const combined = geminiFlattenChat(String(options.systemInstruction ?? ""), gMsgs);
-      const imgs = Array.isArray(options.chatAttachments?.images) ? options.chatAttachments.images : [];
-      /** @type {Array<{ text?: string, inlineData?: { mimeType: string, data: string } }>} */
-      const gParts = [{ text: combined }];
-      for (const im of imgs) {
-        gParts.push({
-          inlineData: {
-            mimeType: im.mimeType || "image/png",
-            data: im.base64,
-          },
-        });
-      }
-      // Without alt=sse, Google returns non-classic SSE (see ai.google.dev streamGenerateContent) — parser does not get data: chunks incrementally.
-      const gModel = pickGemini(webSearch, deepResearch);
-      const url = `/llm/gemini/v1beta/models/${gModel}:streamGenerateContent?key=${encodeURIComponent(key)}&alt=sse`;
-      const res = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "text/event-stream",
-        },
-        body: JSON.stringify(
-          geminiRequestBodyFromParts(gParts, {
-            googleSearch: useWebGrounding,
-            modelId: gModel,
-          }),
-        ),
-        signal: abortSignal || undefined,
-      });
-      const gStream = await streamGeminiGenerateContent(res, onDelta);
-      full = mergePlainBracketRefsWithCitationList(gStream.text, gStream.citations, {
-        citationLabels: gStream.citationLabels,
-      });
-      usageOut = gStream.usage ?? null;
-      break;
-    }
-    default:
-      throw new Error("Unknown provider");
+  let messages, geminiParts;
+  if (providerId === "gemini-flash") {
+    const combined = geminiFlattenMessages(String(system ?? ""), rawMsgs);
+    const imgs = Array.isArray(options.chatAttachments?.images) ? options.chatAttachments.images : [];
+    geminiParts = /** @type {Array<{text?: string, inlineData?: {mimeType: string, data: string}}>} */ (
+      [{ text: combined }, ...imgs.map((im) => ({ inlineData: { mimeType: im.mimeType || "image/png", data: im.base64 } }))]
+    );
+  } else if (providerId === "anthropic") {
+    messages = applyChatAttachmentsToAnthropicMessages(rawMsgs, options.chatAttachments);
+  } else {
+    messages = applyChatAttachmentsToOpenAiMessages(rawMsgs, options.chatAttachments);
   }
 
-  if (!String(full).trim()) {
-    throw new Error("Empty API response");
-  }
-  return { text: full, usage: withUsageFallback(usageOut, promptUsageBasis, full) };
+  return callLlmStream({
+    provider: providerId,
+    key,
+    model: pickModel(providerId, webSearch, deepResearch),
+    messages: messages ?? rawMsgs,
+    system: providerId === "gemini-flash" ? undefined : system,
+    maxTokens: 4096,
+    tools: (providerId === "anthropic" && useWebGrounding)
+      ? [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }]
+      : undefined,
+    googleSearch: (providerId === "gemini-flash" || providerId === "perplexity") ? useWebGrounding : false,
+    disableSearch: providerId === "perplexity" && lockdown,
+    geminiParts: providerId === "gemini-flash" ? geminiParts : undefined,
+    onDelta,
+    requestKind: null,
+    abortSignal,
+    promptBasis: promptUsageBasis,
+  });
 }
 
 /**
@@ -2320,7 +1563,7 @@ async function geminiImageGeneration(prompt, key, chatAtt = null) {
       contents: [{ role: "user", parts }],
       /* Without explicit modalities the API often returns text only; the image arrives in parts as inlineData. */
       generationConfig: {
-        ...getGeminiGenerationConfigForModel(geminiImage()),
+        ...geminiGenerationConfig(geminiImage()),
         responseModalities: ["TEXT", "IMAGE"],
       },
     }),
@@ -2384,7 +1627,7 @@ async function geminiImageGeneration(prompt, key, chatAtt = null) {
   }
   const prefix = textBits.filter(Boolean).join("\n\n").trim();
   const text = prefix ? `${prefix}\n\n${imageMd}` : imageMd;
-  return { text, usage: usageFromGeminiResponse(data) };
+  return { text, usage: usageFromGemini(data) };
 }
 
 /**

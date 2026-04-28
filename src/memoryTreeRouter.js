@@ -4,11 +4,7 @@
  * adapted to MF0’s graph shape: nodes { id, category, label, blob }, links { source, target, label }.
  */
 
-import {
-  usageFromAnthropicResponse,
-  usageFromGeminiResponse,
-  usageFromOpenAiStyleUsage,
-} from "./chatApi.js";
+import { callLlm, usageWithFallback } from "./llmGateway.js";
 
 /** First line of the supplement user message — must match fitContextToBudget detection. */
 export const MF0_MEMORY_TREE_SUPPLEMENT_PREFIX =
@@ -19,10 +15,6 @@ const ROUTER_MODEL = {
   anthropic: "claude-3-5-haiku-20241022",
   "gemini-flash": "gemini-2.0-flash",
   perplexity: "sonar",
-};
-
-const ANTHROPIC_BROWSER_ACCESS_HEADER = {
-  "anthropic-dangerous-direct-browser-access": "true",
 };
 
 /** LLM rerank: same contract shape as Cyprus Discovery `MEMORY_ROUTE_RERANK_INSTRUCTION`. */
@@ -78,40 +70,6 @@ const QUERY_SYNONYMS = {
   regulations: ["rules", "law", "legal", "requirement", "requirements"],
   population: ["group", "species", "community"],
 };
-
-/**
- * @param {string} text
- */
-function estimateTokensFromText(text) {
-  const s = String(text ?? "").trim();
-  if (!s) return 0;
-  return Math.max(1, Math.ceil(s.length / 4));
-}
-
-/**
- * @param {{ promptTokens: number, completionTokens: number, totalTokens: number } | null} usage
- * @param {string} promptText
- * @param {string} completionText
- */
-function withUsageFallback(usage, promptText, completionText) {
-  if (usage && Number.isFinite(usage.totalTokens) && Number(usage.totalTokens) > 0) return usage;
-  const promptTokens = estimateTokensFromText(promptText);
-  const completionTokens = estimateTokensFromText(completionText);
-  return { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
-}
-
-/**
- * @param {Response} res
- */
-async function readErrorBody(res) {
-  const t = await res.text();
-  try {
-    const j = JSON.parse(t);
-    return j.error?.message ?? j.message ?? t;
-  } catch {
-    return t || res.statusText;
-  }
-}
 
 function stripCodeFence(text) {
   const t = String(text).trim();
@@ -342,141 +300,31 @@ function pickRouterKey(allKeys, analysisPriority, activeProviderId, activeApiKey
 }
 
 /**
- * @param {string} geminiModelId — Google API model id (e.g. gemini-2.0-flash or UI slot gemini-1.5-pro-preview).
- * @param {string} key
- * @param {string} systemPrompt
- * @param {string} userBlock
- * @param {number} maxOutTokens
- */
-async function geminiRouterGenerateContent(geminiModelId, key, systemPrompt, userBlock, maxOutTokens) {
-  const ub = String(userBlock).slice(0, 32000);
-  const mid = encodeURIComponent(String(geminiModelId ?? "").trim());
-  const url = `/llm/gemini/v1beta/models/${mid}:generateContent?key=${encodeURIComponent(key)}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [
-        {
-          role: "user",
-          parts: [{ text: `${systemPrompt}\n\n${ub}` }],
-        },
-      ],
-      generationConfig: {
-        temperature: 0.12,
-        maxOutputTokens: maxOutTokens,
-      },
-    }),
-  });
-  if (!res.ok) throw new Error(await readErrorBody(res));
-  const data = await res.json();
-  const cand = data.candidates?.[0]?.content?.parts;
-  if (!Array.isArray(cand)) throw new Error("Empty Gemini router response");
-  const text = cand
-    .filter((p) => p && p.thought !== true && p.text)
-    .map((p) => String(p.text))
-    .join("\n")
-    .trim();
-  return { text, usage: usageFromGeminiResponse(data) };
-}
-
-/**
  * @param {string} providerId
  * @param {string} key
  * @param {string} systemPrompt
  * @param {string} userBlock
  * @param {number} maxOutTokens
- * @returns {Promise<{ text: string, usage: { promptTokens: number, completionTokens: number, totalTokens: number } | null }>}
+ * @returns {Promise<{ text: string, usage: { promptTokens: number, completionTokens: number, totalTokens: number } }>}
  */
 async function runRouterLlm(providerId, key, systemPrompt, userBlock, maxOutTokens) {
   const ub = String(userBlock).slice(0, 32000);
-  switch (providerId) {
-    case "openai": {
-      const res = await fetch("/llm/openai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${key}`,
-        },
-        body: JSON.stringify({
-          model: ROUTER_MODEL.openai,
-          temperature: 0.12,
-          max_completion_tokens: maxOutTokens,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: ub },
-          ],
-        }),
-      });
-      if (!res.ok) throw new Error(await readErrorBody(res));
-      const data = await res.json();
-      const content = data.choices?.[0]?.message?.content;
-      const text = typeof content === "string" ? content : String(content ?? "");
-      return { text, usage: usageFromOpenAiStyleUsage(data.usage) };
-    }
-    case "anthropic": {
-      const body = {
-        model: ROUTER_MODEL.anthropic,
-        max_tokens: maxOutTokens,
-        system: systemPrompt,
-        messages: [{ role: "user", content: ub }],
-      };
-      const res = await fetch("/llm/anthropic/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": key,
-          "anthropic-version": "2023-06-01",
-          ...ANTHROPIC_BROWSER_ACCESS_HEADER,
-        },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error(await readErrorBody(res));
-      const data = await res.json();
-      const blocks = data.content;
-      if (!Array.isArray(blocks)) throw new Error("Unexpected Anthropic response");
-      const text = blocks
-        .filter((b) => b.type === "text" && b.text)
-        .map((b) => b.text)
-        .join("\n")
-        .trim();
-      return { text, usage: usageFromAnthropicResponse(data) };
-    }
-    case "gemini-flash": {
-      return geminiRouterGenerateContent(ROUTER_MODEL["gemini-flash"], key, systemPrompt, ub, maxOutTokens);
-    }
-    case "perplexity": {
-      const res = await fetch("/llm/perplexity/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${key}`,
-        },
-        body: JSON.stringify({
-          model: ROUTER_MODEL.perplexity,
-          temperature: 0.12,
-          max_tokens: maxOutTokens,
-          disable_search: true,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: ub },
-          ],
-        }),
-      });
-      if (!res.ok) throw new Error(await readErrorBody(res));
-      const data = await res.json();
-      const content = data.choices?.[0]?.message?.content;
-      const text = typeof content === "string" ? content : String(content ?? "");
-      return { text, usage: usageFromOpenAiStyleUsage(data.usage) };
-    }
-    default: {
-      const g = String(providerId ?? "").trim();
-      if (g.toLowerCase().startsWith("gemini")) {
-        return geminiRouterGenerateContent(g, key, systemPrompt, ub, maxOutTokens);
-      }
-      throw new Error(`Memory tree router: unsupported provider ${providerId}`);
-    }
-  }
+  const isGemini = String(providerId ?? "").toLowerCase().startsWith("gemini");
+  const gatewayProvider = isGemini ? "gemini-flash" : providerId;
+  const model = ROUTER_MODEL[providerId] ?? (isGemini ? String(providerId).trim() : "");
+  if (!model) throw new Error(`Memory tree router: unsupported provider ${providerId}`);
+  return callLlm({
+    provider: gatewayProvider,
+    key,
+    model,
+    messages: [{ role: "user", content: ub }],
+    system: systemPrompt,
+    temperature: 0.12,
+    maxTokens: maxOutTokens,
+    disableSearch: providerId === "perplexity",
+    requestKind: null,
+    promptBasis: `${systemPrompt}\n\n${ub}`,
+  });
 }
 
 /**
@@ -553,7 +401,7 @@ async function selectCandidateIdsByTitleChunks(providerId, key, userQuery, rows)
       if (allowed.has(id)) out.add(id);
     }
     if (parsed.rationale) rationales.push(parsed.rationale);
-    const usageSafe = withUsageFallback(
+    const usageSafe = usageWithFallback(
       usage,
       `${MEMORY_TREE_TITLE_SCAN_SYSTEM}\n\n${userBlock}`,
       text,
@@ -884,7 +732,7 @@ function buildMemoryTreeRouterAnalytics(
   const ts = titleScan?.usage ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
   const rerankPart =
     rerankUsage != null
-      ? withUsageFallback(rerankUsage, rerankPromptForFallback, rerankCompletionText)
+      ? usageWithFallback(rerankUsage, rerankPromptForFallback, rerankCompletionText)
       : { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
   const promptTokens = rerankPart.promptTokens + Number(ts.promptTokens || 0);
   const completionTokens = rerankPart.completionTokens + Number(ts.completionTokens || 0);
