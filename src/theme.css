@@ -297,12 +297,12 @@ body {
 
 /* Whole grid fits the viewport: scroll inside panels only, not on body */
 .app-frame {
-  max-width: 96rem;
+  max-width: 100%;
   margin-left: auto;
   margin-right: auto;
   width: 100%;
-  padding: calc(1rem / 3);
-  padding-bottom: max(calc(1rem / 3), env(safe-area-inset-bottom, 0px));
+  padding: 0;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
   flex: 1;
   min-height: 0;
   display: flex;
@@ -312,20 +312,20 @@ body {
 
 @media (min-width: 768px) {
   .app-frame {
-    padding: calc(1.34rem / 3);
-    padding-bottom: max(calc(1.34rem / 3), env(safe-area-inset-bottom, 0px));
+    padding: 0;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
   }
 }
 
-/* Window shell: rounded-2xl border-2 border-border bg-card shadow-none */
+/* Window shell — borderless, fills the frame */
 .app-window {
   flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border-radius: 1rem;
-  border: 1px solid hsl(var(--border));
-  background: hsl(var(--card));
+  border-radius: 0;
+  border: none;
+  background: hsl(var(--background));
   overflow: hidden;
 }
 
@@ -404,7 +404,7 @@ body {
   align-items: center;
   gap: 1rem 1.5rem;
   padding: 1rem 2rem;
-  border-bottom: 1px solid hsl(var(--border));
+  border-bottom: none;
   background: hsl(var(--card));
 }
 
@@ -467,7 +467,7 @@ body {
   height: 2.25rem;
 }
 
-/* Model badges — above the message field (top and bottom rules) */
+/* Model badges — above the message field */
 .model-badges {
   display: flex;
   flex-wrap: wrap;
@@ -476,8 +476,8 @@ body {
   gap: 0.25rem;
   flex-shrink: 0;
   padding: 0.4rem 0.7rem;
-  border-top: 1px solid hsl(var(--border));
-  border-bottom: 1px solid hsl(var(--border));
+  border-top: none;
+  border-bottom: none;
   background: hsl(var(--background));
 }
 
@@ -632,9 +632,9 @@ button.btn {
   display: flex;
   flex: 1;
   min-height: 0;
-  gap: calc(1rem / 3);
-  padding: calc(6px / 3) calc(1rem / 3) calc(1.25rem / 3);
-  background: hsl(var(--card));
+  gap: 0;
+  padding: 0;
+  background: hsl(var(--background));
 }
 
 /* Column like Card with Projects in Human UI */
@@ -644,10 +644,11 @@ button.btn {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  gap: calc(0.75rem / 3);
+  gap: 0;
   min-height: 0;
   min-width: 0;
   align-self: stretch;
+  background: hsl(var(--card));
 }
 
 .sidebar-panel {
@@ -655,8 +656,8 @@ button.btn {
   flex-direction: column;
   min-height: 0;
   flex: 1;
-  border-radius: 1rem;
-  border: 1px solid hsl(var(--border));
+  border-radius: 0;
+  border: none;
   background: hsl(var(--card));
   color: hsl(var(--card-foreground));
   box-shadow: none;
@@ -740,14 +741,12 @@ button.btn {
   flex-direction: column;
   align-items: stretch;
   overflow: visible;
-  border-radius: 1rem;
-  border: 1px solid hsl(var(--border));
+  border-radius: 0.5rem;
+  border: none;
   padding: 0.7rem 0.6rem 0.7rem 0.7rem;
   color: hsl(var(--foreground));
   cursor: default;
-  transition:
-    background-color 0.15s ease,
-    border-color 0.15s ease;
+  transition: background-color 0.15s ease;
 }
 
 .dialog-card:hover {
@@ -755,9 +754,7 @@ button.btn {
 }
 
 .dialog-card.dialog-card--mentioned {
-  border-color: hsl(var(--ring) / 0.65);
   background: hsl(var(--primary) / 0.08);
-  box-shadow: 0 0 0 1px hsl(var(--ring) / 0.25);
 }
 
 .dark .dialog-card.dialog-card--mentioned {
@@ -765,18 +762,15 @@ button.btn {
 }
 
 .dialog-card.dialog-card--selected {
-  border-color: hsl(var(--primary));
-  background: hsl(var(--primary) / 0.07);
-  box-shadow: 0 0 0 2px hsl(var(--primary) / 0.3);
+  background: hsl(var(--primary) / 0.12);
 }
 
 .dark .dialog-card.dialog-card--selected {
-  background: hsl(var(--primary) / 0.14);
+  background: hsl(var(--primary) / 0.18);
 }
 
 .dialog-card.dialog-card--selected.dialog-card--mentioned {
-  border-color: hsl(var(--primary));
-  box-shadow: 0 0 0 2px hsl(var(--primary) / 0.38);
+  background: hsl(var(--primary) / 0.15);
 }
 
 .dialog-card-inner {
@@ -1150,7 +1144,7 @@ button.btn {
   display: flex;
   flex-direction: column;
   gap: calc(0.5rem / 3);
-  padding-top: 0.65rem;
+  padding: 0.65rem 1rem 1rem;
 }
 
 /* Populated on mobile only; IR bubbles are moved here from `#sidebar-intro-rules-access`. */
@@ -1168,15 +1162,13 @@ button.btn {
   margin: 0;
   font-family: inherit;
   text-align: left;
-  border-radius: 1rem;
-  border: 1px solid hsl(var(--border));
+  border-radius: 0.5rem;
+  border: none;
   padding: 0.65rem 0.6rem 0.65rem 0.85rem;
   color: hsl(var(--foreground));
-  background: hsl(var(--card));
+  background: transparent;
   cursor: pointer;
-  transition:
-    background-color 0.15s ease,
-    border-color 0.15s ease;
+  transition: background-color 0.15s ease;
 }
 
 .sidebar-ir-bubble:hover:not(:disabled) {
@@ -1736,7 +1728,11 @@ button.btn {
 }
 
 .analytics-chart-block {
-  margin-bottom: 1.5rem;
+  margin: 0 0 1.5rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.75rem;
+  background: hsl(var(--card));
 }
 
 .analytics-tokens-note {
@@ -1797,7 +1793,6 @@ button.btn {
   align-items: center;
   flex: 1 0 0;
   min-width: 1.35rem;
-  max-width: 2rem;
 }
 
 .analytics-bar-stack-wrap {

@@ -220,7 +220,7 @@ Settings → **Project Cache** no longer shows a single combined **“files & pi
   - `theme_dialog_title` — `generateThemeDialogTitle` in `src/chatApi.js`
   - `help_chat_turn` — Help panel completions in `src/main.js` (no persisted dialog turn)
   - `rules_keeper_extract`, `access_keeper2_extract` — keeper extractors in `src/chatApi.js`
-- **Cursor rule:** `.cursor/rules/mf-lab-analytics-llm-always.mdc` — every inference path must land in analytics (turn fields or `recordAuxLlmUsage` + allowlist).
+- **Rule:** every inference path must land in analytics (turn fields or `recordAuxLlmUsage` + allowlist). See `.cursor/rules/mf-lab-analytics-llm-always.mdc`.
 - Version bump: `package.json` / `package-lock.json` → `1.9.14`.
 
 ---
@@ -332,7 +332,7 @@ Settings → **Project Cache** no longer shows a single combined **“files & pi
 | `vite.config.js` | Dev server port **1984**, `/api` proxy to API port, LLM reverse proxies (`/llm/*`) for CORS-free browser calls. |
 | `ecosystem.config.cjs` | PM2: `mf-lab-api` (watches `server/`), `mf-lab-vite` (watches `vite.config.js`). |
 | `public/pre-app-boot.js` | Early boot script referenced from HTML (CSP / safety net). |
-| `.cursor/rules/*.mdc` | Cursor agent rules for this workspace (backup, API restart, constraints). |
+| `.cursor/rules/*.mdc` | Agent workspace rules (backup, API restart, constraints). |
 
 ---
 
@@ -480,7 +480,7 @@ The router is a **large sequential `if` chain** on normalized path + method. Not
 ## 9. Security & safety
 
 - **CSP** and `public/pre-app-boot.js` are part of defense-in-depth; changing `index.html` meta requires coordinated updates.
-- **SQLite files under `data/`** are real user data — agents/tests must avoid destructive experiments (see `.cursor/rules/no-destructive-db-in-agent-tests.mdc`).
+- **SQLite files under `data/`** are real user data — agents/tests must avoid destructive experiments (see `.cursor/rules/no-destructive-db-in-agent-tests.mdc` for the constraint rule).
 - **Assistant markdown** goes through sanitization (`dompurify` where wired); favor established helpers over new `innerHTML`.
 
 ---
@@ -489,7 +489,7 @@ The router is a **large sequential `if` chain** on normalized path + method. Not
 
 - Remote: **`PavelMuntyan/MF0-1984`** (SSH or HTTPS depending on clone).
 - **Commit messages for releases** should be **English**, include **version** from `package.json` or user-declared version.
-- After substantive **`server/**/*.mjs`** changes, restart **`mf-lab-api`** (PM2 or manual per `.cursor/rules/mf-lab-restart-api.mdc`).
+- After substantive **`server/**/*.mjs`** changes, restart **`mf-lab-api`** (PM2 or `npm run api`).
 
 ---
 
@@ -517,7 +517,7 @@ The router is a **large sequential `if` chain** on normalized path + method. Not
 - `SECURITY.md` (if present) — disclosure and scope.
 - `db/migrations/*.sql` — authoritative column additions.
 - `src/chatApi.js` header regions — large file; use editor outline / search.
-- `.cursor/rules/*.mdc` — automation expectations for agents working in this repo.
+- `.cursor/rules/*.mdc` — workspace constraint rules for agents.
 
 ---
 
