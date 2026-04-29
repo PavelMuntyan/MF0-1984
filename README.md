@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | **UI dev server** | Vite — default port **1984** (`vite.config.js`) |
-| **Local API** | Node + `better-sqlite3` / PostgreSQL — default port **35184** (`API_PORT`) |
+| **Local API** | Node + `better-sqlite3` — default port **35184** (`API_PORT`) |
 | **Version** | **1.9.26** (`package.json`) |
 
 For architecture, data model, env vars, and operations, see **[HANDOFF.md](./HANDOFF.md)** (engineering handoff).
@@ -77,12 +77,6 @@ The dev setup runs the API and Vite together.
 | `db/` | Schema and migrations |
 | `data/` | Runtime SQLite and optional caches (not treated as canonical for every clone) |
 | `HANDOFF.md` | Full technical orientation |
-
----
-
-## Database backend
-
-By default the app uses **SQLite** (`data/mf-lab.sqlite`). For a multi-user hosted deployment, set `DB_ADAPTER=postgres` and `DATABASE_URL=postgres://…` in `.env` — tables are created automatically on first start. See `.env.example` for all options.
 
 ---
 
