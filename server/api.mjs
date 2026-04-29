@@ -20,6 +20,7 @@ import memoryGraphRouter from "./routes/memoryGraph.mjs";
 import projectProfileRouter from "./routes/projectProfile.mjs";
 import analyticsRouter from "./routes/analytics.mjs";
 import themesRouter from "./routes/themes.mjs";
+import llmRouter from "./routes/llm.mjs";
 
 const PORT = resolveApiPort(process.env.API_PORT);
 const app = express();
@@ -53,6 +54,7 @@ app.use("/api", memoryGraphRouter);
 app.use("/api", projectProfileRouter);
 app.use("/api", analyticsRouter);
 app.use("/api", themesRouter);
+app.use("/api", llmRouter);
 
 app.use(notFound);
 app.use(errorHandler);

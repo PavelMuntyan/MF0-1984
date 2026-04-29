@@ -1,5 +1,5 @@
 /**
- * Fetches model id lists from provider APIs via the Vite `/llm/*` proxy (same keys as chat).
+ * Fetches model id lists from provider APIs via the server-side `/api/llm/*` proxy.
  */
 
 /**
@@ -60,7 +60,7 @@ function isLikelyOpenAiResearchModel(id) {
 export async function fetchOpenAiRawModelIds(key) {
   const k = String(key ?? "").trim();
   if (!k) return [];
-  const res = await fetch("/llm/openai/v1/models", {
+  const res = await fetch("/api/llm/openai/v1/models", {
     headers: { Authorization: `Bearer ${k}` },
   });
   if (!res.ok) return [];
@@ -114,7 +114,7 @@ export async function fetchOpenAiResearchModelIds(key) {
 export async function fetchAnthropicModelIds(key) {
   const k = String(key ?? "").trim();
   if (!k) return [];
-  const res = await fetch("/llm/anthropic/v1/models", {
+  const res = await fetch("/api/llm/anthropic/v1/models", {
     headers: {
       "x-api-key": k,
       "anthropic-version": "2023-06-01",
@@ -142,7 +142,7 @@ export async function fetchGeminiGenerateContentModelIds(key) {
   for (let page = 0; page < 30; page += 1) {
     const q = new URLSearchParams({ pageSize: "100", key: k });
     if (pageToken) q.set("pageToken", pageToken);
-    const res = await fetch(`/llm/gemini/v1beta/models?${q.toString()}`);
+    const res = await fetch(`/api/llm/gemini/v1beta/models?${q.toString()}`);
     if (!res.ok) break;
     const j = await res.json();
     const models = Array.isArray(j?.models) ? j.models : [];
@@ -204,7 +204,7 @@ function isLikelyPerplexityResearchModel(id) {
 export async function fetchPerplexityModelIds(key) {
   const k = String(key ?? "").trim();
   if (!k) return [];
-  const res = await fetch("/llm/perplexity/v1/models", {
+  const res = await fetch("/api/llm/perplexity/v1/models", {
     headers: { Authorization: `Bearer ${k}` },
   });
   if (!res.ok) return [];

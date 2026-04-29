@@ -1,7 +1,7 @@
 /**
  * Central LLM gateway — single point for all provider HTTP calls.
  * Handles usage normalization and aux analytics recording.
- * Browser-side: calls route through /llm/* proxy (Vite config).
+ * Browser-side: calls route through /api/llm/* (server-side proxy, keys in process.env).
  */
 
 import { recordAuxLlmUsage } from "./chatPersistence.js";
@@ -280,7 +280,7 @@ export async function callLlm(opts) {
       if (temperature != null) body.temperature = temperature;
       if (maxTokens) body.max_completion_tokens = maxTokens;
       if (responseFormat) body.response_format = responseFormat;
-      const res = await fetch("/llm/openai/v1/chat/completions", {
+      const res = await fetch("/api/llm/openai/v1/chat/completions", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
         body: JSON.stringify(body),
@@ -307,7 +307,7 @@ export async function callLlm(opts) {
       const body = { model, max_tokens: maxTokens ?? 4096, messages: anthMsgs };
       if (system) body.system = system;
       if (tools?.length) body.tools = tools;
-      const res = await fetch("/llm/anthropic/v1/messages", {
+      const res = await fetch("/api/llm/anthropic/v1/messages", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -330,7 +330,7 @@ export async function callLlm(opts) {
 
     case "gemini-flash": {
       const parts = geminiParts ?? [{ text: geminiFlattenMessages(system ?? "", messages) }];
-      const url = `/llm/gemini/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
+      const url = `/api/llm/gemini/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -374,7 +374,7 @@ export async function callLlm(opts) {
       } else if (disableSearch) {
         body.disable_search = true;
       }
-      const res = await fetch("/llm/perplexity/chat/completions", {
+      const res = await fetch("/api/llm/perplexity/chat/completions", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
         body: JSON.stringify(body),
@@ -448,7 +448,7 @@ export async function callLlmStream(opts) {
         ...systemMsg,
         ...messages.filter((m) => m.role !== "system"),
       ]);
-      const res = await fetch("/llm/openai/v1/chat/completions", {
+      const res = await fetch("/api/llm/openai/v1/chat/completions", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -483,7 +483,7 @@ export async function callLlmStream(opts) {
       } else if (disableSearch) {
         body.disable_search = true;
       }
-      const res = await fetch("/llm/perplexity/chat/completions", {
+      const res = await fetch("/api/llm/perplexity/chat/completions", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -507,7 +507,7 @@ export async function callLlmStream(opts) {
       const body = { model, max_tokens: maxTokens ?? 4096, messages: anthMsgs, stream: true };
       if (system) body.system = system;
       if (tools?.length) body.tools = tools;
-      const res = await fetch("/llm/anthropic/v1/messages", {
+      const res = await fetch("/api/llm/anthropic/v1/messages", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -527,7 +527,7 @@ export async function callLlmStream(opts) {
 
     case "gemini-flash": {
       const parts = geminiParts ?? [{ text: geminiFlattenMessages(system ?? "", messages) }];
-      const url = `/llm/gemini/v1beta/models/${model}:streamGenerateContent?key=${encodeURIComponent(key)}&alt=sse`;
+      const url = `/api/llm/gemini/v1beta/models/${model}:streamGenerateContent?key=${encodeURIComponent(key)}&alt=sse`;
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "text/event-stream" },

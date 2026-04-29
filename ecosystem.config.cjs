@@ -13,6 +13,7 @@ module.exports = {
       script: path.join(root, "server/api.mjs"),
       cwd: root,
       interpreter: "node",
+      node_args: "--env-file=.env",
       autorestart: true,
       max_restarts: 15,
       min_uptime: "4s",

@@ -4,6 +4,75 @@ This document is a **single-source orientation** for engineers taking over the r
 
 ---
 
+## Release notes (1.9.27)
+
+### Express 5 migration — monolithic `server/api.mjs` split into route modules
+
+`server/api.mjs` was refactored from a ~1 650-line sequential `if`-chain into a **65-line Express 5 bootstrap** that mounts twelve focused route modules. No API surface or response shapes changed.
+
+**New server layout:**
+
+| Path | Contents |
+|------|----------|
+| `server/api.mjs` | Express app setup: middleware, router mounts, `app.listen` |
+| `server/config.mjs` | `MAX_BODY_BYTES` export (default 48 MiB, env-overridable) |
+| `server/middleware/http.mjs` | `securityHeaders`, `notFound`, `errorHandler` |
+| `server/routes/health.mjs` | `GET /api/health` |
+| `server/routes/attachments.mjs` | `POST /api/attachments/extract` |
+| `server/routes/voice.mjs` | Transcription + voice reply CRUD |
+| `server/routes/purposeSessions.mjs` | Intro / Rules / Access sessions, keeper-files, keeper-merge |
+| `server/routes/access.mjs` | External services CRUD + data-dump enrichment |
+| `server/routes/settings.mjs` | AI model lists cache + project cache stats / clear |
+| `server/routes/irPanelLock.mjs` | IR panel lock / PIN flows |
+| `server/routes/memoryGraph.mjs` | Memory graph GET / import / ingest |
+| `server/routes/projectProfile.mjs` | Profile export / import (binary `express.raw()`) |
+| `server/routes/analytics.mjs` | Analytics GET, turn costs, aux LLM usage |
+| `server/routes/themes.mjs` | All theme / dialog / turn / favorites CRUD |
+| `server/routes/llm.mjs` | **Server-side LLM proxy** (see below) |
+| `server/services/accessServices.mjs` | `readAccessExternalServicesPayload()` — single source of truth |
+| `server/services/contextPipeline.mjs` | `runAfterTurnPipeline`, `clearThreadDerivedData`, context helpers |
+| `server/services/aiModelCache.mjs` | AI model lists cache read/write |
+
+**Express 5 notes:**
+
+- Async route handlers throw directly — no `asyncHandler` wrapper needed.
+- Global `express.json({ type: ["application/json", "text/json"] })` covers all JSON routes. Binary routes (project-profile import, memory-graph gzip import) apply `express.raw()` locally; they coexist because `express.json()` skips non-matching content types without consuming the stream.
+- `req.body = req.body ?? {}` middleware runs after `express.json()` to guarantee routes always get at least `{}`.
+- `API_PATH_PREFIX` stripping (reverse-proxy support) is an early middleware slice on `req.url`.
+
+### Server-side LLM proxy — keys moved out of the browser
+
+All LLM calls now route through **`POST /api/llm/<provider>/*`** handled by `server/routes/llm.mjs`, which reads keys from `process.env` on the Node side. The browser never receives real API keys.
+
+- **Browser** sends `Authorization: Bearer server-proxy` (placeholder returned by `src/modelEnv.js`).
+- **Proxy** replaces the auth header with the real key from `process.env.OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `PERPLEXITY_API_KEY` / `GEMINI_API_KEY` before forwarding.
+- **Gemini** key (`?key=`) is replaced in the query string rather than a header.
+- Streaming responses (SSE / NDJSON / `streamGenerateContent`): `Content-Length` is dropped, `Cache-Control: no-cache, no-transform` and `X-Accel-Buffering: no` are set.
+- `anthropic-dangerous-direct-browser-access` header is stripped on the server — the upstream call is server-to-server, not browser-direct.
+- Non-JSON request bodies (multipart/form-data for `/v1/images/edits`) are piped through directly; JSON bodies re-serialized from `req.body`.
+- Returns HTTP 503 if the required env key is not set.
+- Vite-level `/llm/*` proxy rules **removed** from `vite.config.js`. All LLM traffic flows through `/api/llm/*` in both dev and production.
+- `envPrefix` in `vite.config.js` now contains only `VITE_` (provider key prefixes removed).
+
+**Client-side changes:**
+
+- `src/modelEnv.js` — always returns `{ openai: "server-proxy", … }` for all providers; `hasAnyModelApiKey()` always returns `true`.
+- All `fetch("/llm/…")` calls in `src/llmGateway.js`, `src/chatApi.js`, `src/fetchRemoteModelLists.js` updated to `fetch("/api/llm/…")`.
+
+### SQLite WAL mode
+
+`server/db/migrations.mjs` now runs `PRAGMA journal_mode = WAL` at startup. Concurrent reads no longer block each other, which benefits background analytics queries running alongside active chat turns.
+
+### `.env` loading for the API server
+
+`npm run api` and the PM2 ecosystem config now pass `--env-file=.env` to Node (requires Node 20.6+), so `process.env.*` keys are populated from `.env` without a separate dotenv dependency.
+
+### Version bump
+
+- `package.json` → **1.9.27**.
+
+---
+
 ## Release notes (1.9.26)
 
 ### DB adapter layer (internal refactoring)
@@ -444,14 +513,18 @@ Settings → **Project Cache** no longer shows a single combined **“files & pi
 | `src/settingsModelsUi.js` | Dynamic AI model pickers in Settings; remote model list fetch; dirty detection for **Save AI models**; serialized refresh queue. |
 | `src/userChatModels.js` | Defaults and `localStorage` keys under `mf0.settings.aiModel.*` (and legacy `mf0.settings.chatModel.*` for dialogue). |
 | `src/fetchRemoteModelLists.js` | Provider-specific “list models” HTTP calls from the browser (keys from `import.meta.env` in dev). |
-| `src/modelEnv.js` | Reads Vite-exposed env keys for API keys in dev builds. |
-| `server/api.mjs` | Monolithic HTTP router: SQLite access, migrations, JSON bodies, streaming-unrelated REST. |
-| `server/*.mjs` | Feature slices: memory graph import, access external services DB, project profile export/import, access data dump helpers, port resolver. |
+| `src/modelEnv.js` | Returns `"server-proxy"` placeholder for all provider keys — real keys live in `process.env` on the server. |
+| `server/api.mjs` | Thin Express 5 bootstrap (~65 lines): global middleware, router mounts, `app.listen`. |
+| `server/config.mjs` | `MAX_BODY_BYTES` (48 MiB default, `API_MAX_BODY_BYTES` override). |
+| `server/middleware/http.mjs` | `securityHeaders`, `notFound`, `errorHandler`. |
+| `server/routes/` | Twelve route modules — see **Release notes (1.9.27)** for the full list. |
+| `server/services/` | Shared logic: `accessServices.mjs`, `contextPipeline.mjs`, `aiModelCache.mjs`. |
+| `server/*.mjs` | Feature slices: memory graph import, project profile export/import, access data dump helpers, port resolver. |
 | `db/schema.sql` | Initial schema; migrations in `db/migrations/*.sql`. |
 | `data/` | Runtime SQLite (`mf-lab.sqlite` by default), optional JSON caches (e.g. Access enrichment import). **Not** shipped as authoritative content for all installs. |
 | `rules/` | JSON keeper files used by Intro/Rules flows (`core_rules.json`, etc.). |
-| `vite.config.js` | Dev server port **1984**, `/api` proxy to API port, LLM reverse proxies (`/llm/*`) for CORS-free browser calls. |
-| `ecosystem.config.cjs` | PM2: `mf-lab-api` (watches `server/`), `mf-lab-vite` (watches `vite.config.js`). |
+| `vite.config.js` | Dev server port **1984**; `/api` proxy to API port. LLM calls go through `/api/llm/*` (server-side proxy); no browser-direct `/llm/*` rules. |
+| `ecosystem.config.cjs` | PM2: `mf-lab-api` (watches `server/`, `node_args: --env-file=.env`), `mf-lab-vite` (watches `vite.config.js`). |
 | `public/pre-app-boot.js` | Early boot script referenced from HTML (CSP / safety net). |
 | `.cursor/rules/*.mdc` | Agent workspace rules (backup, API restart, constraints). |
 
@@ -464,11 +537,11 @@ Settings → **Project Cache** no longer shows a single combined **“files & pi
 - **Node.js** (LTS recommended) with `npm`.
 - **`npm install`** at repo root (postinstall fixes `7zip-bin` binary permissions for profile archives).
 - **`ffmpeg`** installed on the machine that runs **`mf-lab-api`** and available on **`PATH`** (the API invokes `ffmpeg` for **Gemini text-to-speech** output: PCM/WAV → MP3 for voice-reply downloads; without it, long-reply Gemini audio paths fail with a clear server error). Typical installs: `brew install ffmpeg` (macOS), `apt install ffmpeg` (Debian/Ubuntu), or the [official builds](https://ffmpeg.org/download.html). Verify with `ffmpeg -version`.
-- **API keys** in a root **`.env`** file for development (Vite `envPrefix` exposes `OPENAI_*`, `ANTHROPIC_*`, `GEMINI_*`, `PERPLEXITY_*`, `VITE_*`). See `src/modelEnv.js` and `vite.config.js`.
+- **API keys** in a root **`.env`** file. Keys are read by the **Node API server** via `--env-file=.env` (requires Node 20.6+, already in `npm run api` and `ecosystem.config.cjs`). The browser no longer receives real keys — `src/modelEnv.js` returns a placeholder. See `server/routes/llm.mjs` for the proxy that injects keys server-side.
 
 ### 3.2 Commands
 
-- **API only:** `npm run api` → `node server/api.mjs` (default port **35184**, override with `API_PORT`).
+- **API only:** `npm run api` → `node --env-file=.env server/api.mjs` (default port **35184**, override with `API_PORT`).
 - **Vite only:** `npm run dev:vite` (port **1984**, next free if busy).
 - **Full dev (typical):** `npm run dev` → **concurrently** runs API + Vite.
 - **Production build:** `npm run build` → static assets in `dist/`; `npm run preview` serves with same proxy table as dev.
@@ -489,7 +562,7 @@ Settings → **Project Cache** no longer shows a single combined **“files & pi
 | `API_MAX_BODY_BYTES` | API process | Cap for JSON POST/PUT bodies (default 48 MiB, band-clamped). |
 | `API_PATH_PREFIX` | API + logs | When behind a reverse proxy that strips a prefix; router canonicalizes paths containing `/api/`. |
 | `ACCESS_DATA_DUMP_*` | Server modules | Allowlists / limits for live Access enrichment fetches (see `server/accessDataDump.mjs`). |
-| Provider keys | Vite + Node | Prefixed keys per `vite.config.js` `envPrefix`; consumed in browser for model listing and chat proxy calls. |
+| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `PERPLEXITY_API_KEY`, `GEMINI_API_KEY` | API server (`process.env`) | Loaded via `--env-file=.env`. Used exclusively by `server/routes/llm.mjs`; never sent to the browser. |
 
 `.env` is **gitignored**. Project profile **import** can restore a captured `.env` payload into the working tree on the machine performing import (operator responsibility).
 
@@ -509,9 +582,9 @@ Application code in `server/api.mjs` applies idempotent **PRAGMA / ALTER** guard
 
 ---
 
-## 6. HTTP API surface (`server/api.mjs`)
+## 6. HTTP API surface
 
-The router is a **large sequential `if` chain** on normalized path + method. Notable groups:
+The API is an **Express 5** app with twelve route modules mounted at `/api`. Notable groups:
 
 - **Health:** `GET /api/health`
 - **Attachment text extraction:** `POST /api/attachments/extract` (base64 payload, returns extracted text for supported office/document formats)
@@ -535,7 +608,9 @@ The router is a **large sequential `if` chain** on normalized path + method. Not
   `GET /api/themes`, `POST /api/themes/bootstrap`, `POST /api/themes/new-dialog`, `POST /api/themes/delete`, `POST /api/themes/rename`,  
   `GET /api/dialogs/<id>/turns`, `POST /api/dialogs/<id>/turns` (+ clone / archive behaviors where implemented)
 
-**Security headers** (JSON responses): nosniff, frame deny, cache control — see top of router. **Body size** enforced before JSON parse.
+- **LLM proxy:** `GET|POST /api/llm/<provider>/*` — forwards to OpenAI / Anthropic / Perplexity / Gemini with server-injected keys; handles streaming (drops `Content-Length`, sets `x-accel-buffering: no`).
+
+**Security headers** (`server/middleware/http.mjs`): `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Cache-Control: no-store` on every response. **Body size** enforced by global `express.json({ limit: MAX_BODY_BYTES })`.
 
 ---
 
@@ -551,7 +626,7 @@ The router is a **large sequential `if` chain** on normalized path + method. Not
 
 1. User composes message + optional attach modes (web, research, image, Access `#data`, etc.). **File attachments** can come from the attach menu, drag-and-drop onto `#main-chat`, or **paste into `#chat-input`** (see **Release notes (1.9.16)**); logic lives in `src/main.js` / `src/composerAttachments.js`.
 2. Pre-turn context build in `src/main.js` always attempts Memory tree supplement retrieval for regular chat (`fetchMemoryTreeSupplementForPrompt`), and falls back to deterministic graph supplement if router output is empty or router call fails.
-3. `chatApi.js` selects provider order, builds model context (`src/contextEngine/*`), may call LLM via **Vite dev proxies** (`/llm/openai`, …) using keys from `import.meta.env`.
+3. `chatApi.js` selects provider order, builds model context (`src/contextEngine/*`), calls LLM via **`/api/llm/<provider>/*`** (server-side proxy; keys injected by the API server, not the browser).
 4. Responses rendered as markdown (`src/markdown.js`) with optional **syntax highlighting** (`src/markdownCodeHighlight.js`, highlight.js).
 5. Turns persisted through `chatPersistence.js` → `/api/dialogs/.../turns`.
 
@@ -593,8 +668,9 @@ The router is a **large sequential `if` chain** on normalized path + method. Not
 
 ## 8. Vite proxies and streaming
 
-- `vite.config.js` configures **long timeouts** on LLM proxies and strips `Content-Length` on streaming responses where needed so chunks arrive incrementally in dev.
-- Provider base URLs are remote HTTPS endpoints; the browser talks to **same-origin** `/llm/...` only.
+- `vite.config.js` proxies `/api` → Node API server (long timeout, both `server` and `preview` modes).
+- **LLM traffic is no longer proxied by Vite.** All provider calls go through `/api/llm/*` on the Node server, which handles streaming headers (`Content-Length` drop, `x-accel-buffering: no`) and key injection itself.
+- In production (`npm run build` + `npm run preview` or a real web server), the same `/api/llm/*` routes serve requests directly — no Vite layer required.
 
 ---
 
@@ -626,7 +702,7 @@ The router is a **large sequential `if` chain** on normalized path + method. Not
 | Symptom | Check |
 |---------|--------|
 | `/api` 502 in dev | API not running or wrong `API_PORT`; Vite proxy target in `vite.config.js`. |
-| Chat “no key” | `.env` not loaded, wrong prefix, or `import.meta.env` not rebuilt after `.env` change (restart Vite). |
+| Chat “no key” or 503 from `/api/llm/*` | `.env` missing the key or API server not started with `--env-file=.env` (check `npm run api` or `pm2 restart mf-lab-api`). |
 | Settings models empty | No keys for provider; network to list-models endpoint; fallbacks in `userChatModels.js`. |
 | PM2 API stale | `pm2 restart mf-lab-api` from repo root; verify `/api/health`. |
 | Import profile odd state | Session flash key `mf0.profileImportSuccessFlash` in `sessionStorage`; import modal panel visibility CSS in `theme.css`. |

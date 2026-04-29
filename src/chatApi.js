@@ -1,5 +1,5 @@
 /**
- * Provider calls via dev/preview proxy `/llm/*` (avoids browser CORS).
+ * Provider calls via server-side LLM proxy `/api/llm/*`.
  */
 
 import {
@@ -599,7 +599,7 @@ async function openaiImageEditsWithReferences(prompt, key, images, preferredSize
       const ext = extensionForImageMime(mime);
       fd.append("image[]", blob, `reference-${i}.${ext}`);
     }
-    return fetch("/llm/openai/v1/images/edits", {
+    return fetch("/api/llm/openai/v1/images/edits", {
       method: "POST",
       headers: { Authorization: `Bearer ${key}` },
       body: fd,
@@ -647,7 +647,7 @@ async function openaiImageGeneration(prompt, key, chatAtt = null) {
     n: 1,
     size: preferredSize,
   };
-  let res = await fetch("/llm/openai/v1/images/generations", {
+  let res = await fetch("/api/llm/openai/v1/images/generations", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -663,7 +663,7 @@ async function openaiImageGeneration(prompt, key, chatAtt = null) {
       /size|invalid|unknown|not\s+support/i.test(String(errBody))
     ) {
       payload.size = "1024x1024";
-      res = await fetch("/llm/openai/v1/images/generations", {
+      res = await fetch("/api/llm/openai/v1/images/generations", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -733,7 +733,7 @@ async function geminiImageGeneration(prompt, key, chatAtt = null) {
     });
   }
 
-  const url = `/llm/gemini/v1beta/models/${geminiImage()}:generateContent?key=${encodeURIComponent(key)}`;
+  const url = `/api/llm/gemini/v1beta/models/${geminiImage()}:generateContent?key=${encodeURIComponent(key)}`;
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -829,7 +829,7 @@ function throwIfImageFetchNetworkFailed(err, label) {
     low.includes("network request failed");
   if (looksLikeFetchTransport) {
     throw new Error(
-      `${label}: network error (no HTTP response). Ensure the dev server is running (Vite proxies /llm to OpenAI).`,
+      `${label}: network error (no HTTP response). Ensure the dev server is running and the API server is up.`,
     );
   }
   throw err;

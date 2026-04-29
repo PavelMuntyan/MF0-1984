@@ -6,7 +6,7 @@
 |---|---|
 | **UI dev server** | Vite — default port **1984** (`vite.config.js`) |
 | **Local API** | Node + `better-sqlite3` — default port **35184** (`API_PORT`) |
-| **Version** | **1.9.26** (`package.json`) |
+| **Version** | **1.9.27** (`package.json`) |
 
 For architecture, data model, env vars, and operations, see **[HANDOFF.md](./HANDOFF.md)** (engineering handoff).
 
@@ -15,7 +15,7 @@ For architecture, data model, env vars, and operations, see **[HANDOFF.md](./HAN
 ## Prerequisites
 
 - **Git**, **Node.js** (LTS / 18+ recommended) and **npm** on your PATH
-- After the one-liner below, edit **`.env`** and add provider API keys (see `src/modelEnv.js` and `vite.config.js`). The repo ships **`.env.example`** only; **`.env`** is gitignored.
+- After the one-liner below, edit **`.env`** and add provider API keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `PERPLEXITY_API_KEY`). Keys are read by the API server via `--env-file=.env` and are never sent to the browser. The repo ships **`.env.example`** only; **`.env`** is gitignored.
 
 ---
 
@@ -72,8 +72,10 @@ The dev setup runs the API and Vite together.
 |------|------|
 | `index.html` | App shell |
 | `src/` | Browser ES modules — chat, settings, memory tree, persistence client, etc. |
-| `server/api.mjs` | HTTP API and SQLite router |
-| `server/*.mjs` | API feature modules |
+| `server/api.mjs` | Thin Express 5 bootstrap — middleware + router mounts |
+| `server/routes/` | Twelve route modules (health, voice, LLM proxy, themes, analytics, …) |
+| `server/services/` | Shared server-side logic (context pipeline, access services, AI model cache) |
+| `server/*.mjs` | Feature modules: memory graph import, project profile export/import, access data dump, port resolver |
 | `db/` | Schema and migrations |
 | `data/` | Runtime SQLite and optional caches (not treated as canonical for every clone) |
 | `HANDOFF.md` | Full technical orientation |
