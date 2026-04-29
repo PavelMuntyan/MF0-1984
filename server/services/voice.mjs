@@ -49,7 +49,7 @@ export function getAssistantTextForTurnId(turnId) {
   return text;
 }
 
-function normalizeAudioMimeType(raw) {
+export function normalizeAudioMimeType(raw) {
   const t = String(raw ?? "")
     .trim()
     .toLowerCase()
@@ -58,7 +58,7 @@ function normalizeAudioMimeType(raw) {
   return t || "audio/webm";
 }
 
-function decodeBase64Audio(rawBase64) {
+export function decodeBase64Audio(rawBase64) {
   const compact = String(rawBase64 ?? "").replace(/\s/g, "");
   if (!compact) throw new Error("audioBase64 is required.");
   let buf;

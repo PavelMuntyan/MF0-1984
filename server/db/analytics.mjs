@@ -2,7 +2,66 @@
  * Analytics: provider normalisation, USD estimates, and the main analytics payload query.
  * Depends only on db from migrations.mjs — no HTTP layer.
  */
-import { adapter } from "./migrations.mjs";
+import crypto from "node:crypto";
+import { db, adapter } from "./migrations.mjs";
+
+export const AUX_LLM_USAGE_KINDS = new Set([
+  "memory_tree_router",
+  "interests_sketch",
+  "memory_graph_normalize",
+  "intro_graph_extract",
+  "ai_talks_round",
+  "voice_transcription",
+  "voice_reply_tts",
+  "optimizer_llm_check",
+  "theme_dialog_title",
+  "help_chat_turn",
+  "rules_keeper_extract",
+  "access_keeper2_extract",
+]);
+
+export function estimateTokensFromText(text) {
+  const s = String(text ?? "").trim();
+  if (!s) return 0;
+  return Math.max(1, Math.ceil(s.length / 4));
+}
+
+export function analyticsProviderFromVoiceProvider(voiceProviderId) {
+  const p = String(voiceProviderId ?? "").trim().toLowerCase();
+  if (!p) return "";
+  if (p === "openai") return "openai";
+  if (p.startsWith("gemini")) return "gemini-flash";
+  if (p.startsWith("anthropic")) return "anthropic";
+  if (p.startsWith("perplexity")) return "perplexity";
+  return "";
+}
+
+export function recordAuxLlmUsageRow(
+  providerId,
+  requestKind,
+  promptTokens,
+  completionTokens,
+  totalTokens,
+  conversationTurnId = "",
+  dialogId = "",
+) {
+  const pid = normalizeAuxAnalyticsProviderId(String(providerId ?? "")) || "openai";
+  const kind = String(requestKind ?? "").trim();
+  if (!ANALYTICS_PROVIDER_IDS.includes(pid)) return false;
+  if (!AUX_LLM_USAGE_KINDS.has(kind)) return false;
+  const pp = Math.max(0, Number(promptTokens) || 0);
+  const pc = Math.max(0, Number(completionTokens) || 0);
+  const pt = Math.max(0, Number(totalTokens) || pp + pc);
+  if (pp === 0 && pc === 0 && pt === 0 && kind !== "optimizer_llm_check") return false;
+  const ctid = String(conversationTurnId ?? "").trim();
+  const did = String(dialogId ?? "").trim();
+  db.prepare(
+    `INSERT INTO analytics_aux_llm_usage
+       (id, provider_id, request_kind, llm_prompt_tokens, llm_completion_tokens, llm_total_tokens, conversation_turn_id, dialog_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(crypto.randomUUID(), pid, kind, pp, pc, pt, ctid || null, did || null);
+  return true;
+}
 
 export const ANALYTICS_PROVIDER_IDS = ["openai", "perplexity", "gemini-flash", "anthropic"];
 

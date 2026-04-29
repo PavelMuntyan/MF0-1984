@@ -29,6 +29,7 @@
     "7zip-bin": "^5.2.0",
     "better-sqlite3": "^11.8.1",
     "dompurify": "^3.3.3",
+    "express": "^5.2.1",
     "highlight.js": "^11.11.1",
     "jszip": "^3.10.1",
     "marked": "^18.0.0",
