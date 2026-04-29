@@ -12,7 +12,7 @@ import { db } from "../db/migrations.mjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "../..");
 
-export const VOICE_REPLIES_DIR = path.join(root, "voice-rerplies");
+export const VOICE_REPLIES_DIR = path.join(root, "voice-replies");
 
 /** Dev-only self-test audio under `data/tts-selftest` — safe to remove entirely with multimedia clear. */
 export const TTS_SELFTEST_DIR = path.join(root, "data", "tts-selftest");

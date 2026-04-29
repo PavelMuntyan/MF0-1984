@@ -337,6 +337,7 @@ function applyAnalyticsUsageArchiveMigration(database) {
 export function createDatabase(filePath) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const database = new Database(filePath);
+  database.pragma("journal_mode = WAL");
   database.pragma("foreign_keys = ON");
   const ver = database.prepare("PRAGMA user_version").pluck().get();
   if (ver === 0) {
