@@ -7,6 +7,7 @@ import express from "express";
 import { resolveApiPort } from "./resolveApiPort.mjs";
 import { dbPath } from "./db/migrations.mjs";
 import { normalizePathname, securityHeaders, notFound, errorHandler } from "./middleware/http.mjs";
+import { MAX_BODY_BYTES } from "./config.mjs";
 
 import healthRouter from "./routes/health.mjs";
 import attachmentsRouter from "./routes/attachments.mjs";
@@ -21,13 +22,6 @@ import analyticsRouter from "./routes/analytics.mjs";
 import themesRouter from "./routes/themes.mjs";
 
 const PORT = resolveApiPort(process.env.API_PORT);
-
-/** Body size limit — shared via global so route files can reference it for express.raw(). */
-const DEFAULT_MAX = 48 * 1024 * 1024;
-const raw = parseInt(String(process.env.API_MAX_BODY_BYTES ?? "").trim(), 10);
-const MAX_BODY_BYTES = Number.isFinite(raw) && raw >= 1024 * 1024 && raw <= 100 * 1024 * 1024 ? raw : DEFAULT_MAX;
-global.__mfApiMaxBodyBytes = MAX_BODY_BYTES;
-
 const app = express();
 
 // Strip API_PATH_PREFIX (reverse-proxy path rewriting)

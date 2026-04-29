@@ -1,33 +1,19 @@
 import { Router, raw as expressRaw } from "express";
 import { db } from "../db/migrations.mjs";
+import { MAX_BODY_BYTES } from "../config.mjs";
 import { normalizeMemoryGraphCategory, normGraphLabel, ensureMemoryGraphHubAnchorsPresent, getMemoryGraphPayload } from "../db/memoryGraph.mjs";
 import { buildProjectProfileMf7zBuffer, projectProfileMfFilename } from "../projectProfileExport.mjs";
 import { importProjectProfileFromMfBuffer } from "../projectProfileImport.mjs";
-import { sanitizeAccessExternalEntries } from "../accessExternalServicesDb.mjs";
 import { buildAccessDataDumpEnrichmentFromEntries } from "../accessDataDump.mjs";
 import { readAccessDataDumpEnrichmentImportCacheIfPresent } from "../accessDataDumpImportCache.mjs";
+import { readAccessExternalServicesPayload } from "../services/accessServices.mjs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "../..");
-const BODY_LIMIT = global.__mfApiMaxBodyBytes ?? 48 * 1024 * 1024;
 
 const router = Router();
-
-function readAccessExternalServicesPayload() {
-  const rows = db.prepare(
-    `SELECT id, name, description, endpoint_url AS endpointUrl, access_key AS accessKey, notes, updated_at AS updatedAt
-     FROM access_external_services ORDER BY name COLLATE NOCASE`,
-  ).all();
-  const entries = (rows ?? []).map((r) => ({
-    id: String(r.id ?? "").trim(), name: String(r.name ?? "").trim(),
-    description: String(r.description ?? "").trim(), endpointUrl: String(r.endpointUrl ?? "").trim(),
-    accessKey: String(r.accessKey ?? "").trim(), notes: String(r.notes ?? "").trim(),
-    updatedAt: String(r.updatedAt ?? "").trim(),
-  }));
-  return { entries: sanitizeAccessExternalEntries(entries) };
-}
 
 router.post("/project-profile/export", async (req, res) => {
   const body = req.body ?? {};
@@ -65,7 +51,7 @@ router.post("/project-profile/export", async (req, res) => {
 
 router.post(
   "/project-profile/import",
-  expressRaw({ type: "*/*", limit: BODY_LIMIT }),
+  expressRaw({ type: "*/*", limit: MAX_BODY_BYTES }),
   async (req, res) => {
     const hex = String(req.headers["x-mf0-archive-passphrase-hex"] ?? "").trim().toLowerCase();
     if (!/^[0-9a-f]{64}$/.test(hex)) return res.status(400).json({ ok: false, error: "Invalid archive passphrase encoding." });

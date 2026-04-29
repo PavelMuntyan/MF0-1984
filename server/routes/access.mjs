@@ -1,8 +1,9 @@
 import { Router } from "express";
 import { db } from "../db/migrations.mjs";
-import { sanitizeAccessExternalEntries, replaceAccessExternalServicesInDatabase } from "../accessExternalServicesDb.mjs";
+import { replaceAccessExternalServicesInDatabase } from "../accessExternalServicesDb.mjs";
 import { buildAccessDataDumpEnrichmentFromEntries } from "../accessDataDump.mjs";
 import { readAccessDataDumpEnrichmentImportCacheIfPresent, clearAccessDataDumpEnrichmentImportCache } from "../accessDataDumpImportCache.mjs";
+import { readAccessExternalServicesPayload } from "../services/accessServices.mjs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -11,28 +12,11 @@ const root = path.join(__dirname, "../..");
 
 const router = Router();
 
-function readAccessExternalServicesPayload() {
-  const rows = db.prepare(
-    `SELECT id, name, description, endpoint_url AS endpointUrl, access_key AS accessKey, notes, updated_at AS updatedAt
-     FROM access_external_services ORDER BY name COLLATE NOCASE`,
-  ).all();
-  const entries = (rows ?? []).map((r) => ({
-    id: String(r.id ?? "").trim(),
-    name: String(r.name ?? "").trim(),
-    description: String(r.description ?? "").trim(),
-    endpointUrl: String(r.endpointUrl ?? "").trim(),
-    accessKey: String(r.accessKey ?? "").trim(),
-    notes: String(r.notes ?? "").trim(),
-    updatedAt: String(r.updatedAt ?? "").trim(),
-  }));
-  return { entries: sanitizeAccessExternalEntries(entries) };
-}
-
 async function getAccessDataDumpEnrichmentPayload() {
   const cached = readAccessDataDumpEnrichmentImportCacheIfPresent(root);
   if (cached) return cached;
-  const { entries: entriesRaw } = readAccessExternalServicesPayload();
-  return buildAccessDataDumpEnrichmentFromEntries(entriesRaw);
+  const { entries } = readAccessExternalServicesPayload();
+  return buildAccessDataDumpEnrichmentFromEntries(entries);
 }
 
 router.get("/access/external-services", (_req, res) => {

@@ -1,5 +1,6 @@
-import { Router, json as expressJson, raw as expressRaw } from "express";
+import { Router, raw as expressRaw } from "express";
 import { db } from "../db/migrations.mjs";
+import { MAX_BODY_BYTES } from "../config.mjs";
 import {
   normalizeMemoryGraphCategory,
   normGraphLabel,
@@ -10,7 +11,7 @@ import {
 import { decodeImportBodyFromBuffer, normalizeImportPayload, replaceMemoryGraphInDatabase } from "../memoryGraphImport.mjs";
 
 const router = Router();
-const BODY_LIMIT = global.__mfApiMaxBodyBytes ?? 48 * 1024 * 1024;
+const BODY_LIMIT = MAX_BODY_BYTES;
 
 router.get("/memory-graph", async (_req, res) => {
   res.json(await getMemoryGraphPayload());
