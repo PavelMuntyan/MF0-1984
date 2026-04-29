@@ -4,6 +4,67 @@ This document is a **single-source orientation** for engineers taking over the r
 
 ---
 
+## Release notes (1.9.24)
+
+### Module extraction: LLM gateway, Memory Keeper pipeline, Memory Optimizer
+
+Three new source modules were extracted from `chatApi.js` and `main.js` to reduce file sizes and isolate responsibilities.
+
+#### `src/llmGateway.js` — single LLM call entry point
+
+- All raw provider HTTP calls (`callLlm`, `callLlmStream`) now live here.
+- `requestKind: null` → caller is responsible for analytics recording (main chat turns).
+- `requestKind: "string"` → gateway auto-records to `analytics_aux_llm_usage`.
+- `chatApi.js` re-exports from this module so existing callers are unaffected.
+
+#### `src/memoryKeepers.js` — post-turn Memory Tree augmentation
+
+- Extracted ~830 lines of keeper orchestration from `chatApi.js` and `main.js`.
+- Exports all extractor functions (Intro / Access / Rules / Chat keepers) and orchestration:
+
+```js
+export async function runKeepersAfterTurn({
+  introContextActive, accessChatOpen, rulesChatOpen, modeForSend,
+  accessDataDumpMode, hadAssistantError, persistUserText, persistDialogId,
+  tid, providerId, key,
+  log,           // callback: (msg) => void
+  onGraphUpdate, // callback: () => void
+}) { ... }
+```
+
+- `log` and `onGraphUpdate` callbacks decouple keeper logic from DOM.
+- Also exports `keeperPayloadSummary`, `keeperIngestCommandsLine`, `pickKeeperProviderWithKey`.
+- Imports: `callLlm` from `llmGateway.js`, `dialogueModel` from `chatApi.js` (now exported).
+
+#### `src/memoryOptimizer.js` — Memory Tree optimization algorithms
+
+- Extracted ~390 lines of pure algorithmic code from `main.js`.
+- Exports four payload builders:
+  - `buildRecordLinkageOptimizationPayload`
+  - `buildKnowledgeConsistencyOptimizationPayload`
+  - `buildInterestsOrphanReconnectPayload`
+  - `buildLlmCheckOptimizationPayload`
+- Private helpers `estimateTokensFromText` and `ensureUsageTotals` are local copies (not re-exported).
+- Imports: `completeChatMessage` from `chatApi.js`, `findMemoryGraphHubPairFromProfileEdge` from `memoryTree.js`.
+- UI orchestration (`runMemoryOptimization`, button wiring) stays in `main.js`.
+
+#### File size reduction
+
+| File | Before | After |
+|------|--------|-------|
+| `src/chatApi.js` | ~1 693 lines | ~871 lines |
+| `src/main.js` | ~7 973 lines | ~7 231 lines |
+
+#### Minor: `src/modelEnv.js` cosmetic fix
+
+- Removed unnecessary intermediate `geminiKey` variable; all four provider keys now use the same inline `import.meta.env.X ?? ""` pattern.
+
+### Version bump
+
+- `package.json` → **1.9.24**.
+
+---
+
 ## Release notes (1.9.22)
 
 ### AI opinion entry and model selection
@@ -316,7 +377,10 @@ Settings → **Project Cache** no longer shows a single combined **“files & pi
 |------|------|
 | `index.html` | Shell UI: sidebar, chat, modals, settings, import/export dialogs, CSP meta, script entry. |
 | `src/main.js` | Main bootstrap: wiring DOM, chat send/stream, settings, memory tree hooks, profile import/export UI orchestration, activity log. |
-| `src/chatApi.js` | Provider routing, prompt assembly, streaming/non-streaming completion, image generation, web-search/research modes, Access `#data` enrichment behavior in prompts. |
+| `src/chatApi.js` | Provider routing, prompt assembly, streaming/non-streaming completion, image generation, web-search/research modes, Access `#data` enrichment behavior in prompts. Re-exports from `llmGateway.js`. |
+| `src/llmGateway.js` | Single entry point for all raw LLM provider HTTP calls (`callLlm`, `callLlmStream`). Aux-kind calls auto-record analytics; main-turn calls delegate recording to the caller. |
+| `src/memoryKeepers.js` | Post-turn Memory Tree augmentation: Intro / Access / Rules / Chat keeper extractors + `runKeepersAfterTurn` orchestrator. Accepts `log` and `onGraphUpdate` callbacks to stay DOM-free. |
+| `src/memoryOptimizer.js` | Pure algorithmic Memory Tree optimization: record linkage, knowledge consistency, interests reconnect, LLM-based duplicate check. UI orchestration stays in `main.js`. |
 | `src/chatPersistence.js` | `fetch` client for `/api/*`, theme/dialog bootstrap, memory graph CRUD, favorites, analytics, project profile HTTP helpers. |
 | `src/memoryTree.js` | 3D graph UI (force-graph + three-spritetext), open/close, theme sync, export trigger integration. |
 | `src/themesSidebar.js` | Theme cards + dialog folder menus in `#dialogue-cards`; preserves `#mobile-ir-in-theme-list` slot for mobile Intro/Rules/Access row. |
