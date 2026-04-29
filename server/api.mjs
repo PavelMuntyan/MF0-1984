@@ -484,7 +484,7 @@ function readMemoryGraphUserProfileForContextPack() {
   }
 }
 
-function listContextPack(dialogId, userQuery) {
+async function listContextPack(dialogId, userQuery) {
   const drow = db
     .prepare(
       `SELECT d.id, d.title AS dialog_title, t.title AS theme_title
@@ -492,9 +492,9 @@ function listContextPack(dialogId, userQuery) {
     )
     .get(dialogId);
   if (!drow) return null;
-  const turns = listTurns(dialogId);
+  const turns = await listTurns(dialogId);
   const userAddressingProfile = readMemoryGraphUserProfileForContextPack();
-  if (!hasContextTables()) {
+  if (!await hasContextTables()) {
     let rulesKeeperVirtual = [];
     try {
       rulesKeeperVirtual = keeperBundleToVirtualContextRules(readRulesKeeperBundlePayload());
@@ -565,8 +565,8 @@ function userTextTriggersAccessDataDumpLockdown(userText) {
   return /(?:^|\s)#data(?:\s|$)/.test(t);
 }
 
-function runAfterTurnPipeline(dialogId, turnId, userText, assistantText, userMessageAt, assistantMessageAt) {
-  if (!hasContextTables()) return;
+async function runAfterTurnPipeline(dialogId, turnId, userText, assistantText, userMessageAt, assistantMessageAt) {
+  if (!await hasContextTables()) return;
   const now = new Date().toISOString();
   const uid = crypto.randomUUID();
   const aid = crypto.randomUUID();
@@ -1282,7 +1282,7 @@ const server = http.createServer(async (req, res) => {
       req.method === "GET" &&
       (p === "/api/assistant-favorites" || p === "/api/dialogs/assistant-favorites")
     ) {
-      const rows = listAssistantFavorites();
+      const rows = await listAssistantFavorites();
       const favorites = rows.map((r) => {
         const line = String(r.user_text ?? "")
           .trim()
@@ -1317,7 +1317,7 @@ const server = http.createServer(async (req, res) => {
       const turnId = String(body.turnId ?? body.turn_id ?? "").trim();
       const favorite = Boolean(body.favorite);
       const markdown = body.markdown != null ? String(body.markdown) : "";
-      const errOut = updateAssistantTurnFavoriteInDb(turnId, favorite, markdown);
+      const errOut = await updateAssistantTurnFavoriteInDb(turnId, favorite, markdown);
       if (errOut) return json(res, errOut.status, apiErrorBody(errOut.error));
       return json(res, 200, { ok: true });
     }
@@ -1328,13 +1328,13 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const favorite = Boolean(body.favorite);
       const markdown = body.markdown != null ? String(body.markdown) : "";
-      const errOut = updateAssistantTurnFavoriteInDb(turnId, favorite, markdown);
+      const errOut = await updateAssistantTurnFavoriteInDb(turnId, favorite, markdown);
       if (errOut) return json(res, errOut.status, apiErrorBody(errOut.error));
       return json(res, 200, { ok: true });
     }
 
     if (req.method === "GET" && p === "/api/themes") {
-      return json(res, 200, { themes: listThemesWithDialogs() });
+      return json(res, 200, { themes: await listThemesWithDialogs() });
     }
 
     /**
@@ -1348,7 +1348,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && (p === "/api/themes/delete" || p === "/api/theme-delete")) {
       const body = await readBody(req);
       const themeId = String(body.themeId ?? body.theme_id ?? "").trim();
-      const out = deleteThemeFromDb(themeId);
+      const out = await deleteThemeFromDb(themeId);
       if (out.error) return json(res, out.status, apiErrorBody(out.error));
       logThemeDeleted("POST", out.deletedThemeId);
       return json(res, 200, out);
@@ -1357,7 +1357,7 @@ const server = http.createServer(async (req, res) => {
     const themeDeleteMatch = p.match(/^\/api\/themes\/([^/]+)$/);
     if (req.method === "DELETE" && themeDeleteMatch) {
       const themeId = decodeURIComponent(themeDeleteMatch[1]).trim();
-      const out = deleteThemeFromDb(themeId);
+      const out = await deleteThemeFromDb(themeId);
       if (out.error) return json(res, out.status, apiErrorBody(out.error));
       logThemeDeleted("DELETE", out.deletedThemeId);
       return json(res, 200, out);
@@ -1381,7 +1381,7 @@ const server = http.createServer(async (req, res) => {
       if (!dialogId) return json(res, 400, apiErrorBody("Missing dialog id"));
       const row = db.prepare(`SELECT id FROM dialogs WHERE id = ?`).get(dialogId);
       if (!row) return json(res, 404, apiErrorBody("Dialog not found"));
-      return json(res, 200, { turns: listTurns(dialogId) });
+      return json(res, 200, { turns: await listTurns(dialogId) });
     }
 
     const contextPackMatch = p.match(/^\/api\/dialogs\/([^/]+)\/context-pack$/);
@@ -1389,7 +1389,7 @@ const server = http.createServer(async (req, res) => {
       const dialogId = decodeURIComponent(contextPackMatch[1]);
       if (!dialogId) return json(res, 400, apiErrorBody("Missing dialog id"));
       const q = url.searchParams.get("q") ?? url.searchParams.get("userQuery") ?? "";
-      const pack = listContextPack(dialogId, String(q));
+      const pack = await listContextPack(dialogId, String(q));
       if (!pack) return json(res, 404, apiErrorBody("Dialog not found"));
       return json(res, 200, pack);
     }
@@ -1443,7 +1443,7 @@ const server = http.createServer(async (req, res) => {
       const trow = db.prepare(`SELECT id FROM themes WHERE id = ?`).get(themeId);
       if (!trow) return json(res, 404, apiErrorBody("Theme not found"));
       const title = String(body.title ?? "").trim() || "New conversation";
-      const dialog = createDialogUnderTheme(themeId, title);
+      const dialog = await createDialogUnderTheme(themeId, title);
       return json(res, 201, { dialog: dialogRowToClient(dialog) });
     }
 
@@ -1455,7 +1455,7 @@ const server = http.createServer(async (req, res) => {
       if (!trow) return json(res, 404, apiErrorBody("Theme not found"));
       const body = await readBody(req);
       const title = String(body.title ?? "").trim() || "New conversation";
-      const dialog = createDialogUnderTheme(themeId, title);
+      const dialog = await createDialogUnderTheme(themeId, title);
       return json(res, 201, { dialog: dialogRowToClient(dialog) });
     }
 
@@ -1470,8 +1470,8 @@ const server = http.createServer(async (req, res) => {
         return json(res, 403, apiErrorBody("Clear is only allowed for Intro, Rules, or Access threads."));
       }
       try {
+        await archiveConversationTurnAggregatesForDialog(dialogId, "ir_thread_cleared", null);
         const tx = db.transaction(() => {
-          archiveConversationTurnAggregatesForDialog(dialogId, "ir_thread_cleared", null);
           clearThreadDerivedData(dialogId);
           db.prepare(`DELETE FROM conversation_turns WHERE dialog_id = ?`).run(dialogId);
         });
