@@ -2495,7 +2495,6 @@ function openIrChatPanel(mode) {
     resetComposerAttachUi();
   }
   void renderThemesSidebar();
-  refreshThemeHighlightsFromChat();
 
   if (cfg.mode === "intro") {
     if (!getIrPanelLockedSync("intro")) {
@@ -2565,7 +2564,6 @@ function openHelpChatPanel() {
   expandedThemeDialogListThemeId = null;
   chatComposerSending = false;
   void renderThemesSidebar();
-  refreshThemeHighlightsFromChat();
   resetComposerAttachUi();
   clearHelpMessagesUiOnly();
   rerenderHelpTranscriptFromSession();
@@ -2608,7 +2606,6 @@ async function handleThemeRenamed(themeId, oldTitle, newTitle) {
   }
   appendActivityLog(`Theme renamed: "${String(oldTitle || "—").trim()}" → "${String(newTitle).trim()}"`);
   await renderThemesSidebar();
-  refreshThemeHighlightsFromChat();
 }
 
 /** Theme row menu (hamburger): Favorites, Rename, Delete. */
@@ -2834,13 +2831,18 @@ function initDialoguesMenu() {
     syncCardsAria(open);
   }
 
-  btn.addEventListener("click", (e) => {
+  function toggleThemesDropdown(e) {
     e.stopPropagation();
     if (!isMobile()) return;
     const willOpen = !panel.classList.contains("dialogues-dropdown-open");
     setOpen(willOpen);
     appendActivityLog(willOpen ? "Themes (mobile): list opened" : "Themes (mobile): list closed");
-  });
+  }
+
+  btn.addEventListener("click", toggleThemesDropdown);
+
+  const mobileThemesBtn = document.getElementById("btn-mobile-themes");
+  if (mobileThemesBtn) mobileThemesBtn.addEventListener("click", toggleThemesDropdown);
 
   panel.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -2866,6 +2868,7 @@ function initDialoguesMenu() {
   function onMqChange() {
     if (!isMobile()) {
       applyDesktop();
+      syncIrToMobileSlot();
     } else {
       setOpen(false);
     }
@@ -3208,7 +3211,6 @@ function initNewDialogueButton() {
     document.getElementById("dialogue-cards")?.querySelectorAll(".dialog-card").forEach((c) => {
       c.classList.remove("dialog-card--selected");
     });
-    refreshThemeHighlightsFromChat();
     const viewport = document.getElementById("messages-viewport");
     if (viewport) viewport.scrollTop = 0;
 
@@ -5051,33 +5053,6 @@ function appendUserMessage(rawText, modelLabel, options) {
   return msg;
 }
 
-/** Highlight theme cards in the sidebar when the theme title appears in the user's latest message. */
-function refreshThemeHighlightsFromChat() {
-  const cardsRoot = document.getElementById("dialogue-cards");
-  if (!cardsRoot) return;
-  cardsRoot.querySelectorAll(".dialog-card").forEach((card) => {
-    card.classList.remove("dialog-card--mentioned");
-  });
-
-  const list = document.getElementById("messages-list");
-  if (!list) return;
-  const userMsgs = list.querySelectorAll(".msg-user");
-  const last = userMsgs[userMsgs.length - 1];
-  const textBody = last?.querySelector(".msg-user-text")?.textContent?.trim() ?? "";
-  const names = String(last?.dataset?.userAttachmentNames ?? "").trim();
-  const text = [textBody, names].filter(Boolean).join(" ").trim();
-  if (!text) return;
-
-  const norm = text.toLowerCase();
-  cardsRoot.querySelectorAll(".dialog-card").forEach((card) => {
-    const title = card.querySelector(".dialog-card-title")?.textContent?.trim() ?? "";
-    if (title.length < 2) return;
-    if (norm.includes(title.toLowerCase())) {
-      card.classList.add("dialog-card--mentioned");
-    }
-  });
-}
-
 function scrollMessagesToEnd() {
   const el = document.getElementById("messages-viewport");
   if (el) el.scrollTop = el.scrollHeight;
@@ -5448,6 +5423,19 @@ function finalizeAssistantBubble(el, fullText, providerId, modelHintOverride, re
   });
 }
 
+/** Move Intro/Rules/Access buttons between the sidebar panel and the mobile themes-dropdown slot. */
+function syncIrToMobileSlot() {
+  const isMobile = window.matchMedia("(max-width: 767px)").matches;
+  const mobileSlot = document.getElementById("mobile-ir-in-theme-list");
+  const irPanelBody = document.querySelector("#sidebar-intro-rules-access .sidebar-ir-panel-body");
+  if (!mobileSlot || !irPanelBody) return;
+  if (isMobile) {
+    while (irPanelBody.firstChild) mobileSlot.appendChild(irPanelBody.firstChild);
+  } else {
+    while (mobileSlot.firstChild) irPanelBody.appendChild(mobileSlot.firstChild);
+  }
+}
+
 async function renderThemesSidebar() {
   const root = document.getElementById("dialogue-cards");
   if (!root) return;
@@ -5466,6 +5454,7 @@ async function renderThemesSidebar() {
       expandedThemeDialogListThemeId,
       favSet,
     );
+    syncIrToMobileSlot();
   } catch {
     root.replaceChildren();
   }
@@ -5506,7 +5495,6 @@ async function handleThemeDeleted(themeId, themeTitle) {
     if (sendBtn) sendBtn.disabled = false;
   }
   await renderThemesSidebar();
-  refreshThemeHighlightsFromChat();
 }
 
 function replayTurnInChat(turn) {
@@ -5539,7 +5527,6 @@ async function openThemeForNewDialog(themeId) {
   if (sendOpen) sendOpen.disabled = false;
   await renderThemesSidebar();
   scrollMessagesToEnd();
-  refreshThemeHighlightsFromChat();
 }
 
 /**
@@ -5592,7 +5579,6 @@ async function openDialogById(dialogId, themeId, scrollToTurnId) {
   } else {
     scrollMessagesToEnd();
   }
-  refreshThemeHighlightsFromChat();
 }
 
 /**
@@ -6544,7 +6530,6 @@ function initChatComposer() {
           }
         }
       }
-      refreshThemeHighlightsFromChat();
       ta.value = "";
       syncChatInputHeight(ta);
       ta.focus();

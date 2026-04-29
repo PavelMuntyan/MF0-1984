@@ -432,7 +432,7 @@ async function runMemoryGraphKeeperIngestForChatApiTurn(db, ingest, userText, op
   const cmdLen = Array.isArray(pack.commands) ? pack.commands.length : 0;
   if (pack.entities.length === 0 && pack.links.length === 0 && cmdLen === 0) return;
 
-  ingest({
+  await ingest({
     entities: pack.entities ?? [],
     links: pack.links ?? [],
     commands: pack.commands ?? [],

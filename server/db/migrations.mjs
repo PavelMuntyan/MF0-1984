@@ -1,17 +1,22 @@
 /**
- * SQLite database setup: connection factory + all idempotent migrations.
+ * Database setup entry point.
  *
- * Call `createDatabase(dbPath)` to get an open, fully-migrated Database instance.
- * The default singleton `db` uses the path from API_SQLITE_PATH / data/mf-lab.sqlite.
+ * Exports:
+ *   adapter  — DbAdapter for the configured backend (sqlite | postgres).
+ *              All db/* modules import this instead of creating their own.
+ *   db       — raw better-sqlite3 connection (SQLite only, null for Postgres).
+ *              Still used by code that has not been migrated to the adapter yet.
+ *   dbPath   — resolved SQLite file path (SQLite only).
  *
- * When a Postgres adapter is added later, this file remains the SQLite-only path.
- * api.mjs (or a future db/index.mjs) selects the adapter via DB_ADAPTER env var.
+ * Backend is selected via DB_ADAPTER env var (default: sqlite).
+ * For Postgres, set DB_ADAPTER=postgres and DATABASE_URL=postgres://...
  */
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { sanitizeAccessExternalEntries } from "../accessExternalServicesDb.mjs";
+import { createSqliteAdapter } from "./adapter.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "../..");
@@ -357,5 +362,26 @@ export function createDatabase(filePath) {
   return database;
 }
 
-/** Default singleton connection (env-configured path). */
-export const db = createDatabase(dbPath);
+/** Default singleton SQLite connection (env-configured path). null when DB_ADAPTER=postgres. */
+export const db = (process.env.DB_ADAPTER ?? "sqlite").toLowerCase().trim() !== "postgres"
+  ? createDatabase(dbPath)
+  : null;
+
+// ---------------------------------------------------------------------------
+// Adapter factory — selects SQLite or Postgres based on DB_ADAPTER env var.
+// Top-level await is valid in ES modules: Postgres setup is async, SQLite is sync.
+// ---------------------------------------------------------------------------
+
+const _which = (process.env.DB_ADAPTER ?? "sqlite").toLowerCase().trim();
+
+/** Shared DbAdapter for the configured backend. Import this in all db/* modules. */
+export const adapter = await (async () => {
+  if (_which === "sqlite") {
+    return createSqliteAdapter(db);
+  }
+  if (_which === "postgres") {
+    const { createPostgresSetup } = await import("./postgres.mjs");
+    return createPostgresSetup();
+  }
+  throw new Error(`Unknown DB_ADAPTER="${_which}". Allowed values: sqlite, postgres`);
+})();

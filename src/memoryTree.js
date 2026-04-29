@@ -794,9 +794,18 @@ function mountGraph() {
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         try {
-          if (Graph && graphData.nodes.length > 0) {
-            fitMemoryTreeCameraFromSimulationLayout(420);
+          if (!Graph || graphData.nodes.length === 0) return;
+          const onMobile = window.matchMedia("(max-width: 767px)").matches;
+          if (onMobile) {
+            const hub = graphData.nodes.find((n) => n.memoryHubRole === "interests");
+            if (hub && typeof hub.x === "number" && typeof hub.y === "number") {
+              const { x, y, z = 0 } = hub;
+              Graph.cameraPosition({ x, y, z: z + 400 }, { x, y, z }, 420);
+              syncZoomSliderFromCamera();
+              return;
+            }
           }
+          fitMemoryTreeCameraFromSimulationLayout(420);
         } catch {
           /* ignore */
         }

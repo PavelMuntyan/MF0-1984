@@ -1,16 +1,9 @@
 /**
  * Theme / dialog / turn DB queries and write helpers.
  * Uses the shared DbAdapter — swap the import line to switch from SQLite to Postgres.
- *
- * NOTE: createDialogUnderTheme still uses a raw better-sqlite3 transaction internally
- * (SQLite requires sync fn inside db.transaction). Rewrite to adapter.transaction()
- * when adding the Postgres adapter.
  */
 import crypto from "node:crypto";
-import { db } from "../db/migrations.mjs";
-import { createSqliteAdapter } from "./adapter.mjs";
-
-const adapter = createSqliteAdapter(db);
+import { db, adapter } from "./migrations.mjs";
 
 /** Raw timestamp string from SQLite for the client — YY-MM-DD HH:MM is interpreted in the browser (local time). */
 export function rawDbTimestamp(value) {
@@ -174,15 +167,10 @@ export async function deleteThemeFromDb(themeId) {
 export async function createDialogUnderTheme(themeId, dialogTitle) {
   const dialogId = crypto.randomUUID();
   const now = new Date().toISOString();
-  // SQLite requires sync fn inside db.transaction — using raw db here intentionally.
-  // TODO: rewrite as adapter.transaction() when the Postgres adapter lands.
-  const tx = db.transaction(() => {
-    db.prepare(`INSERT INTO dialogs (id, theme_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`).run(
-      dialogId, themeId, dialogTitle, now, now,
-    );
-    db.prepare(`UPDATE themes SET updated_at = ? WHERE id = ?`).run(now, themeId);
+  await adapter.transaction(async (tx) => {
+    await tx.run(`INSERT INTO dialogs (id, theme_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`, [dialogId, themeId, dialogTitle, now, now]);
+    await tx.run(`UPDATE themes SET updated_at = ? WHERE id = ?`, [now, themeId]);
   });
-  tx();
   return adapter.get(`SELECT * FROM dialogs WHERE id = ?`, [dialogId]);
 }
 

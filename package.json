@@ -1,6 +1,6 @@
 {
   "name": "mf-lab",
-  "version": "1.9.25",
+  "version": "1.9.26",
   "private": true,
   "type": "module",
   "scripts": {
@@ -33,6 +33,7 @@
     "jszip": "^3.10.1",
     "marked": "^18.0.0",
     "pdf-parse": "^2.4.5",
+    "pg": "^8.20.0",
     "three": "^0.183.2",
     "three-spritetext": "^1.10.0",
     "xlsx": "^0.18.5"

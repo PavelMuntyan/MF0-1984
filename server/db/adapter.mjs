@@ -38,9 +38,16 @@ export function createSqliteAdapter(sqliteDb) {
     async exec(sql) {
       sqliteDb.exec(sql);
     },
-    transaction(fn) {
-      const tx = sqliteDb.transaction(() => fn(adapter));
-      return Promise.resolve(tx());
+    async transaction(fn) {
+      sqliteDb.prepare("BEGIN").run();
+      try {
+        const result = await fn(adapter);
+        sqliteDb.prepare("COMMIT").run();
+        return result;
+      } catch (e) {
+        sqliteDb.prepare("ROLLBACK").run();
+        throw e;
+      }
     },
   };
   return adapter;

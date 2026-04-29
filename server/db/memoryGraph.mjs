@@ -3,7 +3,7 @@
  * Depends on db from migrations.mjs and node:crypto — no HTTP layer.
  */
 import crypto from "node:crypto";
-import { db } from "../db/migrations.mjs";
+import { db, adapter } from "./migrations.mjs";
 
 const MEMORY_GRAPH_CATEGORIES = new Set([
   "People",
@@ -32,57 +32,47 @@ function normalizeMemoryGraphCategory(raw) {
  * Ensures two canonical hubs (People/User, Interests/Interests) and an edge between them,
  * even when the graph is non-empty — otherwise chat ingest cannot attach links to Interests.
  */
-function ensureMemoryGraphHubAnchorsPresent(database) {
-  const tbl = database
-    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='memory_graph_nodes'`)
-    .get();
+async function ensureMemoryGraphHubAnchorsPresent() {
+  const tbl = await adapter.get(`SELECT name FROM sqlite_master WHERE type='table' AND name='memory_graph_nodes'`);
   if (!tbl) return;
   const now = new Date().toISOString();
   const userBlob =
     "- Anchor for Intro and self facts: attach profile details here.\n" +
-    "- Prefer linking other Intro entities to this node rather than duplicating a separate “self” person node.";
+    "- Prefer linking other Intro entities to this node rather than duplicating a separate \"self\" person node.";
   const interestsBlob =
     "- Hub for themes from regular chats: store broad umbrellas first (e.g. Astronomy, Music).\n" +
     "- Add narrower topics as children linked to these umbrellas and to this hub.";
 
-  let userRow = database
-    .prepare(`SELECT id FROM memory_graph_nodes WHERE category = ? AND label = ?`)
-    .get("People", MEMORY_GRAPH_HUB_USER_LABEL);
+  let userRow = await adapter.get(`SELECT id FROM memory_graph_nodes WHERE category = ? AND label = ?`, ["People", MEMORY_GRAPH_HUB_USER_LABEL]);
   let userId = userRow?.id;
   if (!userId) {
     userId = crypto.randomUUID();
-    database
-      .prepare(
-        `INSERT INTO memory_graph_nodes (id, category, label, blob, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
-      )
-      .run(userId, "People", MEMORY_GRAPH_HUB_USER_LABEL, userBlob, now, now);
+    await adapter.run(
+      `INSERT INTO memory_graph_nodes (id, category, label, blob, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      [userId, "People", MEMORY_GRAPH_HUB_USER_LABEL, userBlob, now, now],
+    );
   }
 
-  let intRow = database
-    .prepare(`SELECT id FROM memory_graph_nodes WHERE category = ? AND label = ?`)
-    .get("Interests", MEMORY_GRAPH_HUB_INTERESTS_LABEL);
+  let intRow = await adapter.get(`SELECT id FROM memory_graph_nodes WHERE category = ? AND label = ?`, ["Interests", MEMORY_GRAPH_HUB_INTERESTS_LABEL]);
   let interestsId = intRow?.id;
   if (!interestsId) {
     interestsId = crypto.randomUUID();
-    database
-      .prepare(
-        `INSERT INTO memory_graph_nodes (id, category, label, blob, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
-      )
-      .run(interestsId, "Interests", MEMORY_GRAPH_HUB_INTERESTS_LABEL, interestsBlob, now, now);
+    await adapter.run(
+      `INSERT INTO memory_graph_nodes (id, category, label, blob, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      [interestsId, "Interests", MEMORY_GRAPH_HUB_INTERESTS_LABEL, interestsBlob, now, now],
+    );
   }
 
-  const edge = database
-    .prepare(
-      `SELECT id FROM memory_graph_edges WHERE
-        (source_node_id = ? AND target_node_id = ?) OR (source_node_id = ? AND target_node_id = ?)`,
-    )
-    .get(userId, interestsId, interestsId, userId);
+  const edge = await adapter.get(
+    `SELECT id FROM memory_graph_edges WHERE
+      (source_node_id = ? AND target_node_id = ?) OR (source_node_id = ? AND target_node_id = ?)`,
+    [userId, interestsId, interestsId, userId],
+  );
   if (!edge) {
-    database
-      .prepare(
-        `INSERT INTO memory_graph_edges (id, source_node_id, target_node_id, relation, created_at) VALUES (?, ?, ?, ?, ?)`,
-      )
-      .run(crypto.randomUUID(), userId, interestsId, "profile and interests", now);
+    await adapter.run(
+      `INSERT INTO memory_graph_edges (id, source_node_id, target_node_id, relation, created_at) VALUES (?, ?, ?, ?, ?)`,
+      [crypto.randomUUID(), userId, interestsId, "profile and interests", now],
+    );
   }
 }
 
@@ -134,7 +124,7 @@ function memoryGraphMergeTwoNodes(database, fromCat, fromLab, intoCat, intoLab, 
     const intoBlobRow = database.prepare(`SELECT blob FROM memory_graph_nodes WHERE id = ?`).get(intoId);
     const merged = appendGraphBlob(
       String(intoBlobRow?.blob ?? "").trim(),
-      `Merged from “${normGraphLabel(fromLab)}” (${normalizeMemoryGraphCategory(fromCat)}):\n${ob}`,
+      `Merged from "${normGraphLabel(fromLab)}" (${normalizeMemoryGraphCategory(fromCat)}):\n${ob}`,
     );
     const b = merged.length > 32000 ? `${merged.slice(0, 31997)}…` : merged;
     database.prepare(`UPDATE memory_graph_nodes SET blob = ?, updated_at = ? WHERE id = ?`).run(b, now, intoId);
@@ -309,33 +299,27 @@ function applyMemoryGraphCommandsFromBody(database, rawCommands, now) {
   return stats;
 }
 
-function getMemoryGraphPayload() {
-  ensureMemoryGraphHubAnchorsPresent(db);
-  const tbl = db
-    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='memory_graph_nodes'`)
-    .get();
+async function getMemoryGraphPayload() {
+  await ensureMemoryGraphHubAnchorsPresent();
+  const tbl = await adapter.get(`SELECT name FROM sqlite_master WHERE type='table' AND name='memory_graph_nodes'`);
   if (!tbl) {
     return { nodes: [], links: [] };
   }
-  const nodes = db
-    .prepare(
-      `SELECT id, category, label, blob FROM memory_graph_nodes ORDER BY category ASC, label COLLATE NOCASE ASC`,
-    )
-    .all();
-  const links = db
-    .prepare(
-      `SELECT id, source_node_id AS source, target_node_id AS target, relation AS label FROM memory_graph_edges`,
-    )
-    .all();
+  const nodes = await adapter.all(
+    `SELECT id, category, label, blob FROM memory_graph_nodes ORDER BY category ASC, label COLLATE NOCASE ASC`,
+  );
+  const links = await adapter.all(
+    `SELECT id, source_node_id AS source, target_node_id AS target, relation AS label FROM memory_graph_edges`,
+  );
   return { nodes, links };
 }
 
 /**
  * @param {unknown} body
- * @returns {{ ok: true, upsertedEntities: number, insertedLinks: number, commandsApplied: Record<string, number> }}
+ * @returns {Promise<{ ok: true, upsertedEntities: number, insertedLinks: number, commandsApplied: Record<string, number> }>}
  */
-function ingestMemoryGraphFromBody(body) {
-  ensureMemoryGraphHubAnchorsPresent(db);
+async function ingestMemoryGraphFromBody(body) {
+  await ensureMemoryGraphHubAnchorsPresent();
   const entities = Array.isArray(body?.entities) ? body.entities : [];
   const links = Array.isArray(body?.links) ? body.links : [];
   const commands = Array.isArray(body?.commands) ? body.commands : [];
@@ -346,6 +330,8 @@ function ingestMemoryGraphFromBody(body) {
   /** @type {Record<string, number>} */
   let commandsApplied = {};
 
+  // SQLite requires sync fn inside db.transaction — using raw db here intentionally.
+  // TODO: rewrite as adapter.transaction() when the Postgres adapter lands.
   const tx = db.transaction(() => {
     for (const e of entities) {
       if (!e || typeof e !== "object") continue;

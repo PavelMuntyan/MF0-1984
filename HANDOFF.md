@@ -4,6 +4,66 @@ This document is a **single-source orientation** for engineers taking over the r
 
 ---
 
+## Release notes (1.9.26)
+
+### DB adapter layer + PostgreSQL support
+
+A new `server/db/adapter.mjs` module provides a **unified async interface** (`get`, `all`, `run`, `exec`, `transaction`) that abstracts SQLite and PostgreSQL behind the same API. All server-side DB code now consumes this adapter rather than raw `better-sqlite3`.
+
+- **`server/db/adapter.mjs`** — exports `createSqliteAdapter(db)` and `createPostgresAdapter(pool)`. SQLite `transaction()` uses manual `BEGIN / COMMIT / ROLLBACK` to support async fn bodies (safe because better-sqlite3 ops are synchronous).
+- **`server/db/postgres.mjs`** (new) — lazy-imports `pg`, creates a Pool from `DATABASE_URL`, runs `CREATE TABLE IF NOT EXISTS` migrations (Postgres-compatible SQL), returns a fully wired adapter.
+- **`server/db/migrations.mjs`** — exports `db` (null when Postgres) and `adapter` (top-level `await` factory). Backend is selected by `DB_ADAPTER=sqlite|postgres` in `.env` (default: `sqlite`).
+- **`server/db/turns.mjs`** — `createDialogUnderTheme` replaced manual `db.transaction()` with `adapter.transaction()`.
+- **`server/db/analytics.mjs`**, **`server/db/memoryGraph.mjs`** — both migrated off direct `better-sqlite3` to the shared adapter. All public functions are now async.
+- **`server/api.mjs`** — updated all call sites to `await` the now-async graph/analytics functions.
+- **`.env.example`** — documents `DB_ADAPTER`, `DATABASE_URL`, and optional tunables (`ACCESS_DATA_DUMP_ALLOW_HOST_SUFFIXES`, `API_MAX_BODY_BYTES`, etc.).
+- `pg` added to `dependencies`.
+
+### Mobile UI redesign
+
+#### Header navigation — icon buttons
+
+On viewports ≤ 767 px the four text buttons (New chat, Analytics, Memory tree, Help) and a new **Themes** button replace their labels with SVG icons and fill the full header width as five equal 1/5-width tabs:
+
+| Button | Icon |
+|--------|------|
+| New chat | FilePlus (document + plus) |
+| Analytics | BarChart2 |
+| Memory tree | GitBranch (VS Code Source Control style) |
+| Help | HelpCircle |
+| Themes | Layers (stacked cards) |
+
+- Icons are injected as inline SVG (`class="btn-mobile-icon"`) inside each `.btn`; the text is wrapped in `<span class="btn-label">` and hidden via CSS on mobile.
+- The Themes button (`#btn-mobile-themes`, `class="btn btn-mobile-only"`) is `display: none !important` on desktop and `display: inline-flex !important` on mobile. It triggers the same dropdown logic as the now-hidden `#btn-dialogues-menu` (both wired to `toggleThemesDropdown` in `initDialoguesMenu`).
+- `#dialogues-panel-header` (the sidebar "Themes" title + chevron row) is `display: none` on mobile — replaced by the header icon button.
+- On mobile `memoryTree.css` had a rule that forced `sidebar-panel-header` back to `display: flex` when Memory tree was open; a more-specific override (`#dialogues-panel.dialogues-panel--mt-collapsed #dialogues-panel-header { display: none }`) suppresses it.
+
+#### AI opinion badge — icon on mobile
+
+On mobile the "AI opinion" badge text is replaced by the sparkle-star SVG icon (same path as the attach-menu star). Text wrapped in `<span class="badge-ai-opinion-label">` (hidden on mobile), icon in `<svg class="badge-ai-opinion-icon">` (hidden on desktop).
+
+#### Intro / Rules / Access — mobile themes dropdown
+
+`syncIrToMobileSlot()` (called from `renderThemesSidebar` and `initDialoguesMenu`'s `onMqChange`) moves the three IR buttons (`#btn-ir-intro`, `#btn-ir-rules`, `#btn-ir-access`) into the `#mobile-ir-in-theme-list` slot at the top of `#dialogue-cards` on mobile, and restores them to `#sidebar-intro-rules-access` when the viewport widens to desktop. On mobile the buttons render as a **horizontal row, each occupying 1/3 of the width**, with a bordered card style and the lock icon inline next to the label.
+
+#### Compact bottom bar
+
+On mobile `--input-bar-row-height` is scaled to 70 % of its desktop value (`calc(... * 0.7)`). The textarea vertical padding is reduced to `0.55 rem` (from `1 rem`) and `input-bar-main` padding to `0.25 rem`. All four elements (+, textarea, Send, Mic) share the same CSS variable, so no per-element overrides are needed.
+
+#### Memory tree — mobile camera
+
+On mobile, after the force-simulation settles (`onEngineStop`), the camera centers on the **Interests hub node** (`memoryHubRole === "interests"`) instead of the whole-graph centroid, placing it in the middle of the narrow screen.
+
+#### Removed: "mentioned themes" highlight
+
+`refreshThemeHighlightsFromChat()` and `dialog-card--mentioned` CSS were removed entirely. The feature (highlighting sidebar theme cards whose name appeared in the last user message) caused false positives — e.g. the "1984" theme lit up whenever a chat mentioned the project name.
+
+### Version bump
+
+- `package.json` → **1.9.26**.
+
+---
+
 ## Release notes (1.9.24)
 
 ### Module extraction: LLM gateway, Memory Keeper pipeline, Memory Optimizer

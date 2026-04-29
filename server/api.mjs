@@ -462,9 +462,9 @@ function writeAccessExternalServicesPayload(body) {
 const USER_PROFILE_CONTEXT_MAX_CHARS = 8000;
 
 /** People / "User" blob from the Memory tree (Intro + Keeper) — how to address the person and stated facts. */
-function readMemoryGraphUserProfileForContextPack() {
+async function readMemoryGraphUserProfileForContextPack() {
   try {
-    ensureMemoryGraphHubAnchorsPresent(db);
+    await ensureMemoryGraphHubAnchorsPresent();
   } catch {
     /* ignore */
   }
@@ -493,7 +493,7 @@ async function listContextPack(dialogId, userQuery) {
     .get(dialogId);
   if (!drow) return null;
   const turns = await listTurns(dialogId);
-  const userAddressingProfile = readMemoryGraphUserProfileForContextPack();
+  const userAddressingProfile = await readMemoryGraphUserProfileForContextPack();
   if (!await hasContextTables()) {
     let rulesKeeperVirtual = [];
     try {
@@ -997,7 +997,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && p === "/api/memory-graph") {
-      return json(res, 200, getMemoryGraphPayload());
+      return json(res, 200, await getMemoryGraphPayload());
     }
 
     if (req.method === "POST" && p === "/api/project-profile/export") {
@@ -1013,8 +1013,8 @@ const server = http.createServer(async (req, res) => {
         return json(res, 400, apiErrorBody("aiModelsSnapshot object is required."));
       }
       try {
-        ensureMemoryGraphHubAnchorsPresent(db);
-        const memoryGraph = getMemoryGraphPayload();
+        await ensureMemoryGraphHubAnchorsPresent();
+        const memoryGraph = await getMemoryGraphPayload();
         const accessExternal = readAccessExternalServicesPayload();
         let accessEnrichment = {};
         try {
@@ -1070,7 +1070,7 @@ const server = http.createServer(async (req, res) => {
           archivePassphraseHex: hex,
           normalizeCategory: normalizeMemoryGraphCategory,
           normLabel: normGraphLabel,
-          ensureMemoryGraphHubAnchorsPresent: () => ensureMemoryGraphHubAnchorsPresent(db),
+          ensureMemoryGraphHubAnchorsPresent: () => { void ensureMemoryGraphHubAnchorsPresent(); },
         });
         return json(res, 200, { ok: true, ...out });
       } catch (e) {
@@ -1110,9 +1110,7 @@ const server = http.createServer(async (req, res) => {
           );
         }
         const payload = normalizeImportPayload(parsed, normalizeMemoryGraphCategory, normGraphLabel);
-        const counts = replaceMemoryGraphInDatabase(db, payload, () =>
-          ensureMemoryGraphHubAnchorsPresent(db),
-        );
+        const counts = replaceMemoryGraphInDatabase(db, payload, () => { void ensureMemoryGraphHubAnchorsPresent(); });
         return json(res, 200, { ok: true, ...counts });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -1122,7 +1120,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && p === "/api/analytics") {
-      return json(res, 200, { ok: true, ...getAnalyticsPayload() });
+      return json(res, 200, { ok: true, ...(await getAnalyticsPayload()) });
     }
 
     const turnCostMatch = p.match(/^\/api\/analytics\/turn-costs\/([^/]+)$/);
@@ -1271,7 +1269,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && p === "/api/memory-graph/ingest") {
       const body = await readBody(req);
       try {
-        const out = ingestMemoryGraphFromBody(body);
+        const out = await ingestMemoryGraphFromBody(body);
         return json(res, 200, out);
       } catch (e) {
         return json(res, 400, apiErrorBody(e instanceof Error ? e.message : String(e)));

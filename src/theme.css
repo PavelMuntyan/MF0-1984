@@ -418,6 +418,14 @@ body {
   min-width: 0;
 }
 
+.btn-mobile-icon {
+  display: none;
+}
+
+.btn-mobile-only {
+  display: none !important;
+}
+
 .header-icons {
   display: flex;
   flex-shrink: 0;
@@ -547,6 +555,25 @@ body {
 }
 
 /* AI opinion — same pill as provider badges; disabled when unavailable or attach mode conflicts */
+.badge-ai-opinion-icon {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  .badge-ai-opinion-icon {
+    display: block;
+  }
+
+  .badge-ai-opinion-label {
+    display: none;
+  }
+
+  .badge.badge-ai-opinion {
+    padding-left: 0.55rem;
+    padding-right: 0.55rem;
+  }
+}
+
 .badge.badge-ai-opinion:disabled {
   opacity: 0.42;
   cursor: not-allowed;
@@ -753,24 +780,12 @@ button.btn {
   background: hsl(var(--muted) / 0.35);
 }
 
-.dialog-card.dialog-card--mentioned {
-  background: hsl(var(--primary) / 0.08);
-}
-
-.dark .dialog-card.dialog-card--mentioned {
-  background: hsl(var(--primary) / 0.12);
-}
-
 .dialog-card.dialog-card--selected {
   background: hsl(var(--primary) / 0.12);
 }
 
 .dark .dialog-card.dialog-card--selected {
   background: hsl(var(--primary) / 0.18);
-}
-
-.dialog-card.dialog-card--selected.dialog-card--mentioned {
-  background: hsl(var(--primary) / 0.15);
 }
 
 .dialog-card-inner {
@@ -3843,14 +3858,37 @@ html.theme-rename-modal-open {
   .header-actions {
     order: 2;
     flex: 1 1 100%;
-    justify-content: center;
-    gap: 0.5rem;
+    justify-content: stretch;
+    gap: 0;
+    padding: 0;
   }
 
-  .header .btn {
+  /* Each of the 5 icon buttons takes exactly 1/5 of the row */
+  .header-actions .btn {
+    flex: 1 1 0;
+    min-width: 0;
     font-size: 0.75rem;
-    padding: 0.3rem 0.9rem;
-    min-height: 1.85rem;
+    padding: 0.45rem 0;
+    min-height: 2rem;
+    border-radius: 0;
+  }
+
+  .header-actions .btn .btn-label {
+    display: none;
+  }
+
+  .header-actions .btn .btn-mobile-icon {
+    display: block;
+  }
+
+  .btn-mobile-only {
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+  }
+
+  #dialogues-panel-header {
+    display: none;
   }
 
   .header-brand-title {
@@ -3967,6 +4005,82 @@ html.theme-rename-modal-open {
     flex: 1;
     min-height: 0;
     order: 1;
+    /* Bottom bar 30% smaller */
+    --input-bar-row-height: calc((1rem + 0.875rem * 1.25 + 1rem) * 0.7);
+  }
+
+  .input-bar-main {
+    padding: 0.25rem;
+  }
+
+  /* Memory tree: keep our hidden header hidden even when mt-collapsed class is applied */
+  #dialogues-panel.dialogues-panel--mt-collapsed #dialogues-panel-header {
+    display: none;
+  }
+
+  /* Textarea 30% shorter: reduce vertical padding to match --input-bar-row-height */
+  .input-bar-field textarea {
+    padding: 0.55rem 1.5rem;
+  }
+
+  /* Badge row: tighter horizontal padding so pills fit in one row */
+  .model-badges {
+    padding: 0.3rem 0.4rem;
+    gap: 0.2rem;
+  }
+
+  .model-badges .badge {
+    padding-left: 0.45rem;
+    padding-right: 0.45rem;
+    font-size: 0.72rem;
+  }
+
+  /* Intro / Rules / Access: horizontal row, each 1/3 width */
+  .mobile-ir-in-theme-list {
+    flex-direction: row;
+    gap: 0.3rem;
+    padding: 0.4rem 0 0.55rem;
+    margin: 0 0 0.55rem;
+  }
+
+  .mobile-ir-in-theme-list .sidebar-ir-bubble {
+    flex: 1 1 0;
+    min-width: 0;
+    flex-direction: row;
+    justify-content: center;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.45rem 0.25rem;
+    border-radius: 0.5rem;
+    border: 1px solid hsl(var(--border));
+    background: hsl(var(--muted) / 0.18);
+    text-align: center;
+    width: auto;
+  }
+
+  .mobile-ir-in-theme-list .sidebar-ir-bubble-label {
+    font-size: 0.78rem;
+  }
+
+  .mobile-ir-in-theme-list .sidebar-ir-lock-icon {
+    margin: 0;
+    width: 0.9rem;
+    height: 0.9rem;
+    flex-shrink: 0;
+  }
+
+  .mobile-ir-in-theme-list #btn-ir-intro .sidebar-ir-lock-icon,
+  .mobile-ir-in-theme-list #btn-ir-rules .sidebar-ir-lock-icon,
+  .mobile-ir-in-theme-list #btn-ir-access .sidebar-ir-lock-icon {
+    width: 0.9rem;
+    height: 0.9rem;
+  }
+
+  .mobile-ir-in-theme-list #btn-ir-intro .sidebar-ir-lock-svg,
+  .mobile-ir-in-theme-list #btn-ir-rules .sidebar-ir-lock-svg,
+  .mobile-ir-in-theme-list #btn-ir-access .sidebar-ir-lock-svg {
+    width: 0.9rem;
+    height: 0.9rem;
   }
 }
 

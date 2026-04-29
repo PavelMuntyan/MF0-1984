@@ -2,7 +2,7 @@
  * Analytics: provider normalisation, USD estimates, and the main analytics payload query.
  * Depends only on db from migrations.mjs — no HTTP layer.
  */
-import { db } from "../db/migrations.mjs";
+import { adapter } from "./migrations.mjs";
 
 export const ANALYTICS_PROVIDER_IDS = ["openai", "perplexity", "gemini-flash", "anthropic"];
 
@@ -107,7 +107,7 @@ function shiftIso(iso, deltaMs) {
 }
 
 /**
- * @returns {{
+ * @returns {Promise<{
  *   providers: Record<string, { requestsSent: number, responsesOk: number, imageRequests: number, researchRequests: number, webRequests: number, accessRequests: number, tokensPrompt: number, tokensCompletion: number, tokensTotal: number }>,
  *   dailyUsage: Array<{ date: string, byProvider: Record<string, number> }>,
  *   dailyTokens: Array<{ date: string, byProvider: Record<string, number> }>,
@@ -120,9 +120,9 @@ function shiftIso(iso, deltaMs) {
  *   themesCount: number,
  *   dialogsCount: number,
  *   memoryGraph: { nodes: number, edges: number, groups: number }
- * }}
+ * }>}
  */
-function getAnalyticsPayload() {
+async function getAnalyticsPayload() {
   /** @type {Record<string, { requestsSent: number, responsesOk: number, imageRequests: number, researchRequests: number, webRequests: number, accessRequests: number, tokensPrompt: number, tokensCompletion: number, tokensTotal: number }>} */
   function newProviders() {
     /** @type {Record<string, { requestsSent: number, responsesOk: number, imageRequests: number, researchRequests: number, webRequests: number, accessRequests: number, tokensPrompt: number, tokensCompletion: number, tokensTotal: number }>} */
@@ -146,29 +146,25 @@ function getAnalyticsPayload() {
   const providers = newProviders();
   const providersLast30d = newProviders();
   const providersLast24h = newProviders();
-  const auxTbl = db
-    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='analytics_aux_llm_usage'`)
-    .get();
+  const auxTbl = await adapter.get(`SELECT name FROM sqlite_master WHERE type='table' AND name='analytics_aux_llm_usage'`);
 
-  const aggRows = db
-    .prepare(
-      `SELECT
-         COALESCE(NULLIF(TRIM(t.responding_provider_id), ''), t.requested_provider_id) AS pid,
-         COUNT(*) AS requests_sent,
-         SUM(CASE WHEN t.assistant_message_at IS NOT NULL AND IFNULL(t.assistant_error, 0) = 0 THEN 1 ELSE 0 END) AS responses_ok,
-         SUM(CASE WHEN t.request_type = 'image' THEN 1 ELSE 0 END) AS image_requests,
-         SUM(CASE WHEN t.request_type = 'research' THEN 1 ELSE 0 END) AS research_requests,
-         SUM(CASE WHEN t.request_type = 'web' THEN 1 ELSE 0 END) AS web_requests,
-         SUM(CASE WHEN t.request_type = 'access_data' THEN 1 ELSE 0 END) AS access_requests,
-         SUM(COALESCE(t.llm_prompt_tokens, 0)) AS tokens_prompt,
-         SUM(COALESCE(t.llm_completion_tokens, 0)) AS tokens_completion,
-         SUM(COALESCE(t.llm_total_tokens, 0)) AS tokens_total
-       FROM conversation_turns t
-       INNER JOIN dialogs d ON d.id = t.dialog_id
-       WHERE ${analyticsDialogWhereSql("d")}
-       GROUP BY pid`,
-    )
-    .all();
+  const aggRows = await adapter.all(
+    `SELECT
+       COALESCE(NULLIF(TRIM(t.responding_provider_id), ''), t.requested_provider_id) AS pid,
+       COUNT(*) AS requests_sent,
+       SUM(CASE WHEN t.assistant_message_at IS NOT NULL AND IFNULL(t.assistant_error, 0) = 0 THEN 1 ELSE 0 END) AS responses_ok,
+       SUM(CASE WHEN t.request_type = 'image' THEN 1 ELSE 0 END) AS image_requests,
+       SUM(CASE WHEN t.request_type = 'research' THEN 1 ELSE 0 END) AS research_requests,
+       SUM(CASE WHEN t.request_type = 'web' THEN 1 ELSE 0 END) AS web_requests,
+       SUM(CASE WHEN t.request_type = 'access_data' THEN 1 ELSE 0 END) AS access_requests,
+       SUM(COALESCE(t.llm_prompt_tokens, 0)) AS tokens_prompt,
+       SUM(COALESCE(t.llm_completion_tokens, 0)) AS tokens_completion,
+       SUM(COALESCE(t.llm_total_tokens, 0)) AS tokens_total
+     FROM conversation_turns t
+     INNER JOIN dialogs d ON d.id = t.dialog_id
+     WHERE ${analyticsDialogWhereSql("d")}
+     GROUP BY pid`,
+  );
   for (const row of aggRows) {
     const pid = String(row.pid ?? "").trim();
     if (!providers[pid]) continue;
@@ -183,28 +179,26 @@ function getAnalyticsPayload() {
     providers[pid].tokensTotal = Number(row.tokens_total) || 0;
   }
 
-  const conversationAggForRange = (sinceExpr) =>
-    db
-      .prepare(
-        `SELECT
-           COALESCE(NULLIF(TRIM(t.responding_provider_id), ''), t.requested_provider_id) AS pid,
-           COUNT(*) AS requests_sent,
-           SUM(CASE WHEN t.assistant_message_at IS NOT NULL AND IFNULL(t.assistant_error, 0) = 0 THEN 1 ELSE 0 END) AS responses_ok,
-           SUM(CASE WHEN t.request_type = 'image' THEN 1 ELSE 0 END) AS image_requests,
-           SUM(CASE WHEN t.request_type = 'research' THEN 1 ELSE 0 END) AS research_requests,
-           SUM(CASE WHEN t.request_type = 'web' THEN 1 ELSE 0 END) AS web_requests,
-           SUM(CASE WHEN t.request_type = 'access_data' THEN 1 ELSE 0 END) AS access_requests,
-           SUM(COALESCE(t.llm_prompt_tokens, 0)) AS tokens_prompt,
-           SUM(COALESCE(t.llm_completion_tokens, 0)) AS tokens_completion,
-           SUM(COALESCE(t.llm_total_tokens, 0)) AS tokens_total
-         FROM conversation_turns t
-         INNER JOIN dialogs d ON d.id = t.dialog_id
-         WHERE ${analyticsDialogWhereSql("d")} AND DATETIME(t.user_message_at) >= ${sinceExpr}
-         GROUP BY pid`,
-      )
-      .all();
+  const conversationAggForRange = async (sinceExpr) =>
+    adapter.all(
+      `SELECT
+         COALESCE(NULLIF(TRIM(t.responding_provider_id), ''), t.requested_provider_id) AS pid,
+         COUNT(*) AS requests_sent,
+         SUM(CASE WHEN t.assistant_message_at IS NOT NULL AND IFNULL(t.assistant_error, 0) = 0 THEN 1 ELSE 0 END) AS responses_ok,
+         SUM(CASE WHEN t.request_type = 'image' THEN 1 ELSE 0 END) AS image_requests,
+         SUM(CASE WHEN t.request_type = 'research' THEN 1 ELSE 0 END) AS research_requests,
+         SUM(CASE WHEN t.request_type = 'web' THEN 1 ELSE 0 END) AS web_requests,
+         SUM(CASE WHEN t.request_type = 'access_data' THEN 1 ELSE 0 END) AS access_requests,
+         SUM(COALESCE(t.llm_prompt_tokens, 0)) AS tokens_prompt,
+         SUM(COALESCE(t.llm_completion_tokens, 0)) AS tokens_completion,
+         SUM(COALESCE(t.llm_total_tokens, 0)) AS tokens_total
+       FROM conversation_turns t
+       INNER JOIN dialogs d ON d.id = t.dialog_id
+       WHERE ${analyticsDialogWhereSql("d")} AND DATETIME(t.user_message_at) >= ${sinceExpr}
+       GROUP BY pid`,
+    );
 
-  for (const row of conversationAggForRange("DATETIME('now', '-30 days')")) {
+  for (const row of await conversationAggForRange("DATETIME('now', '-30 days')")) {
     const pid = String(row.pid ?? "").trim();
     if (!providersLast30d[pid]) continue;
     providersLast30d[pid].requestsSent = Number(row.requests_sent) || 0;
@@ -218,7 +212,7 @@ function getAnalyticsPayload() {
     providersLast30d[pid].tokensTotal = Number(row.tokens_total) || 0;
   }
 
-  for (const row of conversationAggForRange("DATETIME('now', '-24 hours')")) {
+  for (const row of await conversationAggForRange("DATETIME('now', '-24 hours')")) {
     const pid = String(row.pid ?? "").trim();
     if (!providersLast24h[pid]) continue;
     providersLast24h[pid].requestsSent = Number(row.requests_sent) || 0;
@@ -232,39 +226,37 @@ function getAnalyticsPayload() {
     providersLast24h[pid].tokensTotal = Number(row.tokens_total) || 0;
   }
 
-  const archTbl = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='analytics_usage_archive'`).get();
+  const archTbl = await adapter.get(`SELECT name FROM sqlite_master WHERE type='table' AND name='analytics_usage_archive'`);
   let archHasTokens = false;
   if (archTbl) {
-    const archCols = db.prepare(`PRAGMA table_info(analytics_usage_archive)`).all();
+    const archCols = await adapter.all(`PRAGMA table_info(analytics_usage_archive)`);
     archHasTokens = archCols.some((c) => c.name === "tokens_total");
-    const archAgg = db
-      .prepare(
-        archHasTokens
-          ? `SELECT
-           provider_id AS pid,
-           SUM(turn_count) AS requests_sent,
-           SUM(responses_ok) AS responses_ok,
-           SUM(CASE WHEN request_type = 'image' THEN turn_count ELSE 0 END) AS image_requests,
-           SUM(CASE WHEN request_type = 'research' THEN turn_count ELSE 0 END) AS research_requests,
-           SUM(CASE WHEN request_type = 'web' THEN turn_count ELSE 0 END) AS web_requests,
-           SUM(CASE WHEN request_type = 'access_data' THEN turn_count ELSE 0 END) AS access_requests,
-           SUM(tokens_prompt) AS tokens_prompt,
-           SUM(tokens_completion) AS tokens_completion,
-           SUM(tokens_total) AS tokens_total
-         FROM analytics_usage_archive
-         GROUP BY pid`
-          : `SELECT
-           provider_id AS pid,
-           SUM(turn_count) AS requests_sent,
-           SUM(responses_ok) AS responses_ok,
-           SUM(CASE WHEN request_type = 'image' THEN turn_count ELSE 0 END) AS image_requests,
-           SUM(CASE WHEN request_type = 'research' THEN turn_count ELSE 0 END) AS research_requests,
-           SUM(CASE WHEN request_type = 'web' THEN turn_count ELSE 0 END) AS web_requests,
-           SUM(CASE WHEN request_type = 'access_data' THEN turn_count ELSE 0 END) AS access_requests
-         FROM analytics_usage_archive
-         GROUP BY pid`,
-      )
-      .all();
+    const archAgg = await adapter.all(
+      archHasTokens
+        ? `SELECT
+         provider_id AS pid,
+         SUM(turn_count) AS requests_sent,
+         SUM(responses_ok) AS responses_ok,
+         SUM(CASE WHEN request_type = 'image' THEN turn_count ELSE 0 END) AS image_requests,
+         SUM(CASE WHEN request_type = 'research' THEN turn_count ELSE 0 END) AS research_requests,
+         SUM(CASE WHEN request_type = 'web' THEN turn_count ELSE 0 END) AS web_requests,
+         SUM(CASE WHEN request_type = 'access_data' THEN turn_count ELSE 0 END) AS access_requests,
+         SUM(tokens_prompt) AS tokens_prompt,
+         SUM(tokens_completion) AS tokens_completion,
+         SUM(tokens_total) AS tokens_total
+       FROM analytics_usage_archive
+       GROUP BY pid`
+        : `SELECT
+         provider_id AS pid,
+         SUM(turn_count) AS requests_sent,
+         SUM(responses_ok) AS responses_ok,
+         SUM(CASE WHEN request_type = 'image' THEN turn_count ELSE 0 END) AS image_requests,
+         SUM(CASE WHEN request_type = 'research' THEN turn_count ELSE 0 END) AS research_requests,
+         SUM(CASE WHEN request_type = 'web' THEN turn_count ELSE 0 END) AS web_requests,
+         SUM(CASE WHEN request_type = 'access_data' THEN turn_count ELSE 0 END) AS access_requests
+       FROM analytics_usage_archive
+       GROUP BY pid`,
+    );
     for (const row of archAgg) {
       const pid = String(row.pid ?? "").trim();
       if (!providers[pid]) continue;
@@ -281,36 +273,34 @@ function getAnalyticsPayload() {
       }
     }
 
-    const archAggLast30d = db
-      .prepare(
-        archHasTokens
-          ? `SELECT
-             provider_id AS pid,
-             SUM(turn_count) AS requests_sent,
-             SUM(responses_ok) AS responses_ok,
-             SUM(CASE WHEN request_type = 'image' THEN turn_count ELSE 0 END) AS image_requests,
-             SUM(CASE WHEN request_type = 'research' THEN turn_count ELSE 0 END) AS research_requests,
-             SUM(CASE WHEN request_type = 'web' THEN turn_count ELSE 0 END) AS web_requests,
-             SUM(CASE WHEN request_type = 'access_data' THEN turn_count ELSE 0 END) AS access_requests,
-             SUM(tokens_prompt) AS tokens_prompt,
-             SUM(tokens_completion) AS tokens_completion,
-             SUM(tokens_total) AS tokens_total
-           FROM analytics_usage_archive
-           WHERE datetime(archived_at) >= datetime('now', '-30 days')
-           GROUP BY pid`
-          : `SELECT
-             provider_id AS pid,
-             SUM(turn_count) AS requests_sent,
-             SUM(responses_ok) AS responses_ok,
-             SUM(CASE WHEN request_type = 'image' THEN turn_count ELSE 0 END) AS image_requests,
-             SUM(CASE WHEN request_type = 'research' THEN turn_count ELSE 0 END) AS research_requests,
-             SUM(CASE WHEN request_type = 'web' THEN turn_count ELSE 0 END) AS web_requests,
-             SUM(CASE WHEN request_type = 'access_data' THEN turn_count ELSE 0 END) AS access_requests
-           FROM analytics_usage_archive
-           WHERE datetime(archived_at) >= datetime('now', '-30 days')
-           GROUP BY pid`,
-      )
-      .all();
+    const archAggLast30d = await adapter.all(
+      archHasTokens
+        ? `SELECT
+           provider_id AS pid,
+           SUM(turn_count) AS requests_sent,
+           SUM(responses_ok) AS responses_ok,
+           SUM(CASE WHEN request_type = 'image' THEN turn_count ELSE 0 END) AS image_requests,
+           SUM(CASE WHEN request_type = 'research' THEN turn_count ELSE 0 END) AS research_requests,
+           SUM(CASE WHEN request_type = 'web' THEN turn_count ELSE 0 END) AS web_requests,
+           SUM(CASE WHEN request_type = 'access_data' THEN turn_count ELSE 0 END) AS access_requests,
+           SUM(tokens_prompt) AS tokens_prompt,
+           SUM(tokens_completion) AS tokens_completion,
+           SUM(tokens_total) AS tokens_total
+         FROM analytics_usage_archive
+         WHERE datetime(archived_at) >= datetime('now', '-30 days')
+         GROUP BY pid`
+        : `SELECT
+           provider_id AS pid,
+           SUM(turn_count) AS requests_sent,
+           SUM(responses_ok) AS responses_ok,
+           SUM(CASE WHEN request_type = 'image' THEN turn_count ELSE 0 END) AS image_requests,
+           SUM(CASE WHEN request_type = 'research' THEN turn_count ELSE 0 END) AS research_requests,
+           SUM(CASE WHEN request_type = 'web' THEN turn_count ELSE 0 END) AS web_requests,
+           SUM(CASE WHEN request_type = 'access_data' THEN turn_count ELSE 0 END) AS access_requests
+         FROM analytics_usage_archive
+         WHERE datetime(archived_at) >= datetime('now', '-30 days')
+         GROUP BY pid`,
+    );
 
     for (const row of archAggLast30d) {
       const pid = String(row.pid ?? "").trim();
@@ -328,36 +318,34 @@ function getAnalyticsPayload() {
       }
     }
 
-    const archAggLast24h = db
-      .prepare(
-        archHasTokens
-          ? `SELECT
-             provider_id AS pid,
-             SUM(turn_count) AS requests_sent,
-             SUM(responses_ok) AS responses_ok,
-             SUM(CASE WHEN request_type = 'image' THEN turn_count ELSE 0 END) AS image_requests,
-             SUM(CASE WHEN request_type = 'research' THEN turn_count ELSE 0 END) AS research_requests,
-             SUM(CASE WHEN request_type = 'web' THEN turn_count ELSE 0 END) AS web_requests,
-             SUM(CASE WHEN request_type = 'access_data' THEN turn_count ELSE 0 END) AS access_requests,
-             SUM(tokens_prompt) AS tokens_prompt,
-             SUM(tokens_completion) AS tokens_completion,
-             SUM(tokens_total) AS tokens_total
-           FROM analytics_usage_archive
-           WHERE datetime(archived_at) >= datetime('now', '-24 hours')
-           GROUP BY pid`
-          : `SELECT
-             provider_id AS pid,
-             SUM(turn_count) AS requests_sent,
-             SUM(responses_ok) AS responses_ok,
-             SUM(CASE WHEN request_type = 'image' THEN turn_count ELSE 0 END) AS image_requests,
-             SUM(CASE WHEN request_type = 'research' THEN turn_count ELSE 0 END) AS research_requests,
-             SUM(CASE WHEN request_type = 'web' THEN turn_count ELSE 0 END) AS web_requests,
-             SUM(CASE WHEN request_type = 'access_data' THEN turn_count ELSE 0 END) AS access_requests
-           FROM analytics_usage_archive
-           WHERE datetime(archived_at) >= datetime('now', '-24 hours')
-           GROUP BY pid`,
-      )
-      .all();
+    const archAggLast24h = await adapter.all(
+      archHasTokens
+        ? `SELECT
+           provider_id AS pid,
+           SUM(turn_count) AS requests_sent,
+           SUM(responses_ok) AS responses_ok,
+           SUM(CASE WHEN request_type = 'image' THEN turn_count ELSE 0 END) AS image_requests,
+           SUM(CASE WHEN request_type = 'research' THEN turn_count ELSE 0 END) AS research_requests,
+           SUM(CASE WHEN request_type = 'web' THEN turn_count ELSE 0 END) AS web_requests,
+           SUM(CASE WHEN request_type = 'access_data' THEN turn_count ELSE 0 END) AS access_requests,
+           SUM(tokens_prompt) AS tokens_prompt,
+           SUM(tokens_completion) AS tokens_completion,
+           SUM(tokens_total) AS tokens_total
+         FROM analytics_usage_archive
+         WHERE datetime(archived_at) >= datetime('now', '-24 hours')
+         GROUP BY pid`
+        : `SELECT
+           provider_id AS pid,
+           SUM(turn_count) AS requests_sent,
+           SUM(responses_ok) AS responses_ok,
+           SUM(CASE WHEN request_type = 'image' THEN turn_count ELSE 0 END) AS image_requests,
+           SUM(CASE WHEN request_type = 'research' THEN turn_count ELSE 0 END) AS research_requests,
+           SUM(CASE WHEN request_type = 'web' THEN turn_count ELSE 0 END) AS web_requests,
+           SUM(CASE WHEN request_type = 'access_data' THEN turn_count ELSE 0 END) AS access_requests
+         FROM analytics_usage_archive
+         WHERE datetime(archived_at) >= datetime('now', '-24 hours')
+         GROUP BY pid`,
+    );
 
     for (const row of archAggLast24h) {
       const pid = String(row.pid ?? "").trim();
@@ -377,16 +365,14 @@ function getAnalyticsPayload() {
   }
 
   if (auxTbl) {
-    const auxTokAgg = db
-      .prepare(
-        `SELECT provider_id AS pid,
-            SUM(COALESCE(llm_prompt_tokens, 0)) AS tokens_prompt,
-            SUM(COALESCE(llm_completion_tokens, 0)) AS tokens_completion,
-            SUM(COALESCE(llm_total_tokens, 0)) AS tokens_total
-          FROM analytics_aux_llm_usage
-          GROUP BY provider_id`,
-      )
-      .all();
+    const auxTokAgg = await adapter.all(
+      `SELECT provider_id AS pid,
+          SUM(COALESCE(llm_prompt_tokens, 0)) AS tokens_prompt,
+          SUM(COALESCE(llm_completion_tokens, 0)) AS tokens_completion,
+          SUM(COALESCE(llm_total_tokens, 0)) AS tokens_total
+        FROM analytics_aux_llm_usage
+        GROUP BY provider_id`,
+    );
     for (const row of auxTokAgg) {
       const pid = String(row.pid ?? "").trim();
       if (!providers[pid]) continue;
@@ -395,17 +381,15 @@ function getAnalyticsPayload() {
       providers[pid].tokensTotal += Number(row.tokens_total) || 0;
     }
 
-    const auxTokAggLast30d = db
-      .prepare(
-        `SELECT provider_id AS pid,
-           SUM(COALESCE(llm_prompt_tokens, 0)) AS tokens_prompt,
-           SUM(COALESCE(llm_completion_tokens, 0)) AS tokens_completion,
-           SUM(COALESCE(llm_total_tokens, 0)) AS tokens_total
-         FROM analytics_aux_llm_usage
-         WHERE datetime(created_at) >= datetime('now', '-30 days')
-         GROUP BY provider_id`,
-      )
-      .all();
+    const auxTokAggLast30d = await adapter.all(
+      `SELECT provider_id AS pid,
+         SUM(COALESCE(llm_prompt_tokens, 0)) AS tokens_prompt,
+         SUM(COALESCE(llm_completion_tokens, 0)) AS tokens_completion,
+         SUM(COALESCE(llm_total_tokens, 0)) AS tokens_total
+       FROM analytics_aux_llm_usage
+       WHERE datetime(created_at) >= datetime('now', '-30 days')
+       GROUP BY provider_id`,
+    );
 
     for (const row of auxTokAggLast30d) {
       const pid = String(row.pid ?? "").trim();
@@ -415,17 +399,15 @@ function getAnalyticsPayload() {
       providersLast30d[pid].tokensTotal += Number(row.tokens_total) || 0;
     }
 
-    const auxTokAggLast24h = db
-      .prepare(
-        `SELECT provider_id AS pid,
-           SUM(COALESCE(llm_prompt_tokens, 0)) AS tokens_prompt,
-           SUM(COALESCE(llm_completion_tokens, 0)) AS tokens_completion,
-           SUM(COALESCE(llm_total_tokens, 0)) AS tokens_total
-         FROM analytics_aux_llm_usage
-         WHERE datetime(created_at) >= datetime('now', '-24 hours')
-         GROUP BY provider_id`,
-      )
-      .all();
+    const auxTokAggLast24h = await adapter.all(
+      `SELECT provider_id AS pid,
+         SUM(COALESCE(llm_prompt_tokens, 0)) AS tokens_prompt,
+         SUM(COALESCE(llm_completion_tokens, 0)) AS tokens_completion,
+         SUM(COALESCE(llm_total_tokens, 0)) AS tokens_total
+       FROM analytics_aux_llm_usage
+       WHERE datetime(created_at) >= datetime('now', '-24 hours')
+       GROUP BY provider_id`,
+    );
 
     for (const row of auxTokAggLast24h) {
       const pid = String(row.pid ?? "").trim();
@@ -435,13 +417,11 @@ function getAnalyticsPayload() {
       providersLast24h[pid].tokensTotal += Number(row.tokens_total) || 0;
     }
 
-    const auxReqAgg = db
-      .prepare(
-        `SELECT provider_id AS pid, COUNT(*) AS cnt
-         FROM analytics_aux_llm_usage
-         GROUP BY provider_id`,
-      )
-      .all();
+    const auxReqAgg = await adapter.all(
+      `SELECT provider_id AS pid, COUNT(*) AS cnt
+       FROM analytics_aux_llm_usage
+       GROUP BY provider_id`,
+    );
     for (const row of auxReqAgg) {
       const pid = String(row.pid ?? "").trim();
       if (!providers[pid]) continue;
@@ -449,14 +429,12 @@ function getAnalyticsPayload() {
       providers[pid].requestsSent += n;
       providers[pid].responsesOk += n;
     }
-    const auxReqAggLast30d = db
-      .prepare(
-        `SELECT provider_id AS pid, COUNT(*) AS cnt
-         FROM analytics_aux_llm_usage
-         WHERE datetime(created_at) >= datetime('now', '-30 days')
-         GROUP BY provider_id`,
-      )
-      .all();
+    const auxReqAggLast30d = await adapter.all(
+      `SELECT provider_id AS pid, COUNT(*) AS cnt
+       FROM analytics_aux_llm_usage
+       WHERE datetime(created_at) >= datetime('now', '-30 days')
+       GROUP BY provider_id`,
+    );
     for (const row of auxReqAggLast30d) {
       const pid = String(row.pid ?? "").trim();
       if (!providersLast30d[pid]) continue;
@@ -464,14 +442,12 @@ function getAnalyticsPayload() {
       providersLast30d[pid].requestsSent += n;
       providersLast30d[pid].responsesOk += n;
     }
-    const auxReqAggLast24h = db
-      .prepare(
-        `SELECT provider_id AS pid, COUNT(*) AS cnt
-         FROM analytics_aux_llm_usage
-         WHERE datetime(created_at) >= datetime('now', '-24 hours')
-         GROUP BY provider_id`,
-      )
-      .all();
+    const auxReqAggLast24h = await adapter.all(
+      `SELECT provider_id AS pid, COUNT(*) AS cnt
+       FROM analytics_aux_llm_usage
+       WHERE datetime(created_at) >= datetime('now', '-24 hours')
+       GROUP BY provider_id`,
+    );
     for (const row of auxReqAggLast24h) {
       const pid = String(row.pid ?? "").trim();
       if (!providersLast24h[pid]) continue;
@@ -481,20 +457,18 @@ function getAnalyticsPayload() {
     }
   }
 
-  const dayRows = db
-    .prepare(
-      `SELECT
-         DATE(t.user_message_at) AS day,
-         COALESCE(NULLIF(TRIM(t.responding_provider_id), ''), t.requested_provider_id) AS pid,
-         COUNT(*) AS cnt
-       FROM conversation_turns t
-       INNER JOIN dialogs d ON d.id = t.dialog_id
-       WHERE ${analyticsDialogWhereSql("d")}
-         AND DATETIME(t.user_message_at) >= DATETIME('now', '-30 days')
-       GROUP BY day, pid
-       ORDER BY day ASC`,
-    )
-    .all();
+  const dayRows = await adapter.all(
+    `SELECT
+       DATE(t.user_message_at) AS day,
+       COALESCE(NULLIF(TRIM(t.responding_provider_id), ''), t.requested_provider_id) AS pid,
+       COUNT(*) AS cnt
+     FROM conversation_turns t
+     INNER JOIN dialogs d ON d.id = t.dialog_id
+     WHERE ${analyticsDialogWhereSql("d")}
+       AND DATETIME(t.user_message_at) >= DATETIME('now', '-30 days')
+     GROUP BY day, pid
+     ORDER BY day ASC`,
+  );
 
   /** @type {Map<string, Record<string, number>>} */
   const dayMap = new Map();
@@ -511,17 +485,15 @@ function getAnalyticsPayload() {
   }
 
   if (archTbl) {
-    const archDays = db
-      .prepare(
-        `SELECT
-           DATE(archived_at) AS day,
-           provider_id AS pid,
-           SUM(turn_count) AS cnt
-         FROM analytics_usage_archive
-         WHERE datetime(archived_at) >= datetime('now', '-30 days')
-         GROUP BY day, pid`,
-      )
-      .all();
+    const archDays = await adapter.all(
+      `SELECT
+         DATE(archived_at) AS day,
+         provider_id AS pid,
+         SUM(turn_count) AS cnt
+       FROM analytics_usage_archive
+       WHERE datetime(archived_at) >= datetime('now', '-30 days')
+       GROUP BY day, pid`,
+    );
     for (const r of archDays) {
       const day = String(r.day ?? "").trim();
       const pid = String(r.pid ?? "").trim();
@@ -537,14 +509,12 @@ function getAnalyticsPayload() {
   }
 
   if (auxTbl) {
-    const auxDayReq = db
-      .prepare(
-        `SELECT DATE(created_at) AS day, provider_id AS pid, COUNT(*) AS cnt
-         FROM analytics_aux_llm_usage
-         WHERE datetime(created_at) >= datetime('now', '-30 days')
-         GROUP BY day, pid`,
-      )
-      .all();
+    const auxDayReq = await adapter.all(
+      `SELECT DATE(created_at) AS day, provider_id AS pid, COUNT(*) AS cnt
+       FROM analytics_aux_llm_usage
+       WHERE datetime(created_at) >= datetime('now', '-30 days')
+       GROUP BY day, pid`,
+    );
     for (const r of auxDayReq) {
       const day = String(r.day ?? "").trim();
       const pid = String(r.pid ?? "").trim();
@@ -559,21 +529,19 @@ function getAnalyticsPayload() {
     }
   }
 
-  const dayTokenRows = db
-    .prepare(
-      `SELECT
-         DATE(t.user_message_at) AS day,
-         COALESCE(NULLIF(TRIM(t.responding_provider_id), ''), t.requested_provider_id) AS pid,
-         SUM(COALESCE(t.llm_prompt_tokens, 0)) AS psum,
-         SUM(COALESCE(t.llm_completion_tokens, 0)) AS csum,
-         SUM(COALESCE(t.llm_total_tokens, 0)) AS tsum
-       FROM conversation_turns t
-       INNER JOIN dialogs d ON d.id = t.dialog_id
-       WHERE ${analyticsDialogWhereSql("d")}
-         AND DATETIME(t.user_message_at) >= DATETIME('now', '-30 days')
-       GROUP BY day, pid`,
-    )
-    .all();
+  const dayTokenRows = await adapter.all(
+    `SELECT
+       DATE(t.user_message_at) AS day,
+       COALESCE(NULLIF(TRIM(t.responding_provider_id), ''), t.requested_provider_id) AS pid,
+       SUM(COALESCE(t.llm_prompt_tokens, 0)) AS psum,
+       SUM(COALESCE(t.llm_completion_tokens, 0)) AS csum,
+       SUM(COALESCE(t.llm_total_tokens, 0)) AS tsum
+     FROM conversation_turns t
+     INNER JOIN dialogs d ON d.id = t.dialog_id
+     WHERE ${analyticsDialogWhereSql("d")}
+       AND DATETIME(t.user_message_at) >= DATETIME('now', '-30 days')
+     GROUP BY day, pid`,
+  );
 
   /** @type {Map<string, Record<string, { prompt: number, completion: number, total: number }>>} */
   const dayTokenDetailMap = new Map();
@@ -599,36 +567,32 @@ function getAnalyticsPayload() {
   }
 
   if (archTbl && archHasTokens) {
-    const archTokDays = db
-      .prepare(
-        `SELECT
-           DATE(archived_at) AS day,
-           provider_id AS pid,
-           SUM(tokens_prompt) AS psum,
-           SUM(tokens_completion) AS csum,
-           SUM(tokens_total) AS tsum
-         FROM analytics_usage_archive
-         WHERE datetime(archived_at) >= datetime('now', '-30 days')
-         GROUP BY day, pid`,
-      )
-      .all();
+    const archTokDays = await adapter.all(
+      `SELECT
+         DATE(archived_at) AS day,
+         provider_id AS pid,
+         SUM(tokens_prompt) AS psum,
+         SUM(tokens_completion) AS csum,
+         SUM(tokens_total) AS tsum
+       FROM analytics_usage_archive
+       WHERE datetime(archived_at) >= datetime('now', '-30 days')
+       GROUP BY day, pid`,
+    );
     for (const r of archTokDays) {
       addDayTokenDetail(String(r.day ?? "").trim(), String(r.pid ?? "").trim(), r.psum, r.csum, r.tsum);
     }
   }
 
   if (auxTbl) {
-    const auxTokDays = db
-      .prepare(
-        `SELECT DATE(created_at) AS day, provider_id AS pid,
-            SUM(COALESCE(llm_prompt_tokens, 0)) AS psum,
-            SUM(COALESCE(llm_completion_tokens, 0)) AS csum,
-            SUM(COALESCE(llm_total_tokens, 0)) AS tsum
-          FROM analytics_aux_llm_usage
-          WHERE datetime(created_at) >= datetime('now', '-30 days')
-          GROUP BY day, pid`,
-      )
-      .all();
+    const auxTokDays = await adapter.all(
+      `SELECT DATE(created_at) AS day, provider_id AS pid,
+          SUM(COALESCE(llm_prompt_tokens, 0)) AS psum,
+          SUM(COALESCE(llm_completion_tokens, 0)) AS csum,
+          SUM(COALESCE(llm_total_tokens, 0)) AS tsum
+        FROM analytics_aux_llm_usage
+        WHERE datetime(created_at) >= datetime('now', '-30 days')
+        GROUP BY day, pid`,
+    );
     for (const r of auxTokDays) {
       addDayTokenDetail(String(r.day ?? "").trim(), String(r.pid ?? "").trim(), r.psum, r.csum, r.tsum);
     }
@@ -640,7 +604,7 @@ function getAnalyticsPayload() {
   /** @type {Array<{ date: string, byProvider: Record<string, { prompt: number, completion: number, total: number }> }>} */
   const dailyLlmTokens = [];
   for (let i = 29; i >= 0; i -= 1) {
-    const row = db.prepare(`SELECT DATE(DATETIME('now', ?)) AS d`).get(`-${i} days`);
+    const row = await adapter.get(`SELECT DATE(DATETIME('now', ?)) AS d`, [`-${i} days`]);
     const day = String(row?.d ?? "").trim();
     const byProvider = dayMap.get(day) ?? Object.fromEntries(ANALYTICS_PROVIDER_IDS.map((id) => [id, 0]));
     dailyUsage.push({ date: day, byProvider: { ...byProvider } });
@@ -685,19 +649,17 @@ function getAnalyticsPayload() {
   const last24hByProvider = Object.fromEntries(
     ANALYTICS_PROVIDER_IDS.map((id) => [id, { prompt: 0, completion: 0 }]),
   );
-  const live24h = db
-    .prepare(
-      `SELECT
-         COALESCE(NULLIF(TRIM(t.responding_provider_id), ''), t.requested_provider_id) AS pid,
-         SUM(COALESCE(t.llm_prompt_tokens, 0)) AS psum,
-         SUM(COALESCE(t.llm_completion_tokens, 0)) AS csum
-       FROM conversation_turns t
-       INNER JOIN dialogs d ON d.id = t.dialog_id
-       WHERE ${analyticsDialogWhereSql("d")}
-         AND DATETIME(t.user_message_at) >= DATETIME('now', '-24 hours')
-       GROUP BY pid`,
-    )
-    .all();
+  const live24h = await adapter.all(
+    `SELECT
+       COALESCE(NULLIF(TRIM(t.responding_provider_id), ''), t.requested_provider_id) AS pid,
+       SUM(COALESCE(t.llm_prompt_tokens, 0)) AS psum,
+       SUM(COALESCE(t.llm_completion_tokens, 0)) AS csum
+     FROM conversation_turns t
+     INNER JOIN dialogs d ON d.id = t.dialog_id
+     WHERE ${analyticsDialogWhereSql("d")}
+       AND DATETIME(t.user_message_at) >= DATETIME('now', '-24 hours')
+     GROUP BY pid`,
+  );
   for (const r of live24h) {
     const pid = String(r.pid ?? "").trim();
     if (!last24hByProvider[pid]) continue;
@@ -705,17 +667,15 @@ function getAnalyticsPayload() {
     last24hByProvider[pid].completion += Number(r.csum) || 0;
   }
   if (archTbl && archHasTokens) {
-    const arch24h = db
-      .prepare(
-        `SELECT
-           provider_id AS pid,
-           SUM(COALESCE(tokens_prompt, 0)) AS psum,
-           SUM(COALESCE(tokens_completion, 0)) AS csum
-         FROM analytics_usage_archive
-         WHERE DATETIME(archived_at) >= DATETIME('now', '-24 hours')
-         GROUP BY pid`,
-      )
-      .all();
+    const arch24h = await adapter.all(
+      `SELECT
+         provider_id AS pid,
+         SUM(COALESCE(tokens_prompt, 0)) AS psum,
+         SUM(COALESCE(tokens_completion, 0)) AS csum
+       FROM analytics_usage_archive
+       WHERE DATETIME(archived_at) >= DATETIME('now', '-24 hours')
+       GROUP BY pid`,
+    );
     for (const r of arch24h) {
       const pid = String(r.pid ?? "").trim();
       if (!last24hByProvider[pid]) continue;
@@ -724,17 +684,15 @@ function getAnalyticsPayload() {
     }
   }
   if (auxTbl) {
-    const aux24h = db
-      .prepare(
-        `SELECT
-           provider_id AS pid,
-           SUM(COALESCE(llm_prompt_tokens, 0)) AS psum,
-           SUM(COALESCE(llm_completion_tokens, 0)) AS csum
-         FROM analytics_aux_llm_usage
-         WHERE DATETIME(created_at) >= DATETIME('now', '-24 hours')
-         GROUP BY pid`,
-      )
-      .all();
+    const aux24h = await adapter.all(
+      `SELECT
+         provider_id AS pid,
+         SUM(COALESCE(llm_prompt_tokens, 0)) AS psum,
+         SUM(COALESCE(llm_completion_tokens, 0)) AS csum
+       FROM analytics_aux_llm_usage
+       WHERE DATETIME(created_at) >= DATETIME('now', '-24 hours')
+       GROUP BY pid`,
+    );
     for (const r of aux24h) {
       const pid = String(r.pid ?? "").trim();
       if (!last24hByProvider[pid]) continue;
@@ -750,23 +708,19 @@ function getAnalyticsPayload() {
     spendSummary.combinedUsd.last24h += est.totalUsd;
   }
 
-  const themesRow = db
-    .prepare(
-      `SELECT COUNT(*) AS n FROM themes WHERE id NOT IN (
-         SELECT DISTINCT theme_id FROM dialogs WHERE IFNULL(purpose, '') IN ('intro', 'access', 'rules')
-       )`,
-    )
-    .get();
-  const dialogsRow = db
-    .prepare(`SELECT COUNT(*) AS n FROM dialogs d WHERE ${analyticsDialogWhereSql("d")}`)
-    .get();
+  const themesRow = await adapter.get(
+    `SELECT COUNT(*) AS n FROM themes WHERE id NOT IN (
+       SELECT DISTINCT theme_id FROM dialogs WHERE IFNULL(purpose, '') IN ('intro', 'access', 'rules')
+     )`,
+  );
+  const dialogsRow = await adapter.get(`SELECT COUNT(*) AS n FROM dialogs d WHERE ${analyticsDialogWhereSql("d")}`);
 
   let memoryGraph = { nodes: 0, edges: 0, groups: 0 };
-  const tbl = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='memory_graph_nodes'`).get();
+  const tbl = await adapter.get(`SELECT name FROM sqlite_master WHERE type='table' AND name='memory_graph_nodes'`);
   if (tbl) {
-    const nodesRow = db.prepare(`SELECT COUNT(*) AS n FROM memory_graph_nodes`).get();
-    const edgesRow = db.prepare(`SELECT COUNT(*) AS n FROM memory_graph_edges`).get();
-    const groupsRow = db.prepare(`SELECT COUNT(DISTINCT category) AS n FROM memory_graph_nodes`).get();
+    const nodesRow = await adapter.get(`SELECT COUNT(*) AS n FROM memory_graph_nodes`);
+    const edgesRow = await adapter.get(`SELECT COUNT(*) AS n FROM memory_graph_edges`);
+    const groupsRow = await adapter.get(`SELECT COUNT(DISTINCT category) AS n FROM memory_graph_nodes`);
     memoryGraph = {
       nodes: Number(nodesRow?.n) || 0,
       edges: Number(edgesRow?.n) || 0,
