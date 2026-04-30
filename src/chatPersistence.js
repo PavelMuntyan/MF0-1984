@@ -71,12 +71,7 @@ export async function apiHealth() {
 
 /**
  * Server-side voice transcription (Gemini preferred, OpenAI fallback).
- * @param {{
- *   audioBase64: string,
- *   mimeType: string,
- *   geminiApiKey?: string,
- *   openAiApiKey?: string,
- * }} payload
+ * @param {{ audioBase64: string, mimeType: string }} payload
  * @returns {Promise<{ text: string, providerId: string }>}
  */
 export async function transcribeVoiceMessage(payload) {
@@ -112,7 +107,6 @@ export async function fetchVoiceReplyStatus(turnId) {
 
 /**
  * @param {string} turnId
- * @param {{ geminiApiKey?: string, openAiApiKey?: string }} [opts] — forwarded to API when keys are not set on the server process.
  * @returns {Promise<{ url: string, providerId: string }>}
  */
 export async function ensureVoiceReplyMp3(turnId) {
