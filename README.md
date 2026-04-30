@@ -6,7 +6,7 @@
 |---|---|
 | **UI dev server** | Vite — default port **1984** (`vite.config.js`) |
 | **Local API** | Node + `better-sqlite3` — default port **35184** (`API_PORT`) |
-| **Version** | **1.9.27** (`package.json`) |
+| **Version** | **1.9.28** (`package.json`) |
 
 For architecture, data model, env vars, and operations, see **[HANDOFF.md](./HANDOFF.md)** (engineering handoff).
 
@@ -73,8 +73,9 @@ The dev setup runs the API and Vite together.
 | `index.html` | App shell |
 | `src/` | Browser ES modules — chat, settings, memory tree, persistence client, etc. |
 | `server/api.mjs` | Thin Express 5 bootstrap — middleware + router mounts |
-| `server/routes/` | Twelve route modules (health, voice, LLM proxy, themes, analytics, …) |
-| `server/services/` | Shared server-side logic (context pipeline, access services, AI model cache) |
+| `server/routes/` | Route modules (health, voice, LLM proxy, themes, attachments, analytics, …) |
+| `server/services/` | Shared server-side logic (context pipeline, access services, AI model cache, attachment storage) |
+| `data/attachments/` | Image files extracted from chat turns (user uploads + AI-generated images) |
 | `server/*.mjs` | Feature modules: memory graph import, project profile export/import, access data dump, port resolver |
 | `db/` | Schema and migrations |
 | `data/` | Runtime SQLite and optional caches (not treated as canonical for every clone) |

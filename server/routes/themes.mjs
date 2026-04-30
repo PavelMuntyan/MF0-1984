@@ -13,6 +13,11 @@ import {
   dialogRowToClient,
 } from "../db/turns.mjs";
 import {
+  saveBase64ToFile,
+  attachmentFileUrl,
+  extractDataImageUrlsFromText,
+} from "../services/attachmentStorage.mjs";
+import {
   recordAuxLlmUsageRow,
 } from "../db/analytics.mjs";
 import {
@@ -239,7 +244,31 @@ router.post("/dialogs/:dialogId/turns", async (req, res) => {
     return res.status(400).json({ ok: false, error: "user_text (or attachments), requested_provider_id, user_message_at required" });
   }
 
-  const attachJsonToStore = hasAttach ? JSON.stringify(attachRows) : null;
+  // Extract user attachment images from base64 → disk, replace with imageFile reference.
+  const extractedAttachRows = attachRows.map((row) => {
+    if (row.kind !== "image" || !row.imageBase64) return row;
+    try {
+      const fileName = saveBase64ToFile(row.imageBase64, row.mimeType ?? "image/png");
+      const { imageBase64: _drop, ...rest } = row;
+      return { ...rest, imageFile: fileName, imageUrl: attachmentFileUrl(fileName) };
+    } catch (e) {
+      console.warn("[mf-lab-api] attachment extract failed, keeping base64:", e?.message);
+      return row;
+    }
+  });
+
+  // Extract inline data:image payloads from assistant_text → disk.
+  let assistantTextToStore = assistantText;
+  if (assistantTextToStore && assistantTextToStore.includes("data:image")) {
+    try {
+      const { out } = extractDataImageUrlsFromText(assistantTextToStore);
+      assistantTextToStore = out;
+    } catch (e) {
+      console.warn("[mf-lab-api] assistant_text image extract failed:", e?.message);
+    }
+  }
+
+  const attachJsonToStore = hasAttach ? JSON.stringify(extractedAttachRows) : null;
   const pipelineUserText = userTextForContextPipeline(userText, attachJsonToStore);
   const now = new Date().toISOString();
 
@@ -250,7 +279,7 @@ router.post("/dialogs/:dialogId/turns", async (req, res) => {
          request_type, user_message_at, assistant_message_at, assistant_error,
          llm_prompt_tokens, llm_completion_tokens, llm_total_tokens
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(turnId, dialogId, userText, attachJsonToStore, assistantText, requestedProviderId, respondingProviderId,
+    ).run(turnId, dialogId, userText, attachJsonToStore, assistantTextToStore, requestedProviderId, respondingProviderId,
       requestType, userMessageAt, assistantMessageAt, assistantError, llmPromptTokens, llmCompletionTokens, llmTotalTokens);
     db.prepare(`UPDATE dialogs SET updated_at = ? WHERE id = ?`).run(now, dialogId);
     db.prepare(`UPDATE themes SET updated_at = ? WHERE id = ?`).run(now, drow.theme_id);
@@ -260,7 +289,7 @@ router.post("/dialogs/:dialogId/turns", async (req, res) => {
     const dataDumpLockdown = userTextTriggersAccessDataDumpLockdown(userText) || requestType === "access_data";
     const skipPipelineForRetryClone = Boolean(cloneFrom);
     if (String(drow.purpose ?? "") !== "access" && !dataDumpLockdown && !skipPipelineForRetryClone) {
-      runAfterTurnPipeline(dialogId, turnId, pipelineUserText, assistantText, userMessageAt, assistantMessageAt || now);
+      runAfterTurnPipeline(dialogId, turnId, pipelineUserText, assistantTextToStore, userMessageAt, assistantMessageAt || now);
     }
     const graphPur = String(drow.purpose ?? "").trim();
     const graphKeeperEligiblePurpose = graphPur !== "access" && graphPur !== "rules" && graphPur !== "intro";

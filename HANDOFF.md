@@ -4,6 +4,48 @@ This document is a **single-source orientation** for engineers taking over the r
 
 ---
 
+## Release notes (1.9.28)
+
+### Image files extracted from SQLite to disk
+
+Prior to this release, user-uploaded images and AI-generated images were stored as raw base64 inside SQLite `conversation_turns`, bloating the database file. Starting with 1.9.28, all new image payloads are written to disk and only a file reference is stored in the DB.
+
+**Where files are stored:** `data/attachments/<uuid>.<ext>` (e.g. `data/attachments/a1b2c3d4-….png`).
+
+**Served via:** `GET /api/files/attachments/:fileName` — sanitized filename (UUID + extension), immutable `Cache-Control`.
+
+**Two extraction paths, both run at turn-save time (`POST /api/dialogs/:dialogId/turns`):**
+
+| Source | Old storage | New storage |
+|--------|-------------|-------------|
+| User attachment image (`user_attachments_json[].imageBase64`) | base64 string inside JSON in DB | file on disk; JSON entry gains `imageFile: "uuid.ext"` + `imageUrl: "/api/files/attachments/uuid.ext"` |
+| AI-generated image in `assistant_text` (e.g. Gemini `inlineData`) | `![...](data:image/png;base64,…)` in DB text column | file on disk; markdown URL replaced with `/api/files/attachments/uuid.png` |
+
+**Backward compatibility:** turns saved before 1.9.28 still have `imageBase64` inline — the client renders both `imageBase64` (data URI) and `imageFile` (API URL). No DB schema changes required.
+
+**Migration for existing users:** `node scripts/migrate-attachments.mjs` (add `--dry-run` to preview). Scans all turns that still have `imageBase64` or inline `data:image`, saves images to disk, and updates DB in a single transaction.
+
+**Project Cache changes:**
+- `clearProjectMultimediaCacheFull()` now also deletes all files under `data/attachments/` and strips `imageFile`/`imageUrl` fields from attachment JSON, plus `![...]( /api/files/attachments/…)` markdown refs from `assistant_text`.
+- `GET /api/settings/project-cache-stats` response gains `attachmentFilesBytes` (recursive byte sum of `data/attachments/`).
+
+**New / modified files:**
+
+| Path | Change |
+|------|--------|
+| `server/services/attachmentStorage.mjs` | New — `saveBase64ToFile`, `extractDataImageUrlsFromText`, `attachmentFileUrl`, `ATTACHMENTS_DIR` |
+| `server/routes/attachments.mjs` | Extended — adds `GET /api/files/attachments/:fileName` |
+| `server/routes/themes.mjs` | Modified — image extraction on every `POST /dialogs/:id/turns` |
+| `server/services/projectCache.mjs` | Modified — clear + stat `data/attachments/`; strip file-URL refs on multimedia clear |
+| `src/main.js` | Modified — renders `imageFile` from DB; retry flow downloads file for re-send |
+| `scripts/migrate-attachments.mjs` | New — one-time migration script |
+
+### Version bump
+
+- `package.json` → **1.9.28**.
+
+---
+
 ## Release notes (1.9.27)
 
 ### Express 5 migration — monolithic `server/api.mjs` split into route modules
@@ -517,8 +559,9 @@ Settings → **Project Cache** no longer shows a single combined **“files & pi
 | `server/api.mjs` | Thin Express 5 bootstrap (~65 lines): global middleware, router mounts, `app.listen`. |
 | `server/config.mjs` | `MAX_BODY_BYTES` (48 MiB default, `API_MAX_BODY_BYTES` override). |
 | `server/middleware/http.mjs` | `securityHeaders`, `notFound`, `errorHandler`. |
-| `server/routes/` | Twelve route modules — see **Release notes (1.9.27)** for the full list. |
-| `server/services/` | Shared logic: `accessServices.mjs`, `contextPipeline.mjs`, `aiModelCache.mjs`. |
+| `server/routes/` | Route modules — see **Release notes (1.9.27)** for the full list; `attachments.mjs` also serves `GET /api/files/attachments/:fileName`. |
+| `server/services/` | Shared logic: `accessServices.mjs`, `contextPipeline.mjs`, `aiModelCache.mjs`, `attachmentStorage.mjs`. |
+| `data/attachments/` | On-disk image files extracted from chat turns (since 1.9.28). Served by `attachments.mjs`. |
 | `server/*.mjs` | Feature slices: memory graph import, project profile export/import, access data dump helpers, port resolver. |
 | `db/schema.sql` | Initial schema; migrations in `db/migrations/*.sql`. |
 | `data/` | Runtime SQLite (`mf-lab.sqlite` by default), optional JSON caches (e.g. Access enrichment import). **Not** shipped as authoritative content for all installs. |
@@ -588,6 +631,7 @@ The API is an **Express 5** app with twelve route modules mounted at `/api`. Not
 
 - **Health:** `GET /api/health`
 - **Attachment text extraction:** `POST /api/attachments/extract` (base64 payload, returns extracted text for supported office/document formats)
+- **Attachment file serving:** `GET /api/files/attachments/:fileName` (sanitized UUID filename, immutable cache; files live in `data/attachments/`)
 - **Purpose sessions (JSON files + SQLite bridge):**  
   `GET /api/intro/session`, `GET /api/access/session`, `GET /api/rules/session`, `GET /api/rules/keeper-files`, `PUT /api/rules/keeper-merge`
 - **Access:**  
@@ -601,8 +645,8 @@ The API is an **Express 5** app with twelve route modules mounted at `/api`. Not
   `POST /api/project-profile/export` (binary `.mf` response), `POST /api/project-profile/import` (multipart buffer + metadata)
 - **Analytics:** `GET /api/analytics`
 - **Settings — project cache:**  
-  `GET /api/settings/project-cache-stats` (disk + DB size breakdown; see **Release notes (1.9.15)**),  
-  `POST /api/settings/project-cache-clear-multimedia` (voice cache + strip embedded images in `conversation_turns` + `VACUUM`)
+  `GET /api/settings/project-cache-stats` (disk + DB size breakdown; gains `attachmentFilesBytes` in 1.9.28),  
+  `POST /api/settings/project-cache-clear-multimedia` (voice cache + attachment files + strip embedded images in `conversation_turns` + `VACUUM`)
 - **Assistant favorites:** `GET/POST` variants under `/api/assistant-favorite(s)` and `/api/dialogs/assistant-favorite(s)` (legacy path compatibility)
 - **Themes / dialogs / turns:**  
   `GET /api/themes`, `POST /api/themes/bootstrap`, `POST /api/themes/new-dialog`, `POST /api/themes/delete`, `POST /api/themes/rename`,  

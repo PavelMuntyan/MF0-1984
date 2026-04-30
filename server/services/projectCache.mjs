@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { db, dbPath } from "../db/migrations.mjs";
 import { VOICE_REPLIES_DIR, TTS_SELFTEST_DIR } from "./voice.mjs";
+import { ATTACHMENTS_DIR } from "./attachmentStorage.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "../..");
@@ -62,7 +63,7 @@ function stripImagePayloadsFromUserAttachmentsJson(raw) {
   const next = j.map((x) => {
     if (!x || typeof x !== "object") return x;
     const o = { ...x };
-    for (const key of ["imageBase64", "base64"]) {
+    for (const key of ["imageBase64", "base64", "imageFile", "imageUrl"]) {
       if (o[key] == null) continue;
       const s = String(o[key]);
       if (s.length === 0) continue;
@@ -83,19 +84,21 @@ function stripImagePayloadsFromUserAttachmentsJson(raw) {
 }
 
 /**
- * Strips markdown `![](data:image/...;base64,...)` and bare `data:image/...;base64,...` payloads from a text field.
+ * Strips markdown image payloads (inline base64 and /api/files/attachments/ references) from a text field.
  * @param {unknown} raw
  * @returns {{ out: string, bytesRemoved: number }}
  */
 function stripDataImagePayloadsFromTextField(raw) {
   const s = raw == null ? "" : String(raw);
-  if (!s.includes("data:image")) return { out: s, bytesRemoved: 0 };
+  const hasContent = s.includes("data:image") || s.includes("/api/files/attachments/");
+  if (!hasContent) return { out: s, bytesRemoved: 0 };
   const before = Buffer.byteLength(s, "utf8");
   let out = s.replace(
     /!\[[^\]]{0,800}?\]\(\s*data:image\/[a-z0-9.+-]+;base64,[\s\S]*?\)/gi,
     "*[inline image removed]*",
   );
   out = out.replace(/data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+/gi, "");
+  out = out.replace(/!\[[^\]]{0,800}?\]\(\s*\/api\/files\/attachments\/[^\s)]{1,200}\s*\)/gi, "*[image removed]*");
   const bytesRemoved = Math.max(0, before - Buffer.byteLength(out, "utf8"));
   return { out, bytesRemoved };
 }
@@ -222,6 +225,28 @@ function clearProjectMultimediaCacheDiskOnly() {
       bytesFreed += pre.bytes;
     } catch {
       /* ignore partial failure */
+    }
+  }
+
+  if (fs.existsSync(ATTACHMENTS_DIR)) {
+    let names;
+    try {
+      names = fs.readdirSync(ATTACHMENTS_DIR);
+    } catch {
+      names = [];
+    }
+    for (const name of names) {
+      const fp = path.join(ATTACHMENTS_DIR, name);
+      try {
+        const st = fs.statSync(fp);
+        if (!st.isFile()) continue;
+        const sz = Number(st.size) || 0;
+        fs.unlinkSync(fp);
+        filesRemoved += 1;
+        bytesFreed += sz;
+      } catch {
+        /* skip */
+      }
     }
   }
 
@@ -374,12 +399,14 @@ export function getProjectCacheStatsPayload() {
   }
   const chatDbOtherApproxBytes = Math.max(0, chatDatabaseBytes - chatEmbeddedMediaBytes);
   const soundFilesBytes = sumDirectoryFileBytesRecursive(VOICE_REPLIES_DIR, { skipSqlite: false });
+  const attachmentFilesBytes = sumDirectoryFileBytesRecursive(ATTACHMENTS_DIR, { skipSqlite: false });
   /** @deprecated Combined total; clients should prefer split fields. */
   const filesAndPicturesBytes = dataDirCacheBytes + chatDatabaseBytes;
   return {
     ok: true,
     filesAndPicturesBytes,
     soundFilesBytes,
+    attachmentFilesBytes,
     dataDirCacheBytes,
     chatDatabaseBytes,
     chatEmbeddedMediaBytes,

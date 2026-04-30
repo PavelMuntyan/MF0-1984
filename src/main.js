@@ -4008,13 +4008,16 @@ function buildPersistRecoveryForAppend(options, attachmentStrip) {
         rec.imageBase64 = b;
       }
     }
+    if (!rec.imageBase64 && typeof x.imageFile === "string" && String(x.imageFile).trim()) {
+      rec.imageFile = String(x.imageFile).trim();
+    }
     if (typeof x.textInline === "string" && x.textInline.length > 0) {
       rec.textInline =
         x.textInline.length > MAX_PERSIST_TEXT_INLINE_CHARS
           ? x.textInline.slice(0, MAX_PERSIST_TEXT_INLINE_CHARS)
           : x.textInline;
     }
-    if (rec.imageBase64 || rec.textInline) out.push(rec);
+    if (rec.imageBase64 || rec.imageFile || rec.textInline) out.push(rec);
   }
   return out.slice(0, MAX_COMPOSER_ATTACHMENTS);
 }
@@ -4110,6 +4113,18 @@ async function rebuildUserBubbleAttachmentsForRetry(userEl) {
           const f = fileFromImageBase64Parts(name, mime, String(row.imageBase64));
           out.files.push(f);
           out.filenames.push(name);
+        } else if (typeof row.imageFile === "string" && row.imageFile.trim()) {
+          try {
+            if (!mime.toLowerCase().startsWith("image/")) mime = "image/png";
+            const resp = await fetch(`/api/files/attachments/${encodeURIComponent(row.imageFile.trim())}`);
+            if (resp.ok) {
+              const blob = await resp.blob();
+              out.files.push(new File([blob], name, { type: mime }));
+              out.filenames.push(name);
+            }
+          } catch {
+            /* skip if file unavailable */
+          }
         } else if (typeof row.textInline === "string" && row.textInline.length > 0) {
           const mt = mime && !mime.includes(" ") ? mime : "text/plain";
           out.files.push(new File([row.textInline], name, { type: mt }));
@@ -4792,6 +4807,7 @@ function createDeepResearchBadgeIcon() {
  *     displayAsImage?: boolean;
  *     mimeType?: string;
  *     imageBase64?: string;
+ *     imageFile?: string;
  *     textInline?: string;
  *   }>;
  *   persistRecovery?: Array<{
@@ -4799,6 +4815,7 @@ function createDeepResearchBadgeIcon() {
  *     kind: string;
  *     mimeType?: string;
  *     imageBase64?: string;
+ *     imageFile?: string;
  *     textInline?: string;
  *   }>;
  *   listInsertBefore?: ChildNode | null;
@@ -4905,13 +4922,16 @@ function appendUserMessage(rawText, modelLabel, options) {
       const kind = normalizeStoredUserAttachmentKind(item?.kind);
       let objectUrl =
         typeof item?.objectUrl === "string" &&
-        (item.objectUrl.startsWith("blob:") || item.objectUrl.startsWith("data:"))
+        (item.objectUrl.startsWith("blob:") || item.objectUrl.startsWith("data:") || item.objectUrl.startsWith("/api/"))
           ? item.objectUrl
           : "";
       const mtForData = String(item?.mimeType ?? "")
         .trim()
         .split(";")[0]
         .trim();
+      if (!objectUrl && typeof item?.imageFile === "string" && String(item.imageFile).trim()) {
+        objectUrl = `/api/files/attachments/${encodeURIComponent(String(item.imageFile).trim())}`;
+      }
       if (
         !objectUrl &&
         typeof item?.imageBase64 === "string" &&
@@ -4932,7 +4952,7 @@ function appendUserMessage(rawText, modelLabel, options) {
       }
       const displayAsImage =
         Boolean(objectUrl) &&
-        (Boolean(item?.displayAsImage) || objectUrl.startsWith("data:image/"));
+        (Boolean(item?.displayAsImage) || objectUrl.startsWith("data:image/") || objectUrl.startsWith("/api/files/attachments/"));
 
       if (objectUrl) {
         const a = document.createElement("a");
@@ -5624,22 +5644,28 @@ function appendUserBubbleFromTurn(turn, bubbleOpts) {
               : typeof x.base64 === "string"
                 ? String(x.base64)
                 : "";
+          const imageFile = typeof x.imageFile === "string" ? String(x.imageFile).trim() : "";
           const textInline = typeof x.textInline === "string" ? String(x.textInline) : "";
 
           /** @type {Record<string, unknown>} */
           const out = { name, kind };
           if (mimeType) out.mimeType = mimeType;
           if (imageBase64) out.imageBase64 = imageBase64;
+          if (imageFile) out.imageFile = imageFile;
           if (textInline) out.textInline = textInline;
 
           const mtBase = mimeType.split(";")[0].trim();
           let objectUrl = "";
           let displayAsImage = false;
+          if (imageFile) {
+            objectUrl = `/api/files/attachments/${encodeURIComponent(imageFile)}`;
+            displayAsImage = true;
+          }
           const compactB64 = imageBase64.replace(/\s/g, "");
-          if (compactB64.length > 0 && mtBase.toLowerCase().startsWith("image/")) {
+          if (!objectUrl && compactB64.length > 0 && mtBase.toLowerCase().startsWith("image/")) {
             objectUrl = `data:${mtBase};base64,${compactB64}`;
             displayAsImage = true;
-          } else if (textInline.length > 0) {
+          } else if (!objectUrl && textInline.length > 0) {
             try {
               const mt = mtBase || "text/plain";
               objectUrl = URL.createObjectURL(new Blob([textInline], { type: mt }));
