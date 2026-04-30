@@ -91,7 +91,10 @@ function makeProxyHandler(providerName) {
       timeout: TIMEOUT_MS,
     });
 
-    req.on("close", () => proxyReq.destroy());
+    // Abort upstream if the client disconnects before the response is complete.
+    // Listen on res, not req: req "close" fires when the request body is consumed
+    // (express.json() reads it), which is before the upstream has responded.
+    res.on("close", () => { if (!res.writableEnded) proxyReq.destroy(); });
 
     proxyReq.on("response", (proxyRes) => {
       const resCt = String(proxyRes.headers["content-type"] || "").toLowerCase();
