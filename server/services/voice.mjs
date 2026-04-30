@@ -143,11 +143,9 @@ async function transcribeWithOpenAi(audioBuffer, mimeType, apiKey) {
   return text;
 }
 
-export async function transcribeVoiceFromEnv(audioBuffer, mimeType, body) {
-  const geminiKey =
-    String(process.env.GEMINI_API_KEY ?? "").trim() || String(body?.geminiApiKey ?? "").trim();
-  const openAiKey =
-    String(process.env.OPENAI_API_KEY ?? "").trim() || String(body?.openAiApiKey ?? "").trim();
+export async function transcribeVoiceFromEnv(audioBuffer, mimeType) {
+  const geminiKey = String(process.env.GEMINI_API_KEY ?? "").trim();
+  const openAiKey = String(process.env.OPENAI_API_KEY ?? "").trim();
   if (!geminiKey && !openAiKey) {
     throw new Error("Voice transcription requires Gemini or ChatGPT key.");
   }
@@ -342,9 +340,8 @@ function convertWavBufferToMp3File(wavBuffer, wavMimeType, mp3Path) {
 
 /**
  * @param {string} turnId
- * @param {{ geminiApiKey?: string, openAiApiKey?: string }} [body]
  */
-export async function ensureVoiceReplyMp3ForTurn(turnId, body = {}) {
+export async function ensureVoiceReplyMp3ForTurn(turnId) {
   const OPENAI_SPEECH_INPUT_MAX = 4096;
   const mp3Path = voiceReplyMp3Path(turnId);
   if (fs.existsSync(mp3Path)) {
@@ -353,10 +350,8 @@ export async function ensureVoiceReplyMp3ForTurn(turnId, body = {}) {
   const text = getAssistantTextForTurnId(turnId);
   const geminiKey =
     String(process.env.GEMINI_API_KEY ?? "").trim() ||
-    String(process.env.GOOGLE_AI_STUDIO_KEY ?? "").trim() ||
-    String(body?.geminiApiKey ?? "").trim();
-  const openAiKey =
-    String(process.env.OPENAI_API_KEY ?? "").trim() || String(body?.openAiApiKey ?? "").trim();
+    String(process.env.GOOGLE_AI_STUDIO_KEY ?? "").trim();
+  const openAiKey = String(process.env.OPENAI_API_KEY ?? "").trim();
   if (!geminiKey && !openAiKey) {
     throw new Error("Voice playback requires Gemini or ChatGPT key.");
   }

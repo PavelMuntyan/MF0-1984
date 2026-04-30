@@ -82,13 +82,11 @@ export async function apiHealth() {
 export async function transcribeVoiceMessage(payload) {
   const audioBase64 = String(payload?.audioBase64 ?? "").trim();
   const mimeType = String(payload?.mimeType ?? "").trim() || "audio/webm";
-  const geminiApiKey = String(payload?.geminiApiKey ?? "").trim();
-  const openAiApiKey = String(payload?.openAiApiKey ?? "").trim();
   if (!audioBase64) throw new Error("Voice transcription: empty audio payload.");
   const res = await fetch(apiUrl("api/voice/transcribe"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ audioBase64, mimeType, geminiApiKey, openAiApiKey }),
+    body: JSON.stringify({ audioBase64, mimeType }),
   });
   const data = await assertOkOrThrow(res, "Voice transcribe");
   const text = String(data?.text ?? "").trim();
@@ -117,15 +115,13 @@ export async function fetchVoiceReplyStatus(turnId) {
  * @param {{ geminiApiKey?: string, openAiApiKey?: string }} [opts] — forwarded to API when keys are not set on the server process.
  * @returns {Promise<{ url: string, providerId: string }>}
  */
-export async function ensureVoiceReplyMp3(turnId, opts) {
+export async function ensureVoiceReplyMp3(turnId) {
   const tid = String(turnId ?? "").trim();
   if (!tid) throw new Error("Voice reply requires turn id.");
-  const geminiApiKey = String(opts?.geminiApiKey ?? "").trim();
-  const openAiApiKey = String(opts?.openAiApiKey ?? "").trim();
   const res = await fetch(apiUrl(`api/voice/replies/${encodeURIComponent(tid)}`), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ geminiApiKey, openAiApiKey }),
+    body: JSON.stringify({}),
   });
   const data = await assertOkOrThrow(res, "Voice reply create");
   const url = String(data?.url ?? "").trim();

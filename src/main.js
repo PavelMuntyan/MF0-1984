@@ -3764,16 +3764,12 @@ function makeAssistantSpeakerButton(assistantWrap) {
     }
     setAssistantSpeakerButtonState(btn, "loading");
     btn.disabled = true;
-    const keys = getModelApiKeys();
     try {
       const cachedUrl = String(assistantWrap.dataset.voiceReplyUrl ?? "").trim();
       const out =
         cachedUrl
           ? { url: cachedUrl, providerId: String(assistantWrap.dataset.voiceReplyProviderId ?? "").trim() }
-          : await ensureVoiceReplyMp3(turnId, {
-              geminiApiKey: String(keys["gemini-flash"] ?? "").trim(),
-              openAiApiKey: String(keys.openai ?? "").trim(),
-            });
+          : await ensureVoiceReplyMp3(turnId);
       assistantWrap.dataset.voiceReplyUrl = String(out.url ?? "").trim();
       assistantWrap.dataset.voiceReplyProviderId = String(out.providerId ?? "").trim();
       assistantWrap.dataset.voiceReplyReady = "1";
@@ -6191,12 +6187,9 @@ function initChatComposer() {
       }
       try {
         appendActivityLog("Voice input: transcribing…");
-        const keys = getModelApiKeys();
         const out = await transcribeVoiceMessage({
           audioBase64: await blobToBase64(blob),
           mimeType,
-          geminiApiKey: String(keys["gemini-flash"] ?? "").trim(),
-          openAiApiKey: String(keys.openai ?? "").trim(),
         });
         const text = String(out.text ?? "").trim();
         if (!text) throw new Error("Voice transcription returned empty text.");

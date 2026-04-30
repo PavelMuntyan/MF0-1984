@@ -25,7 +25,7 @@ router.post("/voice/transcribe", async (req, res) => {
   try {
     const audioBuffer = decodeBase64Audio(body.audioBase64);
     const mimeType = normalizeAudioMimeType(body.mimeType);
-    const out = await transcribeVoiceFromEnv(audioBuffer, mimeType, body);
+    const out = await transcribeVoiceFromEnv(audioBuffer, mimeType);
     try {
       const pid = analyticsProviderFromVoiceProvider(out.providerId);
       const completionTokens = estimateTokensFromText(out.text);
@@ -70,7 +70,7 @@ router.post("/voice/replies/:turnId", async (req, res) => {
   const body = req.body ?? {};
   try {
     const turnId = sanitizeTurnIdForVoiceFile(req.params.turnId);
-    const out = await ensureVoiceReplyMp3ForTurn(turnId, body);
+    const out = await ensureVoiceReplyMp3ForTurn(turnId);
     if (out.created) {
       try {
         let pid = analyticsProviderFromVoiceProvider(out.providerId);
