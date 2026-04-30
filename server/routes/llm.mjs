@@ -112,15 +112,27 @@ function makeProxyHandler(providerName) {
 
       res.writeHead(proxyRes.statusCode ?? 200, resHeaders);
       proxyRes.pipe(res, { end: true });
+
+      // If the upstream stream errors after headers are already sent, destroy the
+      // client connection so the browser gets a network error instead of hanging.
+      proxyRes.on("error", () => res.destroy());
     });
 
     proxyReq.on("error", (e) => {
-      if (!res.headersSent) res.status(502).json({ ok: false, error: e.message });
+      if (!res.headersSent) {
+        res.status(502).json({ ok: false, error: e.message });
+      } else {
+        res.destroy();
+      }
     });
 
     proxyReq.on("timeout", () => {
       proxyReq.destroy();
-      if (!res.headersSent) res.status(504).json({ ok: false, error: "Upstream timeout" });
+      if (!res.headersSent) {
+        res.status(504).json({ ok: false, error: "Upstream timeout" });
+      } else {
+        res.destroy();
+      }
     });
 
     if (bodyBuf) {

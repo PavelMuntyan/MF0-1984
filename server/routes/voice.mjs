@@ -43,11 +43,13 @@ router.get("/voice/replies/:turnId/file", (req, res) => {
   try {
     const turnId = sanitizeTurnIdForVoiceFile(req.params.turnId);
     const mp3Path = voiceReplyMp3Path(turnId);
-    if (!fs.existsSync(mp3Path)) {
-      return res.status(404).json({ ok: false, error: "Voice reply not found." });
-    }
     res.set("Cache-Control", "public, max-age=31536000, immutable");
-    res.sendFile(mp3Path);
+    res.sendFile(mp3Path, (err) => {
+      if (!err) return;
+      if (res.headersSent) return;
+      const status = err.code === "ENOENT" ? 404 : (err.status ?? 500);
+      res.status(status).json({ ok: false, error: "Voice reply not found." });
+    });
   } catch (e) {
     res.status(400).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
   }
